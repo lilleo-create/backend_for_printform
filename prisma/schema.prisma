@@ -1,0 +1,765 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                     String                 @id @default(cuid())
+  email                  String                 @unique
+  passwordHash           String
+  name                   String
+  fullName               String?
+  phone                  String?                @unique
+  phoneVerifiedAt        DateTime?
+  emailVerifiedAt        DateTime?
+  address                String?
+  role                   Role                   @default(BUYER)
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+  addresses              Address[]
+  chatThreads            ChatThread[]
+  contacts               Contact[]
+  orders                 Order[]
+  payouts                Payout[]
+  moderatedProducts      Product[]              @relation("ProductModerator")
+  products               Product[]
+  refreshTokens          RefreshToken[]
+  returnRequests         ReturnRequest[]
+  moderatedReviews       Review[]               @relation("ReviewModerator")
+  reviews                Review[]
+  sellerDeliveryProfile  SellerDeliveryProfile?
+  reviewedKycSubmissions SellerKycSubmission[]  @relation("KycReviewer")
+  sellerKycSubmissions   SellerKycSubmission[]
+  sellerProfile          SellerProfile?
+  sellerSettings         SellerSettings?
+}
+
+model SellerProfile {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  status            String
+  storeName         String
+  phone             String
+  city              String
+  referenceCategory String
+  catalogPosition   String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  user              User     @relation(fields: [userId], references: [id])
+
+  // Контакты для мерчанта NDD
+  contactName         String?
+  contactEmail        String?
+  contactPhone        String?
+  representativeName  String?
+
+  // Юр. данные
+  legalType        String?   // ООО | ИП | Самозанятый (дублирует status для мерчанта)
+  legalName        String?
+  inn              String?
+  ogrn             String?
+  kpp              String?
+  legalAddressFull String?
+
+  // Параметры мерчанта
+  siteUrl      String?
+  shipmentType String?   @default("import") // import | withdraw
+
+  // Согласия
+  acceptedRulesAt        DateTime?
+  acceptedRulesSlug      String?
+  acceptedPersonalDataAt DateTime?
+  acceptedPersonalDataSlug String?
+
+  // Состояние регистрации в Яндекс NDD
+  yandexMerchantRegistrationId String?
+  yandexMerchantId             String?
+  yandexMerchantStatus         String?   // in_progress | success | validation_error
+  yandexMerchantError          Json?
+}
+
+model City {
+  id        String   @id @default(cuid())
+  name      String
+  country   String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([name, country])
+}
+
+model Product {
+  id                    String                  @id @default(cuid())
+  title                 String
+  descriptionShort      String
+  descriptionFull       String
+  sku                   String                  @unique
+  price                 Int
+  currency              String                  @default("RUB")
+  ratingAvg             Float                   @default(0)
+  ratingCount           Int                     @default(0)
+  category              String
+  image                 String
+  videoUrls             String[]                @default([])
+  description           String
+  material              String
+  technology            String
+  productionTimeHours   Int?                    @default(24)
+  color                 String
+  deliveryDateEstimated DateTime?
+  weightGrossG          Int?
+  dxCm                  Int?
+  dyCm                  Int?
+  dzCm                  Int?
+  sellerId              String
+  moderationStatus      ProductModerationStatus @default(PENDING)
+  moderationNotes       String?
+  publishedAt           DateTime?
+  moderatedAt           DateTime?
+  moderatedById         String?
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+  orderItems            OrderItem[]
+  moderatedBy           User?                   @relation("ProductModerator", fields: [moderatedById], references: [id])
+  seller                User                    @relation(fields: [sellerId], references: [id])
+  images                ProductImage[]
+  specs                 ProductSpec[]
+  variants              ProductVariant[]
+  reviews               Review[]
+}
+
+model ProductImage {
+  id        String   @id @default(cuid())
+  productId String
+  url       String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  product   Product  @relation(fields: [productId], references: [id])
+}
+
+model ProductVariant {
+  id         String      @id @default(cuid())
+  productId  String
+  name       String
+  options    Json
+  priceDelta Int?
+  sku        String?
+  stock      Int?
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  orderItems OrderItem[]
+  product    Product     @relation(fields: [productId], references: [id])
+}
+
+model ProductSpec {
+  id        String  @id @default(cuid())
+  productId String
+  key       String
+  value     String
+  sortOrder Int     @default(0)
+  product   Product @relation(fields: [productId], references: [id])
+}
+
+model Review {
+  id               String                 @id @default(cuid())
+  productId        String
+  userId           String?
+  rating           Int
+  pros             String
+  cons             String
+  comment          String
+  photos           String[]               @default([])
+  likesCount       Int                    @default(0)
+  dislikesCount    Int                    @default(0)
+  isPublic         Boolean                @default(true)
+  status           ReviewStatus           @default(PENDING)
+  moderationStatus ReviewModerationStatus @default(PENDING)
+  moderationNotes  String?
+  moderatedAt      DateTime?
+  moderatedById    String?
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+  moderatedBy      User?                  @relation("ReviewModerator", fields: [moderatedById], references: [id])
+  product          Product                @relation(fields: [productId], references: [id])
+  user             User?                  @relation(fields: [userId], references: [id])
+
+  @@index([productId])
+  @@index([createdAt])
+  @@index([productId, status, isPublic])
+}
+
+model Order {
+  id                   String               @id @default(cuid())
+  buyerId              String
+  status               OrderStatus          @default(CREATED)
+  statusUpdatedAt      DateTime             @default(now())
+  total                Int
+  currency             String               @default("RUB")
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+  contactId            String?
+  shippingAddressId    String?
+  trackingNumber       String?
+  carrier              String?
+  buyerPickupPvzId     String?
+  buyerPickupPvzMeta   Json?
+  sellerDropoffPvzId   String?
+  sellerDropoffPvzMeta Json?
+  yandexOfferId        String?
+  yandexRequestId      String?
+  yandexStatus         String?
+  yandexSharingUrl     String?
+  yandexCourierOrderId String?
+  yandexSelfPickupCode Json?
+  yandexActualInfo     Json?
+  cdekOrderId          String?
+  cdekStatus           String?
+  payoutStatus         String               @default("HOLD")
+  deliveryDaysMin      Int?
+  deliveryDaysMax      Int?
+  deliveryEtaText      String?
+  estimatedDeliveryDateMin DateTime?
+  estimatedDeliveryDateMax DateTime?
+  deliveryTariffCode   Int?
+  deliveryCalculatedAt DateTime?
+  readyForShipmentAt   DateTime?
+  isPacked             Boolean              @default(false)
+  isLabelPrinted       Boolean              @default(false)
+  isActPrinted         Boolean              @default(false)
+  fulfillmentUpdatedAt DateTime?
+  dropoffDeadlineAt    DateTime?
+  paymentAttemptKey    String?
+  paymentProvider      String?
+  paymentId            String?
+  paidAt               DateTime?
+  recipientName        String?
+  recipientPhone       String?
+  recipientEmail       String?
+  packagesCount        Int                  @default(1)
+  orderLabels          Json?
+  buyer                User                 @relation(fields: [buyerId], references: [id])
+  contact              Contact?             @relation("OrderContact", fields: [contactId], references: [id])
+  shippingAddress      Address?             @relation("OrderShippingAddress", fields: [shippingAddressId], references: [id])
+  deliveryEvents       OrderDeliveryEvent[]
+  items                OrderItem[]
+  shipment             OrderShipment?
+  payments             Payment[]
+  payout               Payout?
+  order_shipments      order_shipments?
+
+  @@unique([buyerId, paymentAttemptKey])
+}
+
+model Payout {
+  id        String    @id @default(cuid())
+  orderId   String    @unique
+  sellerId  String
+  amount    Int
+  currency  String
+  status    String    @default("HOLD")
+  createdAt DateTime  @default(now())
+  paidAt    DateTime?
+  order     Order     @relation(fields: [orderId], references: [id])
+  seller    User      @relation(fields: [sellerId], references: [id])
+
+  @@index([sellerId, status])
+}
+
+model SellerSettings {
+  sellerId              String   @id
+  defaultDropoffProvider String   @default("CDEK")
+  defaultDropoffPvzId   String?
+  defaultDropoffPvzMeta Json?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  seller                User     @relation(fields: [sellerId], references: [id])
+}
+
+model OrderDeliveryEvent {
+  id            String   @id @default(cuid())
+  orderId       String
+  provider      String
+  status        String
+  description   String?
+  reason        String?
+  timestampUnix Int?
+  timestampUtc  String?
+  raw           Json
+  createdAt     DateTime @default(now())
+  order         Order    @relation(fields: [orderId], references: [id])
+
+  @@index([orderId, createdAt])
+}
+
+model SellerDeliveryProfile {
+  id                       String          @id @default(cuid())
+  sellerId                 String          @unique
+  dropoffStationId         String?
+  dropoffPvzId             String?
+  dropoffOperatorStationId String?
+  dropoffPlatformStationId String?
+  dropoffStationMeta       Json?
+  dropoffSchedule          DropoffSchedule @default(DAILY)
+  createdAt                DateTime        @default(now())
+  updatedAt                DateTime        @updatedAt
+  seller                   User            @relation(fields: [sellerId], references: [id])
+}
+
+model OrderShipment {
+  id                         String                       @id @default(cuid())
+  orderId                    String                       @unique
+  provider                   String
+  deliveryMethod             String
+  sourceStationId            String
+  sourceStationSnapshot      Json?
+  destinationStationId       String
+  destinationStationSnapshot Json?
+  offerPayload               String?
+  requestId                  String?
+  actPrintRequestUuid        String?
+  labelPrintRequestUuid      String?
+  barcodePrintRequestUuid    String?
+  status                     String
+  statusRaw                  Json?
+  lastSyncAt                 DateTime?
+  createdAt                  DateTime                     @default(now())
+  updatedAt                  DateTime                     @updatedAt
+  order                      Order                        @relation(fields: [orderId], references: [id])
+  statusHistory              OrderShipmentStatusHistory[]
+}
+
+model OrderShipmentStatusHistory {
+  id         String        @id @default(cuid())
+  shipmentId String
+  status     String
+  payloadRaw Json?
+  createdAt  DateTime      @default(now())
+  shipment   OrderShipment @relation(fields: [shipmentId], references: [id])
+}
+
+model OrderItem {
+  id              String          @id @default(cuid())
+  orderId         String
+  productId       String
+  variantId       String?
+  quantity        Int
+  priceAtPurchase Int
+  currency        String          @default("RUB")
+  order           Order           @relation(fields: [orderId], references: [id])
+  product         Product         @relation(fields: [productId], references: [id])
+  variant         ProductVariant? @relation(fields: [variantId], references: [id])
+  returnItems     ReturnItem[]
+}
+
+model ReturnRequest {
+  id           String        @id @default(cuid())
+  userId       String
+  status       ReturnStatus  @default(CREATED)
+  reason       ReturnReason
+  comment      String?
+  adminComment String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  chatThread   ChatThread?
+  items        ReturnItem[]
+  photos       ReturnPhoto[]
+  user         User          @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+}
+
+model ReturnItem {
+  id              String        @id @default(cuid())
+  returnRequestId String
+  orderItemId     String
+  quantity        Int           @default(1)
+  createdAt       DateTime      @default(now())
+  orderItem       OrderItem     @relation(fields: [orderItemId], references: [id])
+  returnRequest   ReturnRequest @relation(fields: [returnRequestId], references: [id])
+
+  @@index([returnRequestId])
+  @@index([orderItemId])
+}
+
+model ReturnPhoto {
+  id              String        @id @default(cuid())
+  returnRequestId String
+  url             String
+  createdAt       DateTime      @default(now())
+  returnRequest   ReturnRequest @relation(fields: [returnRequestId], references: [id])
+
+  @@index([returnRequestId])
+}
+
+model ChatThread {
+  id              String           @id @default(cuid())
+  kind            ChatThreadKind   @default(SUPPORT)
+  userId          String
+  status          ChatThreadStatus @default(ACTIVE)
+  returnRequestId String?          @unique
+  lastMessageAt   DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  messages        ChatMessage[]
+  returnRequest   ReturnRequest?   @relation(fields: [returnRequestId], references: [id])
+  user            User             @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@index([lastMessageAt])
+}
+
+model ChatMessage {
+  id         String                @id @default(cuid())
+  threadId   String
+  authorRole ChatMessageAuthorRole
+  authorId   String
+  text       String
+  createdAt  DateTime              @default(now())
+  thread     ChatThread            @relation(fields: [threadId], references: [id])
+
+  @@index([threadId])
+  @@index([createdAt])
+}
+
+model ReferenceCategory {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  title     String
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, sortOrder])
+}
+
+model CustomRequest {
+  id        String   @id @default(cuid())
+  name      String
+  contact   String
+  comment   String
+  status    String   @default("new")
+  createdAt DateTime @default(now())
+}
+
+model Address {
+  id             String   @id @default(cuid())
+  userId         String
+  addressText    String
+  apartment      String?
+  floor          String?
+  label          String?
+  isFavorite     Boolean  @default(false)
+  courierComment String?
+  coords         Json?
+  isDefault      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  user           User     @relation(fields: [userId], references: [id])
+  orders         Order[]  @relation("OrderShippingAddress")
+
+  @@index([userId, isDefault])
+}
+
+model Contact {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  phone     String
+  email     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id])
+  orders    Order[]  @relation("OrderContact")
+
+  @@index([userId])
+}
+
+model SellerKycSubmission {
+  id              String           @id @default(cuid())
+  userId          String
+  status          KycStatus        @default(PENDING)
+  merchantData    Json?
+  dropoffPvzId    String?
+  dropoffPvzMeta  Json?
+  comment         String?
+  submittedAt     DateTime?
+  reviewedAt      DateTime?
+  reviewerId      String?
+  moderationNotes String?
+  notes           String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  documents       SellerDocument[]
+  reviewer        User?            @relation("KycReviewer", fields: [reviewerId], references: [id])
+  user            User             @relation(fields: [userId], references: [id])
+  @@index([userId, status])
+}
+
+model SellerDocument {
+  id           String              @id @default(cuid())
+  submissionId String
+  type         String
+  url          String
+  fileName     String?
+  originalName String
+  mime         String
+  size         Int
+  createdAt    DateTime            @default(now())
+  submission   SellerKycSubmission @relation(fields: [submissionId], references: [id])
+}
+
+model Payment {
+  id          String        @id @default(cuid())
+  orderId     String
+  provider    String
+  status      PaymentStatus @default(PENDING)
+  amount      Int
+  currency    String        @default("RUB")
+  payloadJson Json?
+  createdAt   DateTime      @default(now())
+  order       Order         @relation(fields: [orderId], references: [id])
+
+  @@index([orderId, status])
+}
+
+
+
+model PendingRegistration {
+  id           String   @id @default(cuid())
+  name         String
+  fullName     String?
+  email        String
+  passwordHash String
+  role         Role     @default(BUYER)
+  phone        String   @unique
+  address      String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  expiresAt    DateTime
+  usedAt       DateTime?
+
+  @@index([email])
+  @@index([expiresAt])
+}
+model RefreshToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  user      User     @relation(fields: [userId], references: [id])
+}
+
+model PhoneOtp {
+  id          String     @id @default(cuid())
+  phone       String
+  codeHash    String
+  purpose     OtpPurpose
+  channel     OtpChannel  @default(TELEGRAM)
+  provider    OtpProvider @default(TELEGRAM_GATEWAY)
+  providerRequestId String?
+  providerPayload   Json?
+  deliveryStatus    OtpDeliveryStatus @default(SENT)
+  attempts    Int        @default(0)
+  maxAttempts Int        @default(5)
+  ip          String?
+  userAgent   String?
+  createdAt   DateTime   @default(now())
+  expiresAt   DateTime
+  consumedAt  DateTime?
+
+  @@index([phone, purpose, createdAt])
+  @@index([expiresAt])
+}
+
+model favorites {
+  user_id    String
+  product_id String
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([user_id, product_id])
+}
+
+model order_delivery_data {
+  order_id         String   @id
+  delivery_payload Json
+  updated_at       DateTime @default(now()) @db.Timestamptz(6)
+}
+
+model order_shipment_status_history {
+  id              String          @id
+  shipment_id     String
+  status          String
+  payload_raw     Json?
+  created_at      DateTime        @default(now()) @db.Timestamptz(6)
+  order_shipments order_shipments @relation(fields: [shipment_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model order_shipments {
+  id                            String                          @id
+  order_id                      String                          @unique
+  provider                      String
+  delivery_method               String
+  source_station_id             String
+  source_station_snapshot       Json?
+  destination_station_id        String
+  destination_station_snapshot  Json?
+  offer_payload                 String?
+  request_id                    String?
+  status                        String
+  status_raw                    Json?
+  last_sync_at                  DateTime?                       @db.Timestamptz(6)
+  created_at                    DateTime                        @default(now()) @db.Timestamptz(6)
+  updated_at                    DateTime                        @default(now()) @db.Timestamptz(6)
+  order_shipment_status_history order_shipment_status_history[]
+  Order                         Order                           @relation(fields: [order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model user_checkout_preferences {
+  user_id           String   @id
+  delivery_method   String   @default("COURIER")
+  delivery_sub_type String?
+  delivery_provider String?
+  payment_method    String   @default("CARD")
+  selected_card_id  String?
+  pickup_point_id   String?
+  pickup_provider   String?
+  pickup_point_json Json?
+  updated_at        DateTime @default(now()) @db.Timestamptz(6)
+}
+
+model user_saved_cards {
+  id         String   @id
+  user_id    String
+  brand      String
+  last4      String
+  exp_month  Int
+  exp_year   Int
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+}
+
+enum Role {
+  BUYER
+  SELLER
+  ADMIN
+}
+
+enum ProductModerationStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+  NEEDS_EDIT
+  ARCHIVED
+}
+
+enum OrderStatus {
+  CREATED
+  PAID
+  READY_FOR_SHIPMENT
+  PRINTING
+  HANDED_TO_DELIVERY
+  IN_TRANSIT
+  DELIVERED
+  CANCELLED
+  RETURNED
+  EXPIRED
+  PAYMENT_FAILED
+}
+
+enum ReviewStatus {
+  PENDING
+  APPROVED
+}
+
+enum ReviewModerationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  NEEDS_EDIT
+}
+
+enum DropoffSchedule {
+  DAILY
+  WEEKDAYS
+}
+
+enum OtpPurpose {
+  BUYER_REGISTER_PHONE
+  BUYER_CHANGE_PHONE
+  BUYER_SENSITIVE_ACTION
+  SELLER_CONNECT_PHONE
+  SELLER_CHANGE_PAYOUT_DETAILS
+  SELLER_PAYOUT_SETTINGS_VERIFY
+  PASSWORD_RESET
+}
+
+enum OtpChannel {
+  TELEGRAM
+  SMS
+  CONSOLE
+}
+
+enum OtpProvider {
+  TELEGRAM_GATEWAY
+  TWILIO
+  CONSOLE
+}
+
+enum OtpDeliveryStatus {
+  SENT
+  DELIVERED
+  READ
+  EXPIRED
+  REVOKED
+}
+
+enum KycStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REVISION
+}
+
+enum PaymentStatus {
+  PENDING
+  REQUIRES_ACTION
+  SUCCEEDED
+  FAILED
+}
+
+enum ReturnStatus {
+  CREATED
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  REFUNDED
+}
+
+enum ReturnReason {
+  NOT_FIT
+  DAMAGED
+  WRONG_ITEM
+}
+
+enum ChatThreadKind {
+  SUPPORT
+  SELLER
+}
+
+enum ChatThreadStatus {
+  ACTIVE
+  CLOSED
+}
+
+enum ChatMessageAuthorRole {
+  USER
+  ADMIN
+}
