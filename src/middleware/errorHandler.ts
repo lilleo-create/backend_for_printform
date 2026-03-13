@@ -54,16 +54,20 @@ export const errorHandler = (
     });
   }
 
-  if (isAppError(error) && typeof error.code === 'string' && error.code.startsWith('NDD_')) {
-    return res.status(error.status ?? 502).json({
-      error: {
-        code: error.code,
-        details: error.details ?? null,
-        ...(Array.isArray(error.issues) && error.issues.length
-          ? { issues: error.issues }
-          : {})
-      }
-    });
+  if (isAppError(error)) {
+    const errorCode = typeof error.code === 'string' ? error.code : undefined;
+
+    if (errorCode?.startsWith('NDD_')) {
+      return res.status(error.status ?? 502).json({
+        error: {
+          code: errorCode,
+          details: error.details ?? null,
+          ...(Array.isArray(error.issues) && error.issues.length
+            ? { issues: error.issues }
+            : {})
+        }
+      });
+    }
   }
 
   const message =
