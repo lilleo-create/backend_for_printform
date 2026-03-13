@@ -70,10 +70,25 @@ returnRoutes.get('/my', requireAuth, async (req: AuthRequest, res, next) => {
   }
 });
 
+type UploadedFile = {
+  fieldname: string;
+  originalname: string;
+  encoding: string;
+  mimetype: string;
+  size: number;
+  destination?: string;
+  filename?: string;
+  path?: string;
+  buffer?: Buffer;
+};
+
 returnRoutes.post('/uploads', requireAuth, writeLimiter, upload.array('files', 10), async (req, res) => {
-  const files = req.files as Express.Multer.File[] | undefined;
-  const urls = (files ?? []).map((file) => `/uploads/returns/${file.filename}`);
-  res.json({ data: { urls } });
+  const files = (req.files as UploadedFile[] | undefined) ?? [];
+  const urls = files
+    .filter((file) => file.filename)
+    .map((file) => `/uploads/returns/${file.filename}`);
+
+  return res.json({ data: { urls } });
 });
 
 returnRoutes.post('/', requireAuth, writeLimiter, async (req: AuthRequest, res, next) => {

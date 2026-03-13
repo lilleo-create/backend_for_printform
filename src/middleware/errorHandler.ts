@@ -20,6 +20,10 @@ const mapMulterErrorCode = (code: string): string => {
   }
 };
 
+const isAppError = (error: unknown): error is AppError => {
+  return error instanceof Error;
+};
+
 export const errorHandler = (
   error: unknown,
   _req: Request,
@@ -44,27 +48,28 @@ export const errorHandler = (
     });
   }
 
-  const err = error as AppError;
-
-  if (err.message === 'RETURN_UPLOAD_FILE_TYPE_INVALID') {
+  if (isAppError(error) && error.message === 'RETURN_UPLOAD_FILE_TYPE_INVALID') {
     return res.status(400).json({
       error: { code: 'RETURN_UPLOAD_FILE_TYPE_INVALID' }
     });
   }
 
-  if (typeof err.code === 'string' && err.code.startsWith('NDD_')) {
-    return res.status(err.status ?? 502).json({
+  if (isAppError(error) && typeof error.code === 'string' && error.code.startsWith('NDD_')) {
+    return res.status(error.status ?? 502).json({
       error: {
-        code: err.code,
-        details: err.details ?? null,
-        ...(Array.isArray(err.issues) && err.issues.length
-          ? { issues: err.issues }
+        code: error.code,
+        details: error.details ?? null,
+        ...(Array.isArray(error.issues) && error.issues.length
+          ? { issues: error.issues }
           : {})
       }
     });
   }
 
-  const message = err.message || 'SERVER_ERROR';
+  const message =
+    isAppError(error) && typeof error.message === 'string' && error.message.length
+      ? error.message
+      : 'SERVER_ERROR';
 
   const status =
     message === 'INVALID_CREDENTIALS' || message === 'UNAUTHORIZED'
@@ -111,14 +116,14 @@ export const errorHandler = (
 
   if (status === 500) {
     console.error('[errorHandler] unexpected error', {
-      message: err.message,
-      stack: err.stack,
-      code: err.code,
-      details: err.details
+      message: isAppError(error) ? error.message : String(error),
+      stack: isAppError(error) ? error.stack : undefined,
+      code: isAppError(error) ? error.code : undefined,
+      details: isAppError(error) ? error.details : undefined
     });
   }
 
   return res.status(status).json({
-    error: { code: message || 'SERVER_ERROR' }
+    error: { code: message }
   });
 };

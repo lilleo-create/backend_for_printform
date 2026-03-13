@@ -650,9 +650,23 @@ sellerRoutes.delete('/products/:id', writeLimiter, async (req: AuthRequest, res,
 });
 
 // ------------------- Uploads -------------------
+type UploadedFile = {
+  fieldname: string;
+  originalname: string;
+  encoding: string;
+  mimetype: string;
+  size: number;
+  destination?: string;
+  filename?: string;
+  path?: string;
+  buffer?: Buffer;
+};
+
 sellerRoutes.post('/uploads', writeLimiter, upload.array('files', 10), async (req, res) => {
-  const files = (req.files as Express.Multer.File[]) ?? [];
-  if (!files.length) return res.status(400).json({ error: { code: 'FILES_REQUIRED' } });
+  const files = (req.files as UploadedFile[] | undefined) ?? [];
+  if (!files.length) {
+    return res.status(400).json({ error: { code: 'FILES_REQUIRED' } });
+  }
 
   const oversizedFiles = files.filter((file) => {
     if (allowedImageTypes.includes(file.mimetype)) return file.size > maxImageSize;
@@ -661,12 +675,19 @@ sellerRoutes.post('/uploads', writeLimiter, upload.array('files', 10), async (re
   });
 
   if (oversizedFiles.length) {
-    await Promise.all(files.map((file) => fs.promises.unlink(file.path).catch(() => undefined)));
+    await Promise.all(
+      files.map((file) =>
+        file.path ? fs.promises.unlink(file.path).catch(() => undefined) : Promise.resolve()
+      )
+    );
     return res.status(400).json({ error: { code: 'FILE_TOO_LARGE' } });
   }
 
-  const urls = files.map((file) => `/uploads/${file.filename}`);
-  res.json({ data: { urls } });
+  const urls = files
+    .filter((file) => file.filename)
+    .map((file) => `/uploads/${file.filename}`);
+
+  return res.json({ data: { urls } });
 });
 
 // ------------------- Settings -------------------
