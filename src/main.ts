@@ -24,10 +24,10 @@ import { checkoutRoutes } from "./routes/checkoutRoutes";
 import { errorHandler } from "./middleware/errorHandler";
 import { globalLimiter } from "./middleware/rateLimiters";
 import { clientDisconnect } from "./middleware/clientDisconnect";
-import { internalRoutes } from './routes/internalRoutes';
+import { internalRoutes } from "./routes/internalRoutes";
 import { debugRoutes } from "./routes/debugRoutes";
-import { cdekRoutes } from './routes/cdekRoutes';
-import { shipmentsRoutes } from './routes/shipmentsRoutes';
+import { cdekRoutes } from "./routes/cdekRoutes";
+import { shipmentsRoutes } from "./routes/shipmentsRoutes";
 
 const app = express();
 const uploadsDir = path.join(process.cwd(), "uploads");
@@ -36,54 +36,64 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
-
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
 
-const allowedOrigins = [env.frontendUrl];
+const allowedOrigins = [
+  env.frontendUrl,
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+].filter(Boolean);
 
 const corsOptions: cors.CorsOptions = {
   origin: (origin, callback) => {
-    // server-to-server / curl / same-origin can have no Origin
-    if (!origin) return callback(null, true);
+    if (!origin) {
+      return callback(null, true);
+    }
 
-    if (allowedOrigins.includes(origin)) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
 
+    console.warn("[CORS] blocked origin:", origin, "allowed:", allowedOrigins);
     return callback(new Error("CORS_NOT_ALLOWED"));
   },
   credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
 };
 
-// ✅ 1) CORS должен быть ПЕРВЫМ (до helmet и до limiter)
+// CORS должен быть до helmet и limiter
 app.use(cors(corsOptions));
-// ✅ 2) Явно отвечаем на preflight до любых ограничителей
 app.options("*", cors(corsOptions));
 
-// ✅ 3) Теперь можно security headers
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
-  })
+  }),
 );
 
-// ✅ 4) Теперь можно rate-limit (а OPTIONS мы уже обработали выше)
-// (и в rateLimiters всё равно добавь skip OPTIONS, это полезно)
 app.use(globalLimiter);
 
-app.use(express.json({
-  limit: "1mb",
-  verify: (req, _res, buffer) => {
-    (req as express.Request & { rawBody?: string }).rawBody = buffer.toString('utf8');
-  }
-}));
+app.use(
+  express.json({
+    limit: "1mb",
+    verify: (req, _res, buffer) => {
+      (req as express.Request & { rawBody?: string }).rawBody =
+        buffer.toString("utf8");
+    },
+  }),
+);
 app.use(cookieParser());
 
 // ✅ uploads
 app.use("/uploads", express.static(uploadsDir));
 
-app.get("/health", (_req, res) => res.json({ status: "ok", build: "server-2026-02-04-1" }));
+app.get("/health", (_req, res) =>
+  res.json({ status: "ok", build: "server-2026-02-04-1" }),
+);
 
-const mountRoutes = (prefix = '') => {
+const mountRoutes = (prefix = "") => {
   app.use(`${prefix}/auth`, authRoutes);
   app.use(`${prefix}/products`, productRoutes);
   app.use(`${prefix}/shops`, shopRoutes);
@@ -105,7 +115,7 @@ const mountRoutes = (prefix = '') => {
   app.use(`${prefix}/debug`, debugRoutes);
 };
 
-mountRoutes('/api');
+mountRoutes("/api");
 // Legacy non-prefixed routes kept for backward compatibility.
 mountRoutes();
 app.use(errorHandler);
@@ -116,11 +126,10 @@ app.listen(env.port, () => {
 
 // startShipmentsSyncJob();
 
-
-process.on('unhandledRejection', (reason) => {
-  console.error('UNHANDLED REJECTION:', reason);
+process.on("unhandledRejection", (reason) => {
+  console.error("UNHANDLED REJECTION:", reason);
 });
 
-process.on('uncaughtException', (err) => {
-  console.error('UNCAUGHT EXCEPTION:', err);
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT EXCEPTION:", err);
 });
