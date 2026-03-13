@@ -5,6 +5,7 @@ import fs from "fs";
 import path from "path";
 import helmet from "helmet";
 import { env } from "./config/env";
+
 import { authRoutes } from "./routes/authRoutes";
 import { productRoutes } from "./routes/productRoutes";
 import { orderRoutes } from "./routes/orderRoutes";
@@ -20,14 +21,16 @@ import { adminChatRoutes } from "./routes/adminChatRoutes";
 import { shopRoutes } from "./routes/shopRoutes";
 import { favoritesRoutes } from "./routes/favoritesRoutes";
 import { checkoutRoutes } from "./routes/checkoutRoutes";
-import { errorHandler } from "./middleware/errorHandler";
-import { globalLimiter } from "./middleware/rateLimiters";
 import { internalRoutes } from "./routes/internalRoutes";
 import { debugRoutes } from "./routes/debugRoutes";
 import { cdekRoutes } from "./routes/cdekRoutes";
 import { shipmentsRoutes } from "./routes/shipmentsRoutes";
 
+import { errorHandler } from "./middleware/errorHandler";
+import { globalLimiter } from "./middleware/rateLimiters";
+
 const app = express();
+
 const uploadsDir = path.join(process.cwd(), "uploads");
 
 if (!fs.existsSync(uploadsDir)) {
@@ -37,29 +40,34 @@ if (!fs.existsSync(uploadsDir)) {
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
 
-// Ручной CORS для локального фронта и прод-фронта
+const allowedOrigins = new Set(
+  [
+    env.frontendUrl,
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+  ].filter(Boolean)
+);
+
+/*
+|--------------------------------------------------------------------------
+| CORS HANDLER
+|--------------------------------------------------------------------------
+*/
+
 app.use((req, res, next) => {
   const origin = req.headers.origin;
 
-  const allowedOrigins = new Set(
-    [
-      env.frontendUrl,
-      "http://localhost:5173",
-      "http://127.0.0.1:5173",
-    ].filter(Boolean),
-  );
-
   if (origin && allowedOrigins.has(origin)) {
-    res.header("Access-Control-Allow-Origin", origin);
-    res.header("Vary", "Origin");
-    res.header("Access-Control-Allow-Credentials", "true");
-    res.header(
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader(
       "Access-Control-Allow-Methods",
-      "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+      "GET,POST,PUT,PATCH,DELETE,OPTIONS"
     );
-    res.header(
+    res.setHeader(
       "Access-Control-Allow-Headers",
-      "Content-Type, Authorization",
+      "Content-Type, Authorization"
     );
   }
 
@@ -70,13 +78,31 @@ app.use((req, res, next) => {
   next();
 });
 
+/*
+|--------------------------------------------------------------------------
+| SECURITY
+|--------------------------------------------------------------------------
+*/
+
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
-  }),
+  })
 );
 
+/*
+|--------------------------------------------------------------------------
+| LIMITERS
+|--------------------------------------------------------------------------
+*/
+
 app.use(globalLimiter);
+
+/*
+|--------------------------------------------------------------------------
+| BODY
+|--------------------------------------------------------------------------
+*/
 
 app.use(
   express.json({
@@ -85,15 +111,37 @@ app.use(
       (req as express.Request & { rawBody?: string }).rawBody =
         buffer.toString("utf8");
     },
-  }),
+  })
 );
 
 app.use(cookieParser());
+
+/*
+|--------------------------------------------------------------------------
+| STATIC
+|--------------------------------------------------------------------------
+*/
+
 app.use("/uploads", express.static(uploadsDir));
 
+/*
+|--------------------------------------------------------------------------
+| HEALTH
+|--------------------------------------------------------------------------
+*/
+
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", build: "server-2026-02-04-1" });
+  res.json({
+    status: "ok",
+    build: "server-2026-03-13",
+  });
 });
+
+/*
+|--------------------------------------------------------------------------
+| ROUTES
+|--------------------------------------------------------------------------
+*/
 
 const mountRoutes = (prefix = "") => {
   app.use(`${prefix}/auth`, authRoutes);
@@ -118,14 +166,35 @@ const mountRoutes = (prefix = "") => {
 };
 
 mountRoutes("/api");
-// Legacy non-prefixed routes kept for backward compatibility.
+
+/*
+Legacy routes (старые без /api)
+*/
 mountRoutes();
 
+/*
+|--------------------------------------------------------------------------
+| ERRORS
+|--------------------------------------------------------------------------
+*/
+
 app.use(errorHandler);
+
+/*
+|--------------------------------------------------------------------------
+| SERVER
+|--------------------------------------------------------------------------
+*/
 
 app.listen(env.port, () => {
   console.log(`API running on ${env.port}`);
 });
+
+/*
+|--------------------------------------------------------------------------
+| GLOBAL ERRORS
+|--------------------------------------------------------------------------
+*/
 
 process.on("unhandledRejection", (reason) => {
   console.error("UNHANDLED REJECTION:", reason);
