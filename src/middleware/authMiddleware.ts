@@ -5,18 +5,18 @@ import { env } from '../config/env';
 import { prisma } from '../lib/prisma';
 import { forbidden, unauthorized } from '../utils/httpErrors';
 
-export interface AuthUser {
+export type AuthUser = {
   userId: string;
   role: Role;
-}
+};
 
-export interface AuthRequest extends Request {
+export type AuthRequest = Request & {
   user?: AuthUser;
-}
+};
 
-export interface OtpAuthRequest extends Request {
+export type OtpAuthRequest = Request & {
   otp?: { userId: string };
-}
+};
 
 const loadUserRole = async (userId: string): Promise<Role | null> => {
   const user = await prisma.user.findUnique({
