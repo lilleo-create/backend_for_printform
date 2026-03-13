@@ -1,6 +1,5 @@
 import "dotenv/config";
 import express from "express";
-import cors from "cors";
 import cookieParser from "cookie-parser";
 import fs from "fs";
 import path from "path";
@@ -23,7 +22,6 @@ import { favoritesRoutes } from "./routes/favoritesRoutes";
 import { checkoutRoutes } from "./routes/checkoutRoutes";
 import { errorHandler } from "./middleware/errorHandler";
 import { globalLimiter } from "./middleware/rateLimiters";
-import { clientDisconnect } from "./middleware/clientDisconnect";
 import { internalRoutes } from "./routes/internalRoutes";
 import { debugRoutes } from "./routes/debugRoutes";
 import { cdekRoutes } from "./routes/cdekRoutes";
@@ -39,33 +37,38 @@ if (!fs.existsSync(uploadsDir)) {
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
 
-const allowedOrigins = [
-  env.frontendUrl,
-  "http://localhost:5173",
-  "http://127.0.0.1:5173",
-].filter(Boolean);
+// Ручной CORS для локального фронта и прод-фронта
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
 
-const corsOptions: cors.CorsOptions = {
-  origin: (origin, callback) => {
-    if (!origin) {
-      return callback(null, true);
-    }
+  const allowedOrigins = new Set(
+    [
+      env.frontendUrl,
+      "http://localhost:5173",
+      "http://127.0.0.1:5173",
+    ].filter(Boolean),
+  );
 
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
+  if (origin && allowedOrigins.has(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+    res.header("Vary", "Origin");
+    res.header("Access-Control-Allow-Credentials", "true");
+    res.header(
+      "Access-Control-Allow-Methods",
+      "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    );
+    res.header(
+      "Access-Control-Allow-Headers",
+      "Content-Type, Authorization",
+    );
+  }
 
-    console.warn("[CORS] blocked origin:", origin, "allowed:", allowedOrigins);
-    return callback(new Error("CORS_NOT_ALLOWED"));
-  },
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-};
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
 
-// CORS должен быть до helmet и limiter
-app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
+  next();
+});
 
 app.use(
   helmet({
@@ -84,14 +87,13 @@ app.use(
     },
   }),
 );
-app.use(cookieParser());
 
-// ✅ uploads
+app.use(cookieParser());
 app.use("/uploads", express.static(uploadsDir));
 
-app.get("/health", (_req, res) =>
-  res.json({ status: "ok", build: "server-2026-02-04-1" }),
-);
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", build: "server-2026-02-04-1" });
+});
 
 const mountRoutes = (prefix = "") => {
   app.use(`${prefix}/auth`, authRoutes);
@@ -118,13 +120,12 @@ const mountRoutes = (prefix = "") => {
 mountRoutes("/api");
 // Legacy non-prefixed routes kept for backward compatibility.
 mountRoutes();
+
 app.use(errorHandler);
 
 app.listen(env.port, () => {
   console.log(`API running on ${env.port}`);
 });
-
-// startShipmentsSyncJob();
 
 process.on("unhandledRejection", (reason) => {
   console.error("UNHANDLED REJECTION:", reason);
