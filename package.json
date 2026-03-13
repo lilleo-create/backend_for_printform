@@ -16,6 +16,7 @@
     "make:admin": "tsx scripts/make-admin.ts",
     "shipments:sync": "tsx scripts/shipments-sync.ts"
   },
+  
   "dependencies": {
     "@prisma/client": "^5.22.0",
     "axios": "^1.13.5",
