@@ -43,8 +43,13 @@ export const errorHandler = (
   }
 
   if (error instanceof MulterError) {
+    const multerCode =
+      typeof (error as { code?: unknown }).code === 'string'
+        ? (error as { code: string }).code
+        : 'LIMIT_UNEXPECTED_FILE';
+
     return res.status(400).json({
-      error: { code: mapMulterErrorCode(error.code) }
+      error: { code: mapMulterErrorCode(multerCode) }
     });
   }
 
