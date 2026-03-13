@@ -148,8 +148,9 @@ app.use(errorHandler_1.errorHandler);
 | SERVER
 |--------------------------------------------------------------------------
 */
-app.listen(env_1.env.port, () => {
-    console.log(`API running on ${env_1.env.port}`);
+const PORT = Number(process.env.PORT) || env_1.env.port || 4000;
+app.listen(PORT, "0.0.0.0", () => {
+    console.log(`API running on ${PORT}`);
 });
 /*
 |--------------------------------------------------------------------------
