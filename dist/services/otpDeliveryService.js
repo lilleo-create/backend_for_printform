@@ -167,6 +167,9 @@ exports.otpDeliveryService = {
                 }
             }
         }
+        if (env_1.env.otpProvider === 'plusofon') {
+            throw new Error('PLUSOFON_FLOW_REQUIRES_CALL_TO_AUTH');
+        }
         if (env_1.env.smsProvider === 'twilio') {
             await smsProvider_1.smsProvider.sendOtp(payload.phone, payload.message);
             return {

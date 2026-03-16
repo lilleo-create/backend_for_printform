@@ -44,8 +44,12 @@ const otpRequestSchema = zod_1.z.object({
 });
 const otpVerifySchema = zod_1.z.object({
     phone: zod_1.z.string().min(5),
-    code: zod_1.z.string().min(4),
+    code: zod_1.z.string().min(4).optional(),
+    requestId: zod_1.z.string().min(2).optional(),
     purpose: zod_1.z.enum(['buyer_register_phone', 'buyer_change_phone', 'buyer_sensitive_action', 'seller_connect_phone', 'seller_change_payout_details', 'seller_payout_settings_verify']).optional()
+}).refine((value) => Boolean(value.code || value.requestId), {
+    message: 'code or requestId is required',
+    path: ['code']
 });
 const passwordResetRequestSchema = zod_1.z.object({
     phone: zod_1.z.string().min(5)
@@ -90,6 +94,25 @@ const parseAuthToken = (req) => {
 };
 const decodeAuthToken = (token) => {
     return jsonwebtoken_1.default.verify(token, env_1.env.jwtSecret);
+};
+const parsePlusofonWebhookPayload = (body) => {
+    const source = body && typeof body === 'object' ? body : {};
+    const data = source.data && typeof source.data === 'object' ? source.data : null;
+    const merged = data ? { ...source, ...data } : source;
+    const pick = (...keys) => {
+        for (const key of keys) {
+            const value = merged[key];
+            if (typeof value === 'string' && value.trim()) {
+                return value.trim();
+            }
+        }
+        return null;
+    };
+    return {
+        requestId: pick('request_id', 'requestId', 'id', 'key'),
+        status: pick('status', 'state'),
+        phone: pick('phone', 'phone_number', 'recipient')
+    };
 };
 const createPasswordResetToken = (payload) => {
     return jsonwebtoken_1.default.sign({ ...payload, scope: 'password_reset' }, env_1.env.jwtSecret, { expiresIn: '10m' });
@@ -288,7 +311,48 @@ exports.authRoutes.post('/otp/request', rateLimiters_1.otpRequestLimiter, async 
             ip: req.ip,
             userAgent: req.get('user-agent')
         });
-        return res.json({ ok: true, devOtp: result.devOtp, delivery: result.delivery });
+        return res.json({
+            ok: result.ok,
+            requestId: result.data?.requestId,
+            verificationType: result.data?.verificationType,
+            callToAuthNumber: result.data?.callToAuthNumber,
+            phone: result.data?.phone,
+            provider: result.data?.provider,
+            devOtp: result.devOtp,
+            delivery: result.delivery,
+            throttled: result.throttled
+        });
+    }
+    catch (error) {
+        return next(error);
+    }
+});
+exports.authRoutes.get('/otp/status/:requestId', async (req, res, next) => {
+    try {
+        const requestId = zod_1.z.string().min(2).parse(req.params.requestId);
+        const token = parseAuthToken(req);
+        if (!token) {
+            return res.status(401).json({ error: { code: 'UNAUTHORIZED' } });
+        }
+        let decoded;
+        try {
+            decoded = decodeAuthToken(token);
+        }
+        catch {
+            return res.status(401).json({ error: { code: 'UNAUTHORIZED' } });
+        }
+        if (!decoded.scope || !['otp_register', 'access'].includes(decoded.scope)) {
+            return res.status(401).json({ error: { code: 'UNAUTHORIZED' } });
+        }
+        const status = await otpService_1.otpService.getOtpStatusByRequestId(requestId);
+        return res.json({
+            ok: true,
+            data: {
+                requestId: status.requestId,
+                status: status.status,
+                provider: status.provider
+            }
+        });
     }
     catch (error) {
         return next(error);
@@ -315,11 +379,18 @@ exports.authRoutes.post('/otp/verify', rateLimiters_1.otpVerifyLimiter, async (r
         if (!needsOtpToken && (!decoded || (decoded.scope && decoded.scope !== 'access'))) {
             return res.status(401).json({ error: { code: 'UNAUTHORIZED' } });
         }
-        const { phone } = await otpService_1.otpService.verifyOtp({
-            phone: payload.phone,
-            code: payload.code,
-            purpose
-        });
+        const verification = payload.requestId
+            ? await otpService_1.otpService.verifyOtpByRequestId({
+                phone: payload.phone,
+                requestId: payload.requestId,
+                purpose
+            })
+            : await otpService_1.otpService.verifyOtp({
+                phone: payload.phone,
+                code: payload.code,
+                purpose
+            });
+        const { phone } = verification;
         let user;
         if (needsOtpToken) {
             const registrationSessionId = decoded?.registrationSessionId;
@@ -403,6 +474,33 @@ exports.authRoutes.post('/otp/telegram/callback', async (req, res, next) => {
             providerPayload: body.payload,
             deliveryStatus: mappedStatus
         });
+        return res.json({ ok: true });
+    }
+    catch (error) {
+        return next(error);
+    }
+});
+exports.authRoutes.post('/otp/plusofon/webhook', async (req, res, next) => {
+    try {
+        if (env_1.env.plusofonWebhookSecret) {
+            const headerSecret = req.get('X-Webhook-Secret') ?? req.get('X-Plusofon-Secret') ?? '';
+            if (!headerSecret || headerSecret !== env_1.env.plusofonWebhookSecret) {
+                return res.status(401).json({ error: { code: 'INVALID_SIGNATURE' } });
+            }
+        }
+        const body = req.body;
+        const parsed = parsePlusofonWebhookPayload(body);
+        if (!parsed.requestId) {
+            return res.status(200).json({ ok: true, ignored: true });
+        }
+        const mapped = otpService_1.otpService.mapPlusofonStatus(parsed.status);
+        if (mapped !== 'pending') {
+            await otpService_1.otpService.markOtpVerifiedByProviderRequestId({
+                requestId: parsed.requestId,
+                status: mapped,
+                providerPayload: body
+            });
+        }
         return res.json({ ok: true });
     }
     catch (error) {

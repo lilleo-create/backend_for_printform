@@ -1,10 +1,11 @@
 import crypto from 'crypto';
-import { OtpDeliveryStatus, OtpPurpose as PrismaOtpPurpose } from '@prisma/client';
+import { OtpDeliveryStatus, OtpPurpose as PrismaOtpPurpose, Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { env } from '../config/env';
 import { generateOtpCode, hashOtpCode } from '../utils/otp';
 import { normalizePhone } from '../utils/phone';
 import { otpDeliveryService } from './otpDeliveryService';
+import { plusofonService } from './plusofonService';
 
 const otpRequestWindowMs = 15 * 60 * 1000;
 const otpMaxPerPhoneWindow = 3;
@@ -18,6 +19,8 @@ export type OtpPurpose =
   | 'seller_payout_settings_verify'
   | 'password_reset';
 
+type OtpRequestStatus = 'pending' | 'verified' | 'expired' | 'failed' | 'cancelled';
+
 const purposeToDb: Record<OtpPurpose, PrismaOtpPurpose> = {
   buyer_register_phone: 'BUYER_REGISTER_PHONE',
   buyer_change_phone: 'BUYER_CHANGE_PHONE',
@@ -26,6 +29,17 @@ const purposeToDb: Record<OtpPurpose, PrismaOtpPurpose> = {
   seller_change_payout_details: 'SELLER_CHANGE_PAYOUT_DETAILS',
   seller_payout_settings_verify: 'SELLER_PAYOUT_SETTINGS_VERIFY',
   password_reset: 'PASSWORD_RESET'
+};
+
+const toJsonSafe = (value: unknown): Prisma.InputJsonValue => {
+  if (value === null || value === undefined) {
+    return {};
+  }
+  try {
+    return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+  } catch {
+    return { value: String(value) };
+  }
 };
 
 const formatPurpose = (purpose: OtpPurpose) => {
@@ -49,6 +63,95 @@ const formatPurpose = (purpose: OtpPurpose) => {
 
 export const otpService = {
   normalizePhone,
+
+  mapPlusofonStatus(statusRaw: string | null | undefined): OtpRequestStatus {
+    const normalized = (statusRaw ?? '').toLowerCase();
+    if (['success', 'verified', 'confirmed'].includes(normalized)) return 'verified';
+    if (normalized === 'expired') return 'expired';
+    if (normalized === 'failed') return 'failed';
+    if (normalized === 'cancelled' || normalized === 'canceled') return 'cancelled';
+    return 'pending';
+  },
+
+  async markOtpVerifiedByProviderRequestId(payload: {
+    requestId: string;
+    status?: OtpRequestStatus;
+    providerPayload?: unknown;
+  }) {
+    const otp = await prisma.phoneOtp.findFirst({
+      where: {
+        providerRequestId: payload.requestId,
+        provider: 'PLUSOFON'
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    if (!otp) {
+      return null;
+    }
+
+    const status = payload.status ?? 'verified';
+    const now = new Date();
+
+    const deliveryStatus: OtpDeliveryStatus =
+      status === 'expired' ? 'EXPIRED' : status === 'verified' ? 'DELIVERED' : 'REVOKED';
+
+    return prisma.phoneOtp.update({
+      where: { id: otp.id },
+      data: {
+        deliveryStatus,
+        consumedAt: status === 'verified' ? otp.consumedAt ?? now : otp.consumedAt,
+        providerPayload: payload.providerPayload ?? otp.providerPayload ?? undefined
+      }
+    });
+  },
+
+  async getOtpStatusByRequestId(requestId: string) {
+    const otp = await prisma.phoneOtp.findFirst({
+      where: { providerRequestId: requestId, provider: 'PLUSOFON' },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    if (!otp) {
+      throw new Error('OTP_INVALID');
+    }
+
+    if (otp.consumedAt) {
+      return { requestId, status: 'verified' as const, provider: 'plusofon' as const };
+    }
+
+    const now = new Date();
+    if (otp.expiresAt <= now) {
+      return { requestId, status: 'expired' as const, provider: 'plusofon' as const };
+    }
+
+    if (otp.deliveryStatus === 'REVOKED') {
+      return { requestId, status: 'cancelled' as const, provider: 'plusofon' as const };
+    }
+
+    if (otp.deliveryStatus === 'EXPIRED') {
+      return { requestId, status: 'expired' as const, provider: 'plusofon' as const };
+    }
+
+    if (plusofonService.isEnabled()) {
+      try {
+        const providerStatus = await plusofonService.checkStatus(requestId);
+        const mappedStatus = this.mapPlusofonStatus(providerStatus.status);
+        if (mappedStatus !== 'pending') {
+          await this.markOtpVerifiedByProviderRequestId({
+            requestId,
+            status: mappedStatus,
+            providerPayload: toJsonSafe(providerStatus.raw)
+          });
+        }
+        return { requestId, status: mappedStatus, provider: 'plusofon' as const };
+      } catch (error) {
+        console.warn('[OTP] plusofon status check failed', { requestId, error });
+      }
+    }
+
+    return { requestId, status: 'pending' as const, provider: 'plusofon' as const };
+  },
 
   async requestOtp(payload: { phone: string; purpose: OtpPurpose; ip?: string; userAgent?: string }) {
     const phone = normalizePhone(payload.phone);
@@ -75,6 +178,47 @@ export const otpService = {
 
     if (lastOtp && now.getTime() - lastOtp.createdAt.getTime() < env.otpCooldownSeconds * 1000) {
       return { ok: true, throttled: true };
+    }
+
+    const isPlusofonCallToAuth = env.otpProvider === 'plusofon' && payload.purpose === 'buyer_register_phone';
+
+    if (isPlusofonCallToAuth) {
+      const requested = await plusofonService.requestCallToAuth(phone);
+      const expiresAt = new Date(now.getTime() + env.plusofonVerificationExpiresSec * 1000);
+
+      await prisma.phoneOtp.create({
+        data: {
+          phone,
+          purpose,
+          codeHash: hashOtpCode(`plusofon:${requested.requestId}:${phone}:${now.toISOString()}`),
+          channel: 'PHONE_CALL',
+          provider: 'PLUSOFON',
+          providerRequestId: requested.requestId,
+          providerPayload: {
+            source: 'plusofon',
+            purpose: payload.purpose,
+            verificationType: requested.verificationType,
+            callToAuthNumber: requested.callToAuthNumber,
+            raw: toJsonSafe(requested.raw)
+          },
+          deliveryStatus: 'SENT',
+          maxAttempts: env.otpMaxAttempts,
+          ip: payload.ip,
+          userAgent: payload.userAgent,
+          expiresAt
+        }
+      });
+
+      return {
+        ok: true,
+        data: {
+          requestId: requested.requestId,
+          verificationType: requested.verificationType,
+          callToAuthNumber: requested.callToAuthNumber,
+          phone: requested.phone,
+          provider: 'plusofon' as const
+        }
+      };
     }
 
     const code = generateOtpCode();
@@ -180,6 +324,44 @@ export const otpService = {
       data: { consumedAt: now }
     });
     console.info('[OTP] verified', { phone, purpose: payload.purpose });
+
+    return { phone };
+  },
+
+  async verifyOtpByRequestId(payload: { phone: string; requestId: string; purpose: OtpPurpose }) {
+    const phone = normalizePhone(payload.phone);
+    const purpose = purposeToDb[payload.purpose];
+    const now = new Date();
+
+    const otp = await prisma.phoneOtp.findFirst({
+      where: {
+        phone,
+        purpose,
+        provider: 'PLUSOFON',
+        providerRequestId: payload.requestId
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    if (!otp) {
+      throw new Error('OTP_INVALID');
+    }
+
+    if (otp.expiresAt <= now) {
+      throw new Error('OTP_EXPIRED');
+    }
+
+    if (!otp.consumedAt) {
+      const statusResult = await this.getOtpStatusByRequestId(payload.requestId);
+      if (statusResult.status !== 'verified') {
+        throw new Error('OTP_INVALID');
+      }
+
+      await this.markOtpVerifiedByProviderRequestId({
+        requestId: payload.requestId,
+        status: 'verified'
+      });
+    }
 
     return { phone };
   },

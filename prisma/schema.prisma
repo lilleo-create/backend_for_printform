@@ -705,12 +705,14 @@ enum OtpChannel {
   TELEGRAM
   SMS
   CONSOLE
+  PHONE_CALL
 }
 
 enum OtpProvider {
   TELEGRAM_GATEWAY
   TWILIO
   CONSOLE
+  PLUSOFON
 }
 
 enum OtpDeliveryStatus {
