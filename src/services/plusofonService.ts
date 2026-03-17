@@ -94,12 +94,9 @@ console.log('[PLUSOFON DEBUG requestCallToAuth]', {
   plusofonBaseUrl: env.plusofonBaseUrl,
   plusofonFlashCallEndpoint: env.plusofonFlashCallEndpoint,
   plusofonWebhookPublicUrl: env.plusofonWebhookPublicUrl,
-  tokenLength: env.plusofonFlashAccessToken?.length ?? 0,
-  tokenPreview: env.plusofonFlashAccessToken
-    ? `${env.plusofonFlashAccessToken.slice(0, 6)}...${env.plusofonFlashAccessToken.slice(-6)}`
-    : 'EMPTY',
+  tokenConfigured: Boolean(env.plusofonFlashAccessToken),
   url,
-  headers: requestHeaders()
+  hasAuthorizationHeader: Boolean(requestHeaders().Authorization)
 });
     const requestId =
       pickFromRecord(candidate, ['request_id', 'requestId', 'id', 'key']) ??
@@ -134,7 +131,7 @@ console.log('[PLUSOFON DEBUG requestCallToAuth]', {
     }
     throw error;
   }
-}
+},
 
   async checkStatus(requestId: string): Promise<PlusofonStatusResult> {
     if (!this.isEnabled()) {

@@ -40,6 +40,8 @@ app.set("trust proxy", 1);
 app.disable("x-powered-by");
 const allowedOrigins = new Set([
     env_1.env.frontendUrl,
+    "https://print-form.ru",
+    "https://www.print-form.ru",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ].filter(Boolean));
