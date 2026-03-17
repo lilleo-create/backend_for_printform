@@ -71,17 +71,18 @@ export const plusofonService = {
     return Boolean(env.plusofonFlashAccessToken);
   },
 
-  async requestCallToAuth(phone: string): Promise<PlusofonRequestResult> {
-    if (!this.isEnabled()) {
-      throw new Error('PLUSOFON_NOT_CONFIGURED');
-    }
+async requestCallToAuth(phone: string): Promise<PlusofonRequestResult> {
+  if (!this.isEnabled()) {
+    throw new Error('PLUSOFON_NOT_CONFIGURED');
+  }
 
-    const url = buildUrl(env.plusofonFlashCallEndpoint);
-    const payload: Record<string, unknown> = {
-      phone,
-      hook_url: env.plusofonWebhookPublicUrl || undefined
-    };
+  const url = buildUrl(env.plusofonFlashCallEndpoint);
+  const payload: Record<string, unknown> = {
+    phone,
+    hook_url: env.plusofonWebhookPublicUrl || undefined
+  };
 
+  try {
     const response = await axios.post(url, payload, {
       headers: requestHeaders(),
       timeout: env.plusofonRequestTimeoutMs
@@ -89,7 +90,17 @@ export const plusofonService = {
 
     const raw = response.data as unknown;
     const candidate = getCandidateRecord(raw);
-
+console.log('[PLUSOFON DEBUG requestCallToAuth]', {
+  plusofonBaseUrl: env.plusofonBaseUrl,
+  plusofonFlashCallEndpoint: env.plusofonFlashCallEndpoint,
+  plusofonWebhookPublicUrl: env.plusofonWebhookPublicUrl,
+  tokenLength: env.plusofonFlashAccessToken?.length ?? 0,
+  tokenPreview: env.plusofonFlashAccessToken
+    ? `${env.plusofonFlashAccessToken.slice(0, 6)}...${env.plusofonFlashAccessToken.slice(-6)}`
+    : 'EMPTY',
+  url,
+  headers: requestHeaders()
+});
     const requestId =
       pickFromRecord(candidate, ['request_id', 'requestId', 'id', 'key']) ??
       pickString(response.headers['x-request-id']);
@@ -111,7 +122,19 @@ export const plusofonService = {
       phone: resolvedPhone,
       raw
     };
-  },
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      console.error('[PLUSOFON] requestCallToAuth failed', {
+        url,
+        payload,
+        status: error.response?.status,
+        responseData: error.response?.data,
+        responseHeaders: error.response?.headers
+      });
+    }
+    throw error;
+  }
+}
 
   async checkStatus(requestId: string): Promise<PlusofonStatusResult> {
     if (!this.isEnabled()) {

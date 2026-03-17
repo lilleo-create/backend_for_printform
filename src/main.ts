@@ -43,11 +43,12 @@ app.disable("x-powered-by");
 const allowedOrigins = new Set(
   [
     env.frontendUrl,
+    "https://print-form.ru",
+    "https://www.print-form.ru",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
   ].filter(Boolean)
 );
-
 /*
 |--------------------------------------------------------------------------
 | CORS HANDLER
