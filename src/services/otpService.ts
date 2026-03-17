@@ -6,6 +6,7 @@ import { generateOtpCode, hashOtpCode } from '../utils/otp';
 import { normalizePhone } from '../utils/phone';
 import { otpDeliveryService } from './otpDeliveryService';
 import { plusofonService } from './plusofonService';
+import axios from 'axios';
 
 const otpRequestWindowMs = 15 * 60 * 1000;
 const otpMaxPerPhoneWindow = 3;
@@ -20,6 +21,85 @@ export type OtpPurpose =
   | 'password_reset';
 
 type OtpRequestStatus = 'pending' | 'verified' | 'expired' | 'failed' | 'cancelled';
+
+export type OtpRequestErrorData = {
+  code:
+    | 'OTP_PROVIDER_AUTH_FAILED'
+    | 'OTP_PROVIDER_TIMEOUT'
+    | 'OTP_PROVIDER_UNAVAILABLE'
+    | 'OTP_REQUEST_FAILED';
+  message: string;
+};
+
+const providerUnavailableMessage = 'Не удалось получить номер для подтверждения. Попробуйте ещё раз позже';
+
+export type OtpRequestResult =
+  | {
+      ok: false;
+      error: OtpRequestErrorData;
+    }
+  | {
+      ok: true;
+      throttled: true;
+      data?: undefined;
+      devOtp?: undefined;
+      delivery?: undefined;
+    }
+  | {
+      ok: true;
+      data: {
+        requestId: string;
+        verificationType: 'call_to_auth';
+        callToAuthNumber: string | null;
+        phone: string;
+        provider: 'plusofon';
+      };
+      throttled?: undefined;
+      devOtp?: undefined;
+      delivery?: undefined;
+    }
+  | {
+      ok: true;
+      devOtp?: string;
+      delivery: {
+        channel: string;
+        provider: string;
+        deliveryStatus: string;
+        devMode: boolean;
+      };
+      data?: undefined;
+      throttled?: undefined;
+    };
+
+const mapPlusofonRequestError = (error: unknown): OtpRequestErrorData => {
+  if (axios.isAxiosError(error)) {
+    const status = error.response?.status;
+
+    if (status === 401 || status === 403) {
+      return {
+        code: 'OTP_PROVIDER_AUTH_FAILED',
+        message: 'Сервис подтверждения номера временно недоступен'
+      };
+    }
+
+    if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+      return {
+        code: 'OTP_PROVIDER_TIMEOUT',
+        message: providerUnavailableMessage
+      };
+    }
+
+    return {
+      code: 'OTP_PROVIDER_UNAVAILABLE',
+      message: providerUnavailableMessage
+    };
+  }
+
+  return {
+    code: 'OTP_REQUEST_FAILED',
+    message: 'Ошибка при запуске подтверждения номера'
+  };
+};
 
 const purposeToDb: Record<OtpPurpose, PrismaOtpPurpose> = {
   buyer_register_phone: 'BUYER_REGISTER_PHONE',
@@ -135,6 +215,8 @@ export const otpService = {
 
     if (plusofonService.isEnabled()) {
       try {
+        // TECH_DEBT: для plusofon при call-to-auth используем polling как fallback,
+        // основной источник истины должен оставаться webhook-поток провайдера.
         const providerStatus = await plusofonService.checkStatus(requestId);
         const mappedStatus = this.mapPlusofonStatus(providerStatus.status);
         if (mappedStatus !== 'pending') {
@@ -153,7 +235,7 @@ export const otpService = {
     return { requestId, status: 'pending' as const, provider: 'plusofon' as const };
   },
 
-  async requestOtp(payload: { phone: string; purpose: OtpPurpose; ip?: string; userAgent?: string }) {
+  async requestOtp(payload: { phone: string; purpose: OtpPurpose; ip?: string; userAgent?: string }): Promise<OtpRequestResult> {
     const phone = normalizePhone(payload.phone);
     const purpose = purposeToDb[payload.purpose];
     const now = new Date();
@@ -183,7 +265,25 @@ export const otpService = {
     const isPlusofonCallToAuth = env.otpProvider === 'plusofon' && payload.purpose === 'buyer_register_phone';
 
     if (isPlusofonCallToAuth) {
-      const requested = await plusofonService.requestCallToAuth(phone);
+      let requested;
+
+      try {
+        requested = await plusofonService.requestCallToAuth(phone);
+      } catch (error) {
+        const mappedError = mapPlusofonRequestError(error);
+        console.error('[OTP] plusofon request failed', {
+          phone,
+          purpose: payload.purpose,
+          mappedError,
+          sourceError: error
+        });
+
+        return {
+          ok: false,
+          error: mappedError
+        };
+      }
+
       const expiresAt = new Date(now.getTime() + env.plusofonVerificationExpiresSec * 1000);
 
       await prisma.phoneOtp.create({

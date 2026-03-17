@@ -60,26 +60,51 @@ exports.plusofonService = {
             phone,
             hook_url: env_1.env.plusofonWebhookPublicUrl || undefined
         };
-        const response = await axios_1.default.post(url, payload, {
-            headers: requestHeaders(),
-            timeout: env_1.env.plusofonRequestTimeoutMs
-        });
-        const raw = response.data;
-        const candidate = getCandidateRecord(raw);
-        const requestId = pickFromRecord(candidate, ['request_id', 'requestId', 'id', 'key']) ??
-            pickString(response.headers['x-request-id']);
-        if (!requestId) {
-            throw new Error('PLUSOFON_REQUEST_ID_MISSING');
+        try {
+            const response = await axios_1.default.post(url, payload, {
+                headers: requestHeaders(),
+                timeout: env_1.env.plusofonRequestTimeoutMs
+            });
+            const raw = response.data;
+            const candidate = getCandidateRecord(raw);
+            console.log('[PLUSOFON DEBUG requestCallToAuth]', {
+                plusofonBaseUrl: env_1.env.plusofonBaseUrl,
+                plusofonFlashCallEndpoint: env_1.env.plusofonFlashCallEndpoint,
+                plusofonWebhookPublicUrl: env_1.env.plusofonWebhookPublicUrl,
+                tokenLength: env_1.env.plusofonFlashAccessToken?.length ?? 0,
+                tokenPreview: env_1.env.plusofonFlashAccessToken
+                    ? `${env_1.env.plusofonFlashAccessToken.slice(0, 6)}...${env_1.env.plusofonFlashAccessToken.slice(-6)}`
+                    : 'EMPTY',
+                url,
+                headers: requestHeaders()
+            });
+            const requestId = pickFromRecord(candidate, ['request_id', 'requestId', 'id', 'key']) ??
+                pickString(response.headers['x-request-id']);
+            if (!requestId) {
+                throw new Error('PLUSOFON_REQUEST_ID_MISSING');
+            }
+            const callToAuthNumber = pickFromRecord(candidate, ['call_to_auth_number', 'number', 'phone_number']) ?? null;
+            const resolvedPhone = pickFromRecord(candidate, ['phone', 'recipient', 'phone_number']) ?? phone;
+            return {
+                requestId,
+                verificationType: 'call_to_auth',
+                callToAuthNumber,
+                phone: resolvedPhone,
+                raw
+            };
         }
-        const callToAuthNumber = pickFromRecord(candidate, ['call_to_auth_number', 'number', 'phone_number']) ?? null;
-        const resolvedPhone = pickFromRecord(candidate, ['phone', 'recipient', 'phone_number']) ?? phone;
-        return {
-            requestId,
-            verificationType: 'call_to_auth',
-            callToAuthNumber,
-            phone: resolvedPhone,
-            raw
-        };
+        catch (error) {
+            if (axios_1.default.isAxiosError(error)) {
+                console.error('[PLUSOFON] requestCallToAuth failed', {
+                    url,
+                    payload,
+                    status: error.response?.status,
+                    responseData: error.response?.data,
+                    responseHeaders: error.response?.headers
+                });
+            }
+            throw error;
+        }
     },
     async checkStatus(requestId) {
         if (!this.isEnabled()) {

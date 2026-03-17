@@ -247,6 +247,17 @@ authRoutes.post('/password-reset/request', otpRequestLimiter, async (req, res, n
       ip: req.ip,
       userAgent: req.get('user-agent')
     });
+
+    if (!result.ok) {
+      return res.status(500).json({
+        ok: false,
+        error: {
+          code: result.error.code,
+          message: result.error.message
+        }
+      });
+    }
+
     return res.json({ ok: true, devOtp: result.devOtp, delivery: result.delivery });
   } catch (error) {
     return next(error);
@@ -331,16 +342,49 @@ authRoutes.post('/otp/request', otpRequestLimiter, async (req, res, next) => {
       userAgent: req.get('user-agent')
     });
 
+    if (!result.ok) {
+      const status =
+        result.error.code === 'OTP_PROVIDER_TIMEOUT'
+          ? 504
+          : result.error.code === 'OTP_REQUEST_FAILED'
+          ? 500
+          : 503;
+
+      return res.status(status).json({
+        ok: false,
+        error: {
+          code: result.error.code,
+          message: result.error.message
+        }
+      });
+    }
+
+    if (result.throttled) {
+      return res.json({
+        ok: true,
+        data: null,
+        throttled: true
+      });
+    }
+
+    if (result.data) {
+      return res.json({
+        ok: true,
+        data: {
+          requestId: result.data.requestId,
+          verificationType: result.data.verificationType,
+          callToAuthNumber: result.data.callToAuthNumber,
+          phone: result.data.phone,
+          provider: result.data.provider
+        }
+      });
+    }
+
     return res.json({
-      ok: result.ok,
-      requestId: result.data?.requestId,
-      verificationType: result.data?.verificationType,
-      callToAuthNumber: result.data?.callToAuthNumber,
-      phone: result.data?.phone,
-      provider: result.data?.provider,
+      ok: true,
+      data: null,
       devOtp: result.devOtp,
-      delivery: result.delivery,
-      throttled: result.throttled
+      delivery: result.delivery
     });
   } catch (error) {
     return next(error);
