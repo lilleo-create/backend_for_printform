@@ -141,8 +141,13 @@ export const authService = {
 
     return { user };
   },
-  async login(email: string, password: string) {
-    const user = await userRepository.findByEmail(email);
+  async login(login: { email?: string; phone?: string }, password: string) {
+    const user = login.phone
+      ? await userRepository.findByPhone(login.phone)
+      : login.email
+      ? await userRepository.findByEmail(login.email)
+      : null;
+
     if (!user) {
       throw new Error('INVALID_CREDENTIALS');
     }

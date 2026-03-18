@@ -13,14 +13,21 @@ import { prisma } from '../lib/prisma';
 
 export const authRoutes = Router();
 
-const loginSchema = z.object({
-  email: z.string().email(),
+const loginFieldsSchema = z.object({
+  email: z.string().email().optional(),
+  phone: z.string().min(5).optional(),
   password: z.string().min(6)
+});
+
+const loginSchema = loginFieldsSchema.refine((value) => Boolean(value.phone || value.email), {
+  message: 'phone or email is required',
+  path: ['phone']
 });
 
 const fullNameSchema = z.string().trim().min(3).max(120).regex(/^[A-Za-zА-Яа-яЁё\-\s]+$/, 'Допустимы буквы, пробел и дефис').refine((value) => value.split(/\s+/).filter(Boolean).length >= 2, 'Введите ФИО минимум из двух слов');
 
-const registerSchema = loginSchema.extend({
+const registerSchema = loginFieldsSchema.omit({ phone: true, email: true }).extend({
+  email: z.string().email(),
   name: z.string().trim().min(2),
   fullName: fullNameSchema,
   phone: z.string().min(5),
@@ -59,7 +66,11 @@ const passwordResetRequestSchema = z.object({
 
 const passwordResetVerifySchema = z.object({
   phone: z.string().min(5),
-  code: z.string().min(4)
+  code: z.string().min(4).optional(),
+  requestId: z.string().min(2).optional()
+}).refine((value) => Boolean(value.code || value.requestId), {
+  message: 'code or requestId is required',
+  path: ['code']
 });
 
 const passwordResetConfirmSchema = z.object({
@@ -165,7 +176,14 @@ authRoutes.post('/register', authLimiter, async (req, res, next) => {
 authRoutes.post('/login', authLimiter, async (req, res, next) => {
   try {
     const payload = loginSchema.parse(req.body);
-    const result = await authService.login(payload.email, payload.password);
+    const phone = payload.phone ? normalizePhone(payload.phone) : undefined;
+    const result = await authService.login(
+      {
+        phone,
+        email: payload.email?.trim().toLowerCase()
+      },
+      payload.password
+    );
     if (!result.user.phoneVerifiedAt) {
       const tempToken = authService.issueOtpToken(result.user);
       return res.json({
@@ -258,6 +276,19 @@ authRoutes.post('/password-reset/request', otpRequestLimiter, async (req, res, n
       });
     }
 
+    if (result.data) {
+      return res.json({
+        ok: true,
+        data: {
+          requestId: result.data.requestId,
+          verificationType: result.data.verificationType,
+          callToAuthNumber: result.data.callToAuthNumber,
+          phone: result.data.phone,
+          provider: result.data.provider
+        }
+      });
+    }
+
     return res.json({ ok: true, devOtp: result.devOtp, delivery: result.delivery });
   } catch (error) {
     return next(error);
@@ -272,7 +303,16 @@ authRoutes.post('/password-reset/verify', otpVerifyLimiter, async (req, res, nex
     if (!user) {
       return res.status(404).json({ error: { code: 'NOT_FOUND' } });
     }
-    await otpService.verifyOtp({ phone, code: payload.code, purpose: 'password_reset' });
+    if (payload.requestId) {
+      await otpService.verifyOtpByRequestId({
+        phone,
+        requestId: payload.requestId,
+        purpose: 'password_reset'
+      });
+    } else if (payload.code) {
+      await otpService.verifyOtp({ phone, code: payload.code, purpose: 'password_reset' });
+    }
+
     const resetToken = createPasswordResetToken({ userId: user.id });
     return res.json({ ok: true, resetToken });
   } catch (error) {

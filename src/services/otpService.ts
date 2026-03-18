@@ -243,7 +243,9 @@ export const otpService = {
       return { ok: true, throttled: true };
     }
 
-    const isPlusofonCallToAuth = env.otpProvider === 'plusofon' && payload.purpose === 'buyer_register_phone';
+    const isPlusofonCallToAuth =
+      env.otpProvider === 'plusofon' &&
+      ['buyer_register_phone', 'password_reset'].includes(payload.purpose);
 
     if (isPlusofonCallToAuth) {
       let requested;
