@@ -126,8 +126,12 @@ exports.authService = {
         });
         return { user };
     },
-    async login(email, password) {
-        const user = await userRepository_1.userRepository.findByEmail(email);
+    async login(login, password) {
+        const user = login.phone
+            ? await userRepository_1.userRepository.findByPhone(login.phone)
+            : login.email
+                ? await userRepository_1.userRepository.findByEmail(login.email)
+                : null;
         if (!user) {
             throw new Error('INVALID_CREDENTIALS');
         }
