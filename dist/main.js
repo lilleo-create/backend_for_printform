@@ -90,6 +90,10 @@ app.use(express_1.default.json({
             buffer.toString("utf8");
     },
 }));
+app.use(express_1.default.urlencoded({
+    extended: true,
+    limit: "1mb",
+}));
 app.use((0, cookie_parser_1.default)());
 /*
 |--------------------------------------------------------------------------

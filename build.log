@@ -1,0 +1,5 @@
+nohup: ignoring input
+
+> print-form-backend@1.0.0 build
+> tsc
+

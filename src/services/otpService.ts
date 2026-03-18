@@ -213,25 +213,6 @@ export const otpService = {
       return { requestId, status: 'expired' as const, provider: 'plusofon' as const };
     }
 
-    if (plusofonService.isEnabled()) {
-      try {
-        // TECH_DEBT: для plusofon при call-to-auth используем polling как fallback,
-        // основной источник истины должен оставаться webhook-поток провайдера.
-        const providerStatus = await plusofonService.checkStatus(requestId);
-        const mappedStatus = this.mapPlusofonStatus(providerStatus.status);
-        if (mappedStatus !== 'pending') {
-          await this.markOtpVerifiedByProviderRequestId({
-            requestId,
-            status: mappedStatus,
-            providerPayload: toJsonSafe(providerStatus.raw)
-          });
-        }
-        return { requestId, status: mappedStatus, provider: 'plusofon' as const };
-      } catch (error) {
-        console.warn('[OTP] plusofon status check failed', { requestId, error });
-      }
-    }
-
     return { requestId, status: 'pending' as const, provider: 'plusofon' as const };
   },
 

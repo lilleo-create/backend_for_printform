@@ -45,6 +45,7 @@ const buildUrl = (endpoint) => {
 };
 const requestHeaders = () => ({
     Authorization: `Bearer ${env_1.env.plusofonFlashAccessToken}`,
+    Client: env_1.env.plusofonClientId,
     'Content-Type': 'application/json'
 });
 exports.plusofonService = {
@@ -66,24 +67,30 @@ exports.plusofonService = {
                 timeout: env_1.env.plusofonRequestTimeoutMs
             });
             const raw = response.data;
+            console.log('[PLUSOFON RAW requestCallToAuth]', JSON.stringify(raw, null, 2));
             const candidate = getCandidateRecord(raw);
             console.log('[PLUSOFON DEBUG requestCallToAuth]', {
                 plusofonBaseUrl: env_1.env.plusofonBaseUrl,
                 plusofonFlashCallEndpoint: env_1.env.plusofonFlashCallEndpoint,
                 plusofonWebhookPublicUrl: env_1.env.plusofonWebhookPublicUrl,
-                tokenLength: env_1.env.plusofonFlashAccessToken?.length ?? 0,
-                tokenPreview: env_1.env.plusofonFlashAccessToken
-                    ? `${env_1.env.plusofonFlashAccessToken.slice(0, 6)}...${env_1.env.plusofonFlashAccessToken.slice(-6)}`
-                    : 'EMPTY',
+                tokenConfigured: Boolean(env_1.env.plusofonFlashAccessToken),
                 url,
-                headers: requestHeaders()
+                hasAuthorizationHeader: Boolean(requestHeaders().Authorization)
             });
             const requestId = pickFromRecord(candidate, ['request_id', 'requestId', 'id', 'key']) ??
                 pickString(response.headers['x-request-id']);
             if (!requestId) {
                 throw new Error('PLUSOFON_REQUEST_ID_MISSING');
             }
-            const callToAuthNumber = pickFromRecord(candidate, ['call_to_auth_number', 'number', 'phone_number']) ?? null;
+            const callToAuthNumber = pickFromRecord(candidate, [
+                'call_to_auth_number',
+                'number',
+                'phone_number',
+                'phone',
+                'caller_id',
+                'redirect_number',
+                'auth_number'
+            ]) ?? null;
             const resolvedPhone = pickFromRecord(candidate, ['phone', 'recipient', 'phone_number']) ?? phone;
             return {
                 requestId,
@@ -117,6 +124,7 @@ exports.plusofonService = {
             timeout: env_1.env.plusofonRequestTimeoutMs
         });
         const raw = response.data;
+        console.log('[PLUSOFON RAW checkStatus]', JSON.stringify(raw, null, 2));
         const candidate = getCandidateRecord(raw);
         const status = pickFromRecord(candidate, ['status', 'state']) ?? 'pending';
         return {

@@ -115,6 +115,13 @@ app.use(
   })
 );
 
+app.use(
+  express.urlencoded({
+    extended: true,
+    limit: "1mb",
+  })
+);
+
 app.use(cookieParser());
 
 /*

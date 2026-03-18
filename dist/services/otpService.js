@@ -136,23 +136,6 @@ exports.otpService = {
         if (otp.deliveryStatus === 'EXPIRED') {
             return { requestId, status: 'expired', provider: 'plusofon' };
         }
-        if (plusofonService_1.plusofonService.isEnabled()) {
-            try {
-                const providerStatus = await plusofonService_1.plusofonService.checkStatus(requestId);
-                const mappedStatus = this.mapPlusofonStatus(providerStatus.status);
-                if (mappedStatus !== 'pending') {
-                    await this.markOtpVerifiedByProviderRequestId({
-                        requestId,
-                        status: mappedStatus,
-                        providerPayload: toJsonSafe(providerStatus.raw)
-                    });
-                }
-                return { requestId, status: mappedStatus, provider: 'plusofon' };
-            }
-            catch (error) {
-                console.warn('[OTP] plusofon status check failed', { requestId, error });
-            }
-        }
         return { requestId, status: 'pending', provider: 'plusofon' };
     },
     async requestOtp(payload) {

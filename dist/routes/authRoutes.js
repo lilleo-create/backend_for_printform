@@ -519,18 +519,31 @@ exports.authRoutes.post('/otp/telegram/callback', async (req, res, next) => {
 });
 exports.authRoutes.post('/otp/plusofon/webhook', async (req, res, next) => {
     try {
+        console.info('[PLUSOFON WEBHOOK HEADERS]', req.headers);
+        console.info('[PLUSOFON WEBHOOK BODY]', req.body);
         if (env_1.env.plusofonWebhookSecret) {
             const headerSecret = req.get('X-Webhook-Secret') ?? req.get('X-Plusofon-Secret') ?? '';
             if (!headerSecret || headerSecret !== env_1.env.plusofonWebhookSecret) {
+                console.warn('[PLUSOFON WEBHOOK] invalid signature', {
+                    headerSecretPresent: Boolean(headerSecret)
+                });
                 return res.status(401).json({ error: { code: 'INVALID_SIGNATURE' } });
             }
         }
         const body = req.body;
         const parsed = parsePlusofonWebhookPayload(body);
+        console.info('[PLUSOFON WEBHOOK PARSED]', parsed);
         if (!parsed.requestId) {
             return res.status(200).json({ ok: true, ignored: true });
         }
-        const mapped = otpService_1.otpService.mapPlusofonStatus(parsed.status);
+        const effectiveStatus = parsed.status ?? (parsed.phone ? 'verified' : 'pending');
+        const mapped = otpService_1.otpService.mapPlusofonStatus(effectiveStatus);
+        console.info('[PLUSOFON WEBHOOK STATUS]', {
+            requestId: parsed.requestId,
+            providerStatus: parsed.status,
+            effectiveStatus,
+            mappedStatus: mapped
+        });
         if (mapped !== 'pending') {
             await otpService_1.otpService.markOtpVerifiedByProviderRequestId({
                 requestId: parsed.requestId,

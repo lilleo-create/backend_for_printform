@@ -42,8 +42,9 @@ if (otpProvider === 'telegram' && !telegramGatewayToken && isProduction) {
     throw new Error('TELEGRAM_GATEWAY_TOKEN is required when OTP_PROVIDER=telegram in production');
 }
 const plusofonBaseUrl = process.env.PLUSOFON_BASE_URL ?? 'https://api.plusofon.ru';
-const plusofonFlashCallEndpoint = process.env.PLUSOFON_FLASH_CALL_ENDPOINT ?? '/api/v1/flash-call/send';
+const plusofonFlashCallEndpoint = process.env.PLUSOFON_FLASH_CALL_ENDPOINT ?? '/api/v1/flash-call/call-to-auth';
 const plusofonFlashAccessToken = process.env.PLUSOFON_FLASH_ACCESS_TOKEN ?? '';
+const plusofonClientId = process.env.PLUSOFON_CLIENT_ID ?? '10553';
 const plusofonWebhookPublicUrl = process.env.PLUSOFON_WEBHOOK_PUBLIC_URL ?? '';
 const plusofonWebhookSecret = process.env.PLUSOFON_WEBHOOK_SECRET ?? '';
 const plusofonRequestTimeoutMs = Number(process.env.PLUSOFON_REQUEST_TIMEOUT_MS ?? 10000);
@@ -86,6 +87,7 @@ exports.env = {
     plusofonBaseUrl,
     plusofonFlashCallEndpoint,
     plusofonFlashAccessToken,
+    plusofonClientId,
     plusofonWebhookPublicUrl,
     plusofonWebhookSecret,
     plusofonRequestTimeoutMs,
