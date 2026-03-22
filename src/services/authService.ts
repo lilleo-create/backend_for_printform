@@ -13,7 +13,7 @@ const createRefreshToken = (payload: { userId: string; role: string }) => {
   return jwt.sign(payload, env.jwtRefreshSecret, { expiresIn: `${env.authRefreshTokenTtlDays}d` });
 };
 
-const createOtpToken = (payload: { userId?: string; registrationSessionId?: string; scope: 'otp' | 'otp_register' | 'otp_login_device' }) => {
+const createOtpToken = (payload: { userId?: string; registrationSessionId?: string; scope: 'otp' | 'otp_register' | 'otp_login_device' | 'otp_password_reset' }) => {
   return jwt.sign(payload, env.jwtSecret, { expiresIn: '10m' });
 };
 
@@ -50,6 +50,9 @@ export const authService = {
   },
   issueLoginDeviceOtpToken(user: { id: string }) {
     return createOtpToken({ userId: user.id, scope: 'otp_login_device' });
+  },
+  issuePasswordResetOtpToken(user: { id: string }) {
+    return createOtpToken({ userId: user.id, scope: 'otp_password_reset' });
   },
   async startRegistration(
     nickname: string,
