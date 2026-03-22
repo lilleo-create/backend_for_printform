@@ -182,6 +182,32 @@ const sellerFulfillmentStepsSchema = zod_1.z.object({
     isLabelPrinted: zod_1.z.boolean().optional(),
     isActPrinted: zod_1.z.boolean().optional()
 });
+const normalizeProductMediaInput = (payload) => {
+    if (payload.media !== undefined) {
+        return payload.media.map((item, index) => ({
+            type: item.type,
+            url: item.url,
+            isPrimary: item.isPrimary ?? false,
+            sortOrder: item.sortOrder ?? index
+        }));
+    }
+    const imageUrls = payload.imageUrls ?? (payload.image ? [payload.image] : []);
+    const videoUrls = payload.videoUrls ?? [];
+    return [
+        ...imageUrls.map((url, index) => ({
+            type: 'IMAGE',
+            url,
+            isPrimary: index === 0,
+            sortOrder: index
+        })),
+        ...videoUrls.map((url, index) => ({
+            type: 'VIDEO',
+            url,
+            isPrimary: false,
+            sortOrder: imageUrls.length + index
+        }))
+    ];
+};
 function readPreparationChecklist(statusRaw) {
     const raw = (statusRaw && typeof statusRaw === 'object' ? statusRaw : {});
     const prep = (raw.preparationChecklist && typeof raw.preparationChecklist === 'object' ? raw.preparationChecklist : {});
@@ -509,7 +535,10 @@ exports.sellerRoutes.get('/products', async (req, res, next) => {
         }
         const sellerProducts = await prisma_1.prisma.product.findMany({
             where: { sellerId: req.user.userId },
-            include: { images: { orderBy: { sortOrder: 'asc' } } }
+            include: {
+                images: { orderBy: { sortOrder: 'asc' } },
+                media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] }
+            }
         });
         res.json({ data: sellerProducts });
     }
@@ -526,12 +555,12 @@ exports.sellerRoutes.post('/products', rateLimiters_1.writeLimiter, async (req, 
         const payload = productRoutes_1.sellerProductSchema.parse(req.body);
         const normalizedCategory = await ensureReferenceCategory(payload.category);
         const skuFallback = payload.sku ?? `SKU-${Date.now()}`;
-        if (!payload.imageUrls?.length && !payload.image) {
+        const media = normalizeProductMediaInput(payload);
+        const imageMedia = media.filter((item) => item.type === 'IMAGE');
+        const videoMedia = media.filter((item) => item.type === 'VIDEO');
+        if (!imageMedia.length) {
             return res.status(400).json({ error: { code: 'IMAGE_REQUIRED' } });
         }
-        const providedImageUrls = payload.imageUrls ?? [];
-        const imageUrls = providedImageUrls.length ? providedImageUrls : payload.image ? [payload.image] : [];
-        const videoUrls = payload.videoUrls ?? [];
         const product = await productUseCases_1.productUseCases.create({
             ...payload,
             category: normalizedCategory,
@@ -540,9 +569,10 @@ exports.sellerRoutes.post('/products', rateLimiters_1.writeLimiter, async (req, 
             sku: skuFallback,
             currency: payload.currency ?? 'RUB',
             sellerId: req.user.userId,
-            image: imageUrls[0],
-            imageUrls,
-            videoUrls,
+            image: imageMedia[0].url,
+            imageUrls: imageMedia.map((item) => item.url),
+            videoUrls: videoMedia.map((item) => item.url),
+            media
         });
         res.status(201).json({ data: product });
     }
@@ -561,8 +591,11 @@ exports.sellerRoutes.put('/products/:id', rateLimiters_1.writeLimiter, async (re
         }
         const payload = productRoutes_1.sellerProductSchema.partial().parse(req.body);
         const normalizedCategory = payload.category ? await ensureReferenceCategory(payload.category) : undefined;
-        const imageUrls = payload.imageUrls ?? (payload.image ? [payload.image] : undefined);
-        const videoUrls = payload.videoUrls;
+        const media = payload.media !== undefined || payload.imageUrls !== undefined || payload.videoUrls !== undefined || payload.image !== undefined
+            ? normalizeProductMediaInput(payload)
+            : undefined;
+        const imageMedia = media?.filter((item) => item.type === 'IMAGE') ?? [];
+        const videoMedia = media?.filter((item) => item.type === 'VIDEO') ?? [];
         const product = await productUseCases_1.productUseCases.update(req.params.id, {
             ...payload,
             category: normalizedCategory ?? payload.category,
@@ -571,9 +604,10 @@ exports.sellerRoutes.put('/products/:id', rateLimiters_1.writeLimiter, async (re
             sku: payload.sku,
             currency: payload.currency,
             sellerId: req.user.userId,
-            image: imageUrls?.[0] ?? payload.image,
-            imageUrls,
-            videoUrls,
+            image: imageMedia[0]?.url ?? payload.image,
+            imageUrls: media ? imageMedia.map((item) => item.url) : undefined,
+            videoUrls: media ? videoMedia.map((item) => item.url) : undefined,
+            media
         });
         res.json({ data: product });
     }

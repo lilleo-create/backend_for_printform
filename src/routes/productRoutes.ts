@@ -75,6 +75,16 @@ export const sellerProductSchema = z.object({
   image: mediaUrlSchema.optional(),
   imageUrls: z.array(mediaUrlSchema).optional(),
   videoUrls: z.array(mediaUrlSchema).optional(),
+  media: z
+    .array(
+      z.object({
+        type: z.enum(['IMAGE', 'VIDEO']),
+        url: mediaUrlSchema,
+        isPrimary: z.boolean().optional(),
+        sortOrder: z.number().int().min(0).optional()
+      })
+    )
+    .optional(),
   description: z.string().min(5),
   descriptionShort: z.string().min(5).optional(),
   descriptionFull: z.string().min(10).optional(),

@@ -128,9 +128,25 @@ model Product {
   moderatedBy           User?                   @relation("ProductModerator", fields: [moderatedById], references: [id])
   seller                User                    @relation(fields: [sellerId], references: [id])
   images                ProductImage[]
+  media                 ProductMedia[]
   specs                 ProductSpec[]
   variants              ProductVariant[]
   reviews               Review[]
+}
+
+model ProductMedia {
+  id        String           @id @default(cuid())
+  productId String
+  type      ProductMediaType
+  url       String
+  isPrimary Boolean          @default(false)
+  sortOrder Int              @default(0)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+  product   Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, sortOrder])
+  @@index([productId, type, sortOrder])
 }
 
 model ProductImage {
@@ -665,6 +681,11 @@ enum ProductModerationStatus {
   REJECTED
   NEEDS_EDIT
   ARCHIVED
+}
+
+enum ProductMediaType {
+  IMAGE
+  VIDEO
 }
 
 enum OrderStatus {
