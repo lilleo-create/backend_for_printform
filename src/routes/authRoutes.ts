@@ -14,8 +14,16 @@ import { deviceTrustService } from '../services/deviceTrustService';
 
 export const authRoutes = Router();
 
+const loginIdentifierSchema = z.object({
+  phone: z.string().min(5).optional(),
+  email: z.string().trim().min(5).optional(),
+  password: z.string().min(6)
+}).transform((value) => ({
+  password: value.password,
+  phone: value.phone?.trim() || value.email?.trim() || undefined
+})).refine((value) => Boolean(value.phone), { message: 'phone is required', path: ['phone'] });
+const loginSchema = loginIdentifierSchema;
 const loginFieldsSchema = z.object({ email: z.string().email().optional(), phone: z.string().min(5).optional(), password: z.string().min(6) });
-const loginSchema = loginFieldsSchema.refine((value) => Boolean(value.phone || value.email), { message: 'phone or email is required', path: ['phone'] });
 const fullNameSchema = z.string().trim().min(3).max(120).regex(/^[A-Za-zА-Яа-яЁё\-\s]+$/, 'Допустимы буквы, пробел и дефис').refine((value) => value.split(/\s+/).filter(Boolean).length >= 2, 'Введите ФИО минимум из двух слов');
 const registerSchema = loginFieldsSchema.omit({ phone: true, email: true }).extend({ email: z.string().email(), name: z.string().trim().min(2), fullName: fullNameSchema, phone: z.string().min(5), address: z.string().min(3).optional(), privacyAccepted: z.boolean().optional(), role: z.enum(['BUYER', 'SELLER']).optional() });
 const updateProfileSchema = z.object({ name: z.string().trim().min(2).optional(), fullName: z.string().trim().min(2).max(120).transform((value) => value.replace(/\s+/g, ' ')).optional(), email: z.string().email().optional(), phone: z.string().min(5).optional(), address: z.string().min(3).optional() });
@@ -58,8 +66,9 @@ authRoutes.post('/login', authLimiter, async (req, res, next) => {
   try {
     await deviceTrustService.cleanupExpired();
     const payload = loginSchema.parse(req.body);
-    const phone = payload.phone ? normalizePhone(payload.phone) : undefined;
-    const result = await authService.login({ phone, email: payload.email?.trim().toLowerCase() }, payload.password);
+    if (!payload.phone) return res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'phone is required' } });
+    const phone = normalizePhone(payload.phone);
+    const result = await authService.login({ phone }, payload.password);
     const user = result.user;
 
     if (!user.phoneVerifiedAt) {
