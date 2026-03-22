@@ -49,10 +49,22 @@ const purposeToDb: Record<OtpPurpose, PrismaOtpPurpose> = {
 const toJsonSafe = (value: unknown): Prisma.InputJsonValue => { try { return value == null ? {} : JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue; } catch { return { value: String(value) }; } };
 const formatPurpose = (purpose: OtpPurpose) => ({ buyer_register_phone: 'подтверждения телефона при регистрации', buyer_change_phone: 'смены телефона', buyer_sensitive_action: 'подтверждения чувствительного действия', seller_connect_phone: 'подключения продавца', seller_change_payout_details: 'изменения реквизитов продавца', seller_payout_settings_verify: 'подтверждения настроек выплат', password_reset: 'сброса пароля', login_device: 'подтверждения нового устройства' }[purpose]);
 
-const requestPlusofonOtp = async (payload: { phone: string; purpose: OtpPurpose; ip?: string; userAgent?: string }): Promise<OtpRequestResult> => {
+const guardOtpRequestRateLimits = async (phone: string, purpose: PrismaOtpPurpose) => {
+  const now = new Date();
+  const windowStart = new Date(now.getTime() - otpRequestWindowMs);
+  const recentCount = await prisma.phoneOtp.count({ where: { phone, purpose, createdAt: { gte: windowStart } } });
+  if (recentCount >= otpMaxPerPhoneWindow) return { throttled: true as const, now };
+  const lastOtp = await prisma.phoneOtp.findFirst({ where: { phone, purpose }, orderBy: { createdAt: 'desc' } });
+  if (lastOtp && now.getTime() - lastOtp.createdAt.getTime() < env.otpCooldownSeconds * 1000) return { throttled: true as const, now };
+  return { throttled: false as const, now };
+};
+
+const requestPlusofonOtp = async (payload: { phone: string; purpose: OtpPurpose; ip?: string; userAgent?: string; skipRateLimit?: boolean }): Promise<OtpRequestResult> => {
   const phone = normalizePhone(payload.phone);
   const purpose = purposeToDb[payload.purpose];
-  const now = new Date();
+  const rateLimit = payload.skipRateLimit ? { throttled: false as const, now: new Date() } : await guardOtpRequestRateLimits(phone, purpose);
+  if (rateLimit.throttled) return { ok: true, throttled: true };
+  const now = rateLimit.now;
   let requested;
   try { requested = await plusofonService.requestCallToAuth(phone); } catch (error) { return { ok: false, error: mapPlusofonRequestError(error) }; }
   const expiresAt = new Date(now.getTime() + env.plusofonVerificationExpiresSec * 1000);
@@ -69,10 +81,11 @@ export const otpService = {
   async markOtpVerifiedByProviderRequestId(payload: { requestId: string; status?: OtpRequestStatus; providerPayload?: unknown; }) { const otp = await prisma.phoneOtp.findFirst({ where: { providerRequestId: payload.requestId, provider: 'PLUSOFON' }, orderBy: { createdAt: 'desc' } }); if (!otp) return null; const status = payload.status ?? 'verified'; const now = new Date(); const deliveryStatus: OtpDeliveryStatus = status === 'expired' ? 'EXPIRED' : status === 'verified' ? 'DELIVERED' : 'REVOKED'; return prisma.phoneOtp.update({ where: { id: otp.id }, data: { deliveryStatus, consumedAt: status === 'verified' ? otp.consumedAt ?? now : otp.consumedAt, providerPayload: payload.providerPayload ?? otp.providerPayload ?? undefined } }); },
   async getOtpStatusByRequestId(requestId: string) { const otp = await prisma.phoneOtp.findFirst({ where: { providerRequestId: requestId, provider: 'PLUSOFON' }, orderBy: { createdAt: 'desc' } }); if (!otp) throw new Error('OTP_INVALID'); if (otp.consumedAt) return { requestId, status: 'verified' as const, provider: 'plusofon' as const }; const now = new Date(); if (otp.expiresAt <= now) return { requestId, status: 'expired' as const, provider: 'plusofon' as const }; if (otp.deliveryStatus === 'REVOKED') return { requestId, status: 'cancelled' as const, provider: 'plusofon' as const }; if (otp.deliveryStatus === 'EXPIRED') return { requestId, status: 'expired' as const, provider: 'plusofon' as const }; return { requestId, status: 'pending' as const, provider: 'plusofon' as const }; },
   async requestOtp(payload: { phone: string; purpose: OtpPurpose; ip?: string; userAgent?: string }): Promise<OtpRequestResult> {
-    const phone = normalizePhone(payload.phone); const purpose = purposeToDb[payload.purpose]; const now = new Date(); const windowStart = new Date(now.getTime() - otpRequestWindowMs);
-    const recentCount = await prisma.phoneOtp.count({ where: { phone, purpose, createdAt: { gte: windowStart } } }); if (recentCount >= otpMaxPerPhoneWindow) return { ok: true, throttled: true };
-    const lastOtp = await prisma.phoneOtp.findFirst({ where: { phone, purpose }, orderBy: { createdAt: 'desc' } }); if (lastOtp && now.getTime() - lastOtp.createdAt.getTime() < env.otpCooldownSeconds * 1000) return { ok: true, throttled: true };
-    const isPlusofonCallToAuth = env.otpProvider === 'plusofon' && ['buyer_register_phone', 'password_reset', 'login_device'].includes(payload.purpose); if (isPlusofonCallToAuth) return requestPlusofonOtp(payload as any);
+    const phone = normalizePhone(payload.phone); const purpose = purposeToDb[payload.purpose];
+    const rateLimit = await guardOtpRequestRateLimits(phone, purpose); if (rateLimit.throttled) return { ok: true, throttled: true };
+    if (payload.purpose === 'password_reset' || payload.purpose === 'login_device') return requestPlusofonOtp({ ...payload, phone, skipRateLimit: true });
+    const isPlusofonCallToAuth = env.otpProvider === 'plusofon' && payload.purpose === 'buyer_register_phone'; if (isPlusofonCallToAuth) return requestPlusofonOtp({ ...payload, phone, skipRateLimit: true });
+    const now = rateLimit.now;
     const code = generateOtpCode(); const expiresAt = new Date(now.getTime() + env.otpTtlMinutes * 60 * 1000); const created = await prisma.phoneOtp.create({ data: { phone, purpose, codeHash: hashOtpCode(code), expiresAt, maxAttempts: env.otpMaxAttempts, ip: payload.ip, userAgent: payload.userAgent, providerPayload: { source: 'backend', purpose: payload.purpose } } });
     const message = `Ваш код для ${formatPurpose(payload.purpose)}: ${code}`; const callbackUrl = `${env.backendUrl.replace(/\/$/, '')}/auth/otp/telegram/callback`; const internalRequestId = `otp_${created.id}_${Date.now()}`; const providerPayload = created.id;
     const delivery = await otpDeliveryService.sendOtp({ phone, code, ttlSeconds: env.otpTtlMinutes * 60, message, requestId: internalRequestId, callbackUrl, providerPayload });

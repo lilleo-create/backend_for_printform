@@ -101,8 +101,8 @@ export const authService = {
 
     return { user };
   },
-  async login(login: { email?: string; phone?: string }, password: string) {
-    const user = login.phone ? await userRepository.findByPhone(login.phone) : login.email ? await userRepository.findByEmail(login.email) : null;
+  async login(login: { phone: string }, password: string) {
+    const user = await userRepository.findByPhone(login.phone);
     if (!user) throw new Error('INVALID_CREDENTIALS');
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) throw new Error('INVALID_CREDENTIALS');
