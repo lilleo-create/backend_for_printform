@@ -170,3 +170,53 @@ test('POST /auth/otp/verify completes login_device challenge via existing OTP en
   assert.equal(response.body.data.session.trustedDevice, true);
   assert.equal(response.headers['set-cookie']?.some((value: string) => value.includes(`${env.trustedDeviceCookieName}=trusted-token`)), true);
 });
+
+
+test('POST /auth/password-reset/request starts the existing OTP flow and returns reusable challenge contract', async () => {
+  let otpRequests = 0;
+  (userRepository.findByPhone as unknown as (phone: string) => Promise<typeof baseUser | null>) = async (phone) => {
+    assert.equal(phone, '+79991234567');
+    return baseUser;
+  };
+  (otpService.requestOtp as unknown as (payload: { phone: string; purpose: string }) => Promise<{ ok: true; data: { requestId: string; phone: string; provider: 'plusofon'; verificationType: 'call_to_auth'; callToAuthNumber: string | null } }>) = async (payload) => {
+    otpRequests += 1;
+    assert.equal(payload.phone, '+79991234567');
+    assert.equal(payload.purpose, 'password_reset');
+    return { ok: true, data: { requestId: 'reset-req-1', phone: '+79991234567', provider: 'plusofon', verificationType: 'call_to_auth', callToAuthNumber: '+78005553535' } };
+  };
+
+  const response = await request(buildApp())
+    .post('/auth/password-reset/request')
+    .send({ phone: '+7 (999) 123-45-67' });
+
+  assert.equal(response.status, 200);
+  assert.equal(otpRequests, 1);
+  assert.equal(response.body.verificationMethod, 'existing_otp_flow');
+  assert.equal(response.body.requestId, 'reset-req-1');
+  assert.equal(response.body.phone, '+79991234567');
+  assert.equal(typeof response.body.tempToken, 'string');
+  assert.equal(response.body.requiresPasswordResetVerification, true);
+});
+
+test('POST /auth/password-reset/verify validates password reset via the existing OTP token flow', async () => {
+  const tempToken = authService.issuePasswordResetOtpToken({ id: baseUser.id });
+  (userRepository.findById as unknown as (id: string) => Promise<typeof baseUser | null>) = async (id) => {
+    assert.equal(id, baseUser.id);
+    return baseUser;
+  };
+  (otpService.verifyOtpByRequestId as unknown as (payload: { phone: string; requestId: string; purpose: string }) => Promise<{ phone: string }>) = async (payload) => {
+    assert.equal(payload.phone, '+7 (999) 123-45-67');
+    assert.equal(payload.requestId, 'reset-req-verified');
+    assert.equal(payload.purpose, 'password_reset');
+    return { phone: '+79991234567' };
+  };
+
+  const response = await request(buildApp())
+    .post('/auth/password-reset/verify')
+    .set('Authorization', `Bearer ${tempToken}`)
+    .send({ phone: '+7 (999) 123-45-67', requestId: 'reset-req-verified' });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.ok, true);
+  assert.equal(typeof response.body.resetToken, 'string');
+});

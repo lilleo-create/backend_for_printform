@@ -6,7 +6,7 @@ import { authService } from '../services/authService';
 import { authenticate, AuthRequest } from '../middleware/authMiddleware';
 import { userRepository } from '../repositories/userRepository';
 import { env } from '../config/env';
-import { otpService, OtpPurpose } from '../services/otpService';
+import { otpService, OtpPurpose, OtpRequestResult } from '../services/otpService';
 import { normalizePhone } from '../utils/phone';
 import { authLimiter, otpRequestLimiter, otpVerifyLimiter } from '../middleware/rateLimiters';
 import { prisma } from '../lib/prisma';
@@ -27,12 +27,24 @@ const loginFieldsSchema = z.object({ email: z.string().email().optional(), phone
 const fullNameSchema = z.string().trim().min(3).max(120).regex(/^[A-Za-zА-Яа-яЁё\-\s]+$/, 'Допустимы буквы, пробел и дефис').refine((value) => value.split(/\s+/).filter(Boolean).length >= 2, 'Введите ФИО минимум из двух слов');
 const registerSchema = loginFieldsSchema.omit({ phone: true, email: true }).extend({ email: z.string().email(), name: z.string().trim().min(2), fullName: fullNameSchema, phone: z.string().min(5), address: z.string().min(3).optional(), privacyAccepted: z.boolean().optional(), role: z.enum(['BUYER', 'SELLER']).optional() });
 const updateProfileSchema = z.object({ name: z.string().trim().min(2).optional(), fullName: z.string().trim().min(2).max(120).transform((value) => value.replace(/\s+/g, ' ')).optional(), email: z.string().email().optional(), phone: z.string().min(5).optional(), address: z.string().min(3).optional() });
-const otpPurposeSchema = z.enum(['buyer_register_phone', 'buyer_change_phone', 'buyer_sensitive_action', 'seller_connect_phone', 'seller_change_payout_details', 'seller_payout_settings_verify', 'login_device']);
+const otpPurposeSchema = z.enum(['buyer_register_phone', 'buyer_change_phone', 'buyer_sensitive_action', 'seller_connect_phone', 'seller_change_payout_details', 'seller_payout_settings_verify', 'login_device', 'password_reset']);
 const otpRequestSchema = z.object({ phone: z.string().min(5), purpose: otpPurposeSchema.optional(), turnstileToken: z.string().optional() });
 const otpVerifySchema = z.object({ phone: z.string().min(5), code: z.string().min(4).optional(), requestId: z.string().min(2).optional(), purpose: otpPurposeSchema.optional() }).refine((value) => Boolean(value.code || value.requestId), { message: 'code or requestId is required', path: ['code'] });
 const passwordResetRequestSchema = z.object({ phone: z.string().min(5) });
-const passwordResetVerifySchema = z.object({ phone: z.string().min(5), requestId: z.string().min(2) });
+const passwordResetVerifySchema = z.object({ phone: z.string().min(5), code: z.string().min(4).optional(), requestId: z.string().min(2).optional() }).refine((value) => Boolean(value.code || value.requestId), { message: 'code or requestId is required', path: ['code'] });
 const passwordResetConfirmSchema = z.object({ token: z.string().min(10), password: z.string().min(6) });
+
+type DecodedAuthToken = { userId?: string; registrationSessionId?: string; role?: string; scope?: string };
+
+type OtpChallengePayload = {
+  phone: string;
+  purpose: Extract<OtpPurpose, 'login_device' | 'password_reset'>;
+  req: Request;
+  tempToken: string;
+  user: ReturnType<typeof authService.getPublicUser>;
+  errorCode: 'DEVICE_VERIFICATION_REQUIRED' | 'PASSWORD_RESET_VERIFICATION_REQUIRED';
+  errorMessage: string;
+};
 
 const refreshCookieOptions = authService.getRefreshCookieOptions();
 const trustedDeviceCookieOptions = deviceTrustService.getCookieOptions();
@@ -47,11 +59,12 @@ const verifyTurnstile = async (token: string) => {
 };
 
 const parseAuthToken = (req: AuthRequest) => req.headers.authorization?.replace('Bearer ', '') ?? null;
-const decodeAuthToken = (token: string) => jwt.verify(token, env.jwtSecret) as { userId?: string; registrationSessionId?: string; role?: string; scope?: string };
+const decodeAuthToken = (token: string) => jwt.verify(token, env.jwtSecret) as DecodedAuthToken;
 const createPasswordResetToken = (payload: { userId: string }) => jwt.sign({ ...payload, scope: 'password_reset' }, env.jwtSecret, { expiresIn: '10m' });
 const canUseExistingOtpFlow = (scope: string | undefined, purpose: OtpPurpose) => {
   if (purpose === 'buyer_register_phone') return scope === 'otp_register';
   if (purpose === 'login_device') return scope === 'otp_login_device';
+  if (purpose === 'password_reset') return scope === 'otp_password_reset';
   return scope === 'access';
 };
 const isTurnstileRequiredForPurpose = (purpose: OtpPurpose) => purpose === 'buyer_register_phone';
@@ -60,11 +73,11 @@ const clearSessionCookies = (res: Response, includeTrustedDevice = false) => {
   res.clearCookie(env.authRefreshCookieName, refreshCookieClearOptions);
   if (includeTrustedDevice) res.clearCookie(env.trustedDeviceCookieName, trustedDeviceCookieClearOptions);
 };
-const finalizeAuthorizedSession = async (args: { res: any; req: Request; user: any; trustedDeviceId?: string | null; rawTrustedDeviceToken?: string | null; }) => {
-  const tokens = await authService.issueTokens(args.user, args.trustedDeviceId);
+const finalizeAuthorizedSession = async (args: { res: Response; req: Request; user: Awaited<ReturnType<typeof userRepository.findById>>; trustedDeviceId?: string | null; rawTrustedDeviceToken?: string | null; }) => {
+  const tokens = await authService.issueTokens(args.user!, args.trustedDeviceId);
   args.res.cookie(env.authRefreshCookieName, tokens.refreshToken, refreshCookieOptions);
   if (args.rawTrustedDeviceToken) args.res.cookie(env.trustedDeviceCookieName, args.rawTrustedDeviceToken, trustedDeviceCookieOptions);
-  return args.res.json({ data: { accessToken: tokens.accessToken, user: authService.getPublicUser(args.user), session: { accessTokenTtlMinutes: env.authAccessTokenTtlMinutes, refreshTokenTtlDays: env.authRefreshTokenTtlDays, trustedDevice: Boolean(args.trustedDeviceId) } } });
+  return args.res.json({ data: { accessToken: tokens.accessToken, user: authService.getPublicUser(args.user!), session: { accessTokenTtlMinutes: env.authAccessTokenTtlMinutes, refreshTokenTtlDays: env.authRefreshTokenTtlDays, trustedDevice: Boolean(args.trustedDeviceId) } } });
 };
 const isTrustedDeviceFlowEnabled = () => env.isProduction || env.authTrustedDeviceEnforced;
 const normalizeLoginError = (error: unknown) => {
@@ -94,6 +107,75 @@ const normalizeLoginError = (error: unknown) => {
   return error;
 };
 
+const mapOtpRequestErrorStatus = (result: Extract<OtpRequestResult, { ok: false }>) => (
+  result.error.code === 'OTP_PROVIDER_TIMEOUT' ? 504 : result.error.code === 'OTP_REQUEST_FAILED' ? 500 : 503
+);
+
+const startExistingOtpChallenge = async (payload: OtpChallengePayload) => {
+  const otpRequest = await otpService.requestOtp({ phone: payload.phone, purpose: payload.purpose, ip: payload.req.ip, userAgent: payload.req.get('user-agent') });
+  if (!otpRequest.ok) {
+    return {
+      status: mapOtpRequestErrorStatus(otpRequest),
+      body: { ok: false, error: otpRequest.error }
+    };
+  }
+
+  return {
+    status: payload.errorCode === 'DEVICE_VERIFICATION_REQUIRED' ? 403 : 200,
+    body: {
+      error: {
+        code: payload.errorCode,
+        message: payload.errorMessage
+      },
+      requiresDeviceVerification: payload.purpose === 'login_device',
+      requiresPasswordResetVerification: payload.purpose === 'password_reset',
+      tempToken: payload.tempToken,
+      verificationMethod: 'existing_otp_flow' as const,
+      phone: payload.phone,
+      requestId: otpRequest.data?.requestId ?? null,
+      otpRequest: otpRequest.data ?? null,
+      otpThrottled: otpRequest.throttled ?? false,
+      user: payload.user
+    }
+  };
+};
+
+const parseAndDecodeOtpToken = (req: AuthRequest, res: Response) => {
+  const token = parseAuthToken(req);
+  if (!token) {
+    return { response: res.status(401).json({ error: { code: 'UNAUTHORIZED' } }) };
+  }
+
+  try {
+    return { decoded: decodeAuthToken(token) };
+  } catch {
+    return { response: res.status(401).json({ error: { code: 'UNAUTHORIZED' } }) };
+  }
+};
+
+type PurposeAccessResult =
+  | { phone: string; user?: Awaited<ReturnType<typeof userRepository.findById>> | null; error?: undefined }
+  | { phone?: undefined; user?: undefined; error: { status: number; body: { error: { code: string } } } };
+
+const verifyPurposeAccess = async (purpose: OtpPurpose, decoded: DecodedAuthToken | null | undefined, phoneRaw: string): Promise<PurposeAccessResult> => {
+  if (!decoded || !canUseExistingOtpFlow(decoded.scope, purpose)) {
+    return { error: { status: 401, body: { error: { code: purpose === 'buyer_register_phone' || purpose === 'login_device' ? 'OTP_TOKEN_REQUIRED' : purpose === 'password_reset' ? 'PASSWORD_RESET_TOKEN_REQUIRED' : 'UNAUTHORIZED' } } } };
+  }
+
+  const phone = normalizePhone(phoneRaw);
+  if (purpose === 'buyer_register_phone') {
+    const pending = await prisma.pendingRegistration.findUnique({ where: { id: decoded.registrationSessionId } });
+    if (!pending || pending.usedAt || pending.expiresAt < new Date()) return { error: { status: 401, body: { error: { code: 'REGISTRATION_SESSION_INVALID' } } } };
+    if (phone !== pending.phone) return { error: { status: 400, body: { error: { code: 'PHONE_MISMATCH' } } } };
+    return { phone };
+  }
+
+  const user = decoded.userId ? await userRepository.findById(decoded.userId) : null;
+  if (!user?.phone) return { error: { status: 404, body: { error: { code: 'NOT_FOUND' } } } };
+  if (phone !== user.phone) return { error: { status: 400, body: { error: { code: 'PHONE_MISMATCH' } } } };
+  return { phone, user };
+};
+
 authRoutes.post('/register', authLimiter, async (req, res, next) => { try { const payload = registerSchema.parse(req.body); const phone = normalizePhone(payload.phone); const result = await authService.startRegistration(payload.name, payload.fullName, payload.email, payload.password, payload.role, phone, payload.address); const tempToken = authService.issueRegistrationOtpToken(result.pending.id); res.json({ requiresOtp: true, tempToken, user: authService.getPublicUser({ ...result.pending, id: result.pending.id }) }); } catch (error) { next(error); } });
 
 authRoutes.post('/login', authLimiter, async (req, res, next) => {
@@ -121,25 +203,16 @@ authRoutes.post('/login', authLimiter, async (req, res, next) => {
     if (!trustedDevice) {
       if (!user.phone) return res.status(404).json({ error: { code: 'NOT_FOUND' } });
       clearSessionCookies(res);
-      const tempToken = authService.issueLoginDeviceOtpToken(user);
-      const otpRequest = await otpService.requestOtp({ phone: user.phone, purpose: 'login_device', ip: req.ip, userAgent: req.get('user-agent') });
-      if (!otpRequest.ok) {
-        return res.status(otpRequest.error.code === 'OTP_PROVIDER_TIMEOUT' ? 504 : otpRequest.error.code === 'OTP_REQUEST_FAILED' ? 500 : 503).json({ ok: false, error: otpRequest.error });
-      }
-      return res.status(403).json({
-        error: {
-          code: 'DEVICE_VERIFICATION_REQUIRED',
-          message: 'Для входа с нового устройства нужно дополнительное подтверждение'
-        },
-        requiresDeviceVerification: true,
-        tempToken,
-        verificationMethod: 'existing_otp_flow',
+      const challenge = await startExistingOtpChallenge({
         phone: user.phone,
-        requestId: otpRequest.data?.requestId ?? null,
-        otpRequest: otpRequest.data ?? null,
-        otpThrottled: otpRequest.throttled ?? false,
+        purpose: 'login_device',
+        req,
+        tempToken: authService.issueLoginDeviceOtpToken(user),
+        errorCode: 'DEVICE_VERIFICATION_REQUIRED',
+        errorMessage: 'Для входа с нового устройства нужно дополнительное подтверждение',
         user: authService.getPublicUser(user)
       });
+      return res.status(challenge.status).json(challenge.body);
     }
 
     return finalizeAuthorizedSession({ res, req, user, trustedDeviceId: trustedDevice.id });
@@ -169,16 +242,53 @@ authRoutes.post('/refresh', async (req, res, next) => {
 
 authRoutes.post('/logout', async (req, res, next) => { try { const token = req.cookies[env.authRefreshCookieName] as string | undefined; if (token) await authService.logout(token); clearSessionCookies(res, true); res.json({ success: true }); } catch (error) { next(error); } });
 
-authRoutes.post('/password-reset/request', otpRequestLimiter, async (req, res, next) => { try { const payload = passwordResetRequestSchema.parse(req.body); const phone = normalizePhone(payload.phone); const user = await userRepository.findByPhone(phone); if (!user) return res.status(404).json({ error: { code: 'NOT_FOUND' } }); const result = await otpService.requestCallOtp({ phone, purpose: 'password_reset', ip: req.ip, userAgent: req.get('user-agent') }); if (!result.ok) return res.status(503).json({ ok: false, error: result.error }); return res.json({ ok: true, data: result.data }); } catch (error) { return next(error); } });
-authRoutes.post('/password-reset/verify', otpVerifyLimiter, async (req, res, next) => { try { const payload = passwordResetVerifySchema.parse(req.body); const phone = normalizePhone(payload.phone); const user = await userRepository.findByPhone(phone); if (!user) return res.status(404).json({ error: { code: 'NOT_FOUND' } }); await otpService.verifyOtpByRequestId({ phone, requestId: payload.requestId, purpose: 'password_reset' }); return res.json({ ok: true, resetToken: createPasswordResetToken({ userId: user.id }) }); } catch (error) { return next(error); } });
+authRoutes.post('/password-reset/request', otpRequestLimiter, async (req, res, next) => {
+  try {
+    const payload = passwordResetRequestSchema.parse(req.body);
+    const phone = normalizePhone(payload.phone);
+    const user = await userRepository.findByPhone(phone);
+    if (!user) return res.status(404).json({ error: { code: 'NOT_FOUND' } });
+    clearSessionCookies(res, true);
+    const challenge = await startExistingOtpChallenge({
+      phone,
+      purpose: 'password_reset',
+      req,
+      tempToken: authService.issuePasswordResetOtpToken(user),
+      errorCode: 'PASSWORD_RESET_VERIFICATION_REQUIRED',
+      errorMessage: 'Для восстановления пароля нужно подтвердить номер телефона',
+      user: authService.getPublicUser(user)
+    });
+    return res.status(challenge.status).json(challenge.body);
+  } catch (error) {
+    return next(error);
+  }
+});
+authRoutes.post('/password-reset/verify', otpVerifyLimiter, async (req, res, next) => {
+  try {
+    const payload = passwordResetVerifySchema.parse(req.body);
+    const parsed = parseAndDecodeOtpToken(req as AuthRequest, res);
+    if (parsed.response) return parsed.response;
+    const access = await verifyPurposeAccess('password_reset', parsed.decoded, payload.phone);
+    if (access.error) return res.status(access.error.status).json(access.error.body);
+    await (payload.requestId
+      ? otpService.verifyOtpByRequestId({ phone: payload.phone, requestId: payload.requestId, purpose: 'password_reset' })
+      : otpService.verifyOtp({ phone: payload.phone, code: payload.code!, purpose: 'password_reset' }));
+    return res.json({ ok: true, resetToken: createPasswordResetToken({ userId: access.user!.id }) });
+  } catch (error) {
+    return next(error);
+  }
+});
 authRoutes.post('/password-reset/confirm', authLimiter, async (req, res, next) => { try { const payload = passwordResetConfirmSchema.parse(req.body); const decoded = jwt.verify(payload.token, env.jwtSecret) as { userId: string; scope?: string }; if (decoded.scope !== 'password_reset') return res.status(401).json({ error: { code: 'UNAUTHORIZED' } }); const user = await userRepository.findById(decoded.userId); if (!user) return res.status(404).json({ error: { code: 'NOT_FOUND' } }); const hashed = await bcrypt.hash(payload.password, 10); await userRepository.updatePasswordAndInvalidateSessions(user.id, hashed); clearSessionCookies(res, true); return res.json({ ok: true }); } catch (error) { return next(error); } });
 
-authRoutes.post('/otp/request', otpRequestLimiter, async (req, res, next) => { try { const payload = otpRequestSchema.parse(req.body); const purpose = (payload.purpose ?? 'buyer_register_phone') as OtpPurpose; if (env.turnstileSecretKey && isTurnstileRequiredForPurpose(purpose)) { if (!payload.turnstileToken) return res.status(400).json({ error: { code: 'TURNSTILE_REQUIRED' } }); const verified = await verifyTurnstile(payload.turnstileToken); if (!verified) return res.status(400).json({ error: { code: 'TURNSTILE_FAILED' } }); } const token = parseAuthToken(req as AuthRequest); let decoded = null as null | { userId?: string; registrationSessionId?: string; role?: string; scope?: string }; if (token) { try { decoded = decodeAuthToken(token); } catch { return res.status(401).json({ error: { code: 'UNAUTHORIZED' } }); } } if (!decoded || !canUseExistingOtpFlow(decoded.scope, purpose)) return res.status(401).json({ error: { code: purpose === 'buyer_register_phone' || purpose === 'login_device' ? 'OTP_TOKEN_REQUIRED' : 'UNAUTHORIZED' } }); if (purpose === 'buyer_register_phone') { const pending = await prisma.pendingRegistration.findUnique({ where: { id: decoded.registrationSessionId } }); if (!pending || pending.usedAt || pending.expiresAt < new Date()) return res.status(401).json({ error: { code: 'REGISTRATION_SESSION_INVALID' } }); if (normalizePhone(payload.phone) !== pending.phone) return res.status(400).json({ error: { code: 'PHONE_MISMATCH' } }); } else if (purpose === 'login_device') { const user = await userRepository.findById(decoded.userId!); if (!user?.phone) return res.status(404).json({ error: { code: 'NOT_FOUND' } }); if (normalizePhone(payload.phone) !== user.phone) return res.status(400).json({ error: { code: 'PHONE_MISMATCH' } }); } const result = await otpService.requestOtp({ phone: payload.phone, purpose, ip: req.ip, userAgent: req.get('user-agent') }); if (!result.ok) return res.status(result.error.code === 'OTP_PROVIDER_TIMEOUT' ? 504 : result.error.code === 'OTP_REQUEST_FAILED' ? 500 : 503).json({ ok: false, error: result.error }); if (result.throttled) return res.json({ ok: true, data: null, throttled: true }); if (result.data) return res.json({ ok: true, data: result.data }); return res.json({ ok: true, data: null, devOtp: result.devOtp, delivery: result.delivery }); } catch (error) { return next(error); } });
-authRoutes.get('/otp/status/:requestId', async (req, res, next) => { try { const requestId = z.string().min(2).parse(req.params.requestId); const token = parseAuthToken(req as AuthRequest); if (!token) return res.status(401).json({ error: { code: 'UNAUTHORIZED' } }); let decoded; try { decoded = decodeAuthToken(token); } catch { return res.status(401).json({ error: { code: 'UNAUTHORIZED' } }); } if (!decoded.scope || !['otp_register', 'access', 'otp_login_device'].includes(decoded.scope)) return res.status(401).json({ error: { code: 'UNAUTHORIZED' } }); const status = await otpService.getOtpStatusByRequestId(requestId); return res.json({ ok: true, data: status }); } catch (error) { return next(error); } });
-authRoutes.post('/otp/verify', otpVerifyLimiter, async (req, res, next) => { try { const payload = otpVerifySchema.parse(req.body); const purpose = (payload.purpose ?? 'buyer_register_phone') as OtpPurpose; const token = parseAuthToken(req as AuthRequest); let decoded = null as null | { userId?: string; registrationSessionId?: string; role?: string; scope?: string }; if (token) { try { decoded = decodeAuthToken(token); } catch { return res.status(401).json({ error: { code: 'UNAUTHORIZED' } }); } } const needsOtpToken = purpose === 'buyer_register_phone'; const needsLoginDeviceToken = purpose === 'login_device'; if (!decoded || !canUseExistingOtpFlow(decoded.scope, purpose)) return res.status(401).json({ error: { code: needsOtpToken || needsLoginDeviceToken ? 'OTP_TOKEN_REQUIRED' : 'UNAUTHORIZED' } }); const verification = payload.requestId ? await otpService.verifyOtpByRequestId({ phone: payload.phone, requestId: payload.requestId, purpose }) : await otpService.verifyOtp({ phone: payload.phone, code: payload.code!, purpose }); const { phone } = verification; let user; if (needsOtpToken) { const registrationSessionId = decoded?.registrationSessionId; if (!registrationSessionId) return res.status(401).json({ error: { code: 'OTP_TOKEN_REQUIRED' } }); user = (await authService.completeRegistration(registrationSessionId, phone)).user; } else { const userId = decoded?.userId; if (!userId) return res.status(401).json({ error: { code: 'UNAUTHORIZED' } }); user = await userRepository.findById(userId); if (!user) return res.status(401).json({ error: { code: 'UNAUTHORIZED' } }); if (user.phone && user.phone !== phone) return res.status(400).json({ error: { code: 'PHONE_MISMATCH' } }); if (!user.phone) { const existingPhone = await userRepository.findByPhone(phone); if (existingPhone && existingPhone.id !== user.id) return res.status(409).json({ error: { code: 'PHONE_EXISTS' } }); } if (!user.phoneVerifiedAt || user.phone !== phone) user = await userRepository.updateProfile(user.id, { phone, phoneVerifiedAt: new Date() }); }
-    if (needsLoginDeviceToken) {
+authRoutes.post('/otp/request', otpRequestLimiter, async (req, res, next) => { try { const payload = otpRequestSchema.parse(req.body); const purpose = (payload.purpose ?? 'buyer_register_phone') as OtpPurpose; if (env.turnstileSecretKey && isTurnstileRequiredForPurpose(purpose)) { if (!payload.turnstileToken) return res.status(400).json({ error: { code: 'TURNSTILE_REQUIRED' } }); const verified = await verifyTurnstile(payload.turnstileToken); if (!verified) return res.status(400).json({ error: { code: 'TURNSTILE_FAILED' } }); } const parsed = parseAndDecodeOtpToken(req as AuthRequest, res); if (parsed.response) return parsed.response; const access = await verifyPurposeAccess(purpose, parsed.decoded, payload.phone); if (access.error) return res.status(access.error.status).json(access.error.body); const result = await otpService.requestOtp({ phone: payload.phone, purpose, ip: req.ip, userAgent: req.get('user-agent') }); if (!result.ok) return res.status(mapOtpRequestErrorStatus(result)).json({ ok: false, error: result.error }); if (result.throttled) return res.json({ ok: true, data: null, throttled: true }); if (result.data) return res.json({ ok: true, data: result.data }); return res.json({ ok: true, data: null, devOtp: result.devOtp, delivery: result.delivery }); } catch (error) { return next(error); } });
+authRoutes.get('/otp/status/:requestId', async (req, res, next) => { try { const requestId = z.string().min(2).parse(req.params.requestId); const token = parseAuthToken(req as AuthRequest); if (!token) return res.status(401).json({ error: { code: 'UNAUTHORIZED' } }); let decoded; try { decoded = decodeAuthToken(token); } catch { return res.status(401).json({ error: { code: 'UNAUTHORIZED' } }); } if (!decoded.scope || !['otp_register', 'access', 'otp_login_device', 'otp_password_reset'].includes(decoded.scope)) return res.status(401).json({ error: { code: 'UNAUTHORIZED' } }); const status = await otpService.getOtpStatusByRequestId(requestId); return res.json({ ok: true, data: status }); } catch (error) { return next(error); } });
+authRoutes.post('/otp/verify', otpVerifyLimiter, async (req, res, next) => { try { const payload = otpVerifySchema.parse(req.body); const purpose = (payload.purpose ?? 'buyer_register_phone') as OtpPurpose; const parsed = parseAndDecodeOtpToken(req as AuthRequest, res); if (parsed.response) return parsed.response; const access = await verifyPurposeAccess(purpose, parsed.decoded, payload.phone); if (access.error) return res.status(access.error.status).json(access.error.body); const verification = payload.requestId ? await otpService.verifyOtpByRequestId({ phone: payload.phone, requestId: payload.requestId, purpose }) : await otpService.verifyOtp({ phone: payload.phone, code: payload.code!, purpose }); const { phone } = verification; let user; if (purpose === 'buyer_register_phone') { const registrationSessionId = parsed.decoded?.registrationSessionId; if (!registrationSessionId) return res.status(401).json({ error: { code: 'OTP_TOKEN_REQUIRED' } }); user = (await authService.completeRegistration(registrationSessionId, phone)).user; } else { const userId = parsed.decoded?.userId; if (!userId) return res.status(401).json({ error: { code: purpose === 'password_reset' ? 'PASSWORD_RESET_TOKEN_REQUIRED' : 'UNAUTHORIZED' } }); user = await userRepository.findById(userId); if (!user) return res.status(401).json({ error: { code: 'UNAUTHORIZED' } }); if (user.phone && user.phone !== phone) return res.status(400).json({ error: { code: 'PHONE_MISMATCH' } }); if (!user.phone) { const existingPhone = await userRepository.findByPhone(phone); if (existingPhone && existingPhone.id !== user.id) return res.status(409).json({ error: { code: 'PHONE_EXISTS' } }); } if (!user.phoneVerifiedAt || user.phone !== phone) user = await userRepository.updateProfile(user.id, { phone, phoneVerifiedAt: new Date() }); }
+    if (purpose === 'login_device') {
       const trusted = await deviceTrustService.trustCurrentDevice(user.id, req);
       return finalizeAuthorizedSession({ res, req, user, trustedDeviceId: trusted.device.id, rawTrustedDeviceToken: trusted.token });
+    }
+    if (purpose === 'password_reset') {
+      return res.json({ ok: true, resetToken: createPasswordResetToken({ userId: user.id }) });
     }
     return finalizeAuthorizedSession({ res, req, user });
   } catch (error) { return next(error); } });
