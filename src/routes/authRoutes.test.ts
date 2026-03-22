@@ -23,6 +23,7 @@ const buildApp = () => {
 
 const originalTrustedDeviceFlag = env.authTrustedDeviceEnforced;
 (prisma.phoneOtp.findFirst as any) = async () => null;
+(prisma.pendingRegistration.findUnique as any) = async () => null;
 
 const baseUser = {
   id: "user-1",
@@ -39,6 +40,178 @@ const baseUser = {
 test.afterEach(() => {
   env.authTrustedDeviceEnforced = originalTrustedDeviceFlag;
   (prisma.phoneOtp.findFirst as any) = async () => null;
+  (prisma.pendingRegistration.findUnique as any) = async () => null;
+});
+
+test("POST /auth/otp/request returns registration verification data for the current registration phone even if provider responds with another phone", async () => {
+  const registrationSessionId = "pending-reg-1";
+  const tempToken = authService.issueRegistrationOtpToken(registrationSessionId);
+  (prisma.pendingRegistration.findUnique as any) = async ({
+    where,
+  }: {
+    where: { id: string };
+  }) => {
+    assert.equal(where.id, registrationSessionId);
+    return {
+      id: registrationSessionId,
+      phone: "+79778117527",
+      usedAt: null,
+      expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+    };
+  };
+  (otpService.requestOtp as unknown as (payload: {
+    phone: string;
+    purpose: string;
+  }) => Promise<{
+    ok: true;
+    data: {
+      requestId: string;
+      phone: string;
+      provider: "plusofon";
+      verificationType: "call_to_auth";
+      callToAuthNumber: string | null;
+    };
+  }>) = async (payload) => {
+    assert.equal(payload.phone, "+7 (977) 811-75-27");
+    assert.equal(payload.purpose, "buyer_register_phone");
+    return {
+      ok: true,
+      data: {
+        requestId: "reg-req-1",
+        phone: "+79778117527",
+        provider: "plusofon",
+        verificationType: "call_to_auth",
+        callToAuthNumber: "79675180038",
+      },
+    };
+  };
+
+  const response = await request(buildApp())
+    .post("/auth/otp/request")
+    .set("Authorization", `Bearer ${tempToken}`)
+    .send({
+      phone: "+7 (977) 811-75-27",
+      purpose: "buyer_register_phone",
+    });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body, {
+    ok: true,
+    data: {
+      requestId: "reg-req-1",
+      verificationType: "call_to_auth",
+      callToAuthNumber: "79675180038",
+      phone: "+79778117527",
+      provider: "plusofon",
+    },
+  });
+});
+
+test("POST /auth/otp/request rejects stale registration phone from a previous attempt", async () => {
+  const registrationSessionId = "pending-reg-2";
+  const tempToken = authService.issueRegistrationOtpToken(registrationSessionId);
+  let requestOtpCalls = 0;
+  (prisma.pendingRegistration.findUnique as any) = async () => ({
+    id: registrationSessionId,
+    phone: "+79778117527",
+    usedAt: null,
+    expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+  });
+  (otpService.requestOtp as unknown as () => Promise<never>) = async () => {
+    requestOtpCalls += 1;
+    throw new Error("requestOtp should not run when registration phone mismatches");
+  };
+
+  const response = await request(buildApp())
+    .post("/auth/otp/request")
+    .set("Authorization", `Bearer ${tempToken}`)
+    .send({
+      phone: "+7 (999) 123-45-67",
+      purpose: "buyer_register_phone",
+    });
+
+  assert.equal(response.status, 400);
+  assert.equal(response.body.error.code, "PHONE_MISMATCH");
+  assert.equal(requestOtpCalls, 0);
+});
+
+test("POST /auth/otp/request keeps registration and login phone state isolated", async () => {
+  env.authTrustedDeviceEnforced = true;
+  let requestOtpCalls = 0;
+  let loginStageCompleted = false;
+  const registrationSessionId = "pending-reg-3";
+  const registrationToken = authService.issueRegistrationOtpToken(
+    registrationSessionId,
+  );
+  (deviceTrustService.cleanupExpired as unknown as () => Promise<void>) =
+    async () => {};
+  (deviceTrustService.findTrustedDeviceForRequest as unknown as () => Promise<null>) =
+    async () => null;
+  (authService.login as unknown as () => Promise<{ user: typeof baseUser }>) =
+    async () => ({ user: baseUser });
+  (prisma.pendingRegistration.findUnique as any) = async ({
+    where,
+  }: {
+    where: { id: string };
+  }) => {
+    assert.equal(where.id, registrationSessionId);
+    return {
+      id: registrationSessionId,
+      phone: "+79778117527",
+      usedAt: null,
+      expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+    };
+  };
+  (otpService.requestOtp as unknown as (payload: {
+    phone: string;
+    purpose: string;
+  }) => Promise<any>) = async (payload) => {
+    requestOtpCalls += 1;
+    if (payload.purpose === "login_device") {
+      loginStageCompleted = true;
+      assert.equal(payload.phone, "+79991234567");
+      return {
+        ok: true,
+        data: {
+          requestId: "login-req-1",
+          phone: "+79991234567",
+          provider: "plusofon",
+          verificationType: "call_to_auth",
+          callToAuthNumber: "+78005553535",
+        },
+      };
+    }
+    assert.equal(loginStageCompleted, true);
+    assert.equal(payload.purpose, "buyer_register_phone");
+    assert.equal(payload.phone, "+7 (977) 811-75-27");
+    return {
+      ok: true,
+      data: {
+        requestId: "reg-req-2",
+        phone: "+79778117527",
+        provider: "plusofon",
+        verificationType: "call_to_auth",
+        callToAuthNumber: "79675180038",
+      },
+    };
+  };
+
+  const loginResponse = await request(buildApp())
+    .post("/auth/login")
+    .send({ phone: "+7 (999) 123-45-67", password: "secret123" });
+  assert.equal(loginResponse.status, 403);
+  assert.equal(loginResponse.body.phone, "+79991234567");
+
+  const registrationResponse = await request(buildApp())
+    .post("/auth/otp/request")
+    .set("Authorization", `Bearer ${registrationToken}`)
+    .send({
+      phone: "+7 (977) 811-75-27",
+      purpose: "buyer_register_phone",
+    });
+  assert.equal(registrationResponse.status, 200);
+  assert.equal(registrationResponse.body.data.phone, "+79778117527");
+  assert.equal(requestOtpCalls, 2);
 });
 
 test("POST /auth/login returns 400 with friendly message for invalid credentials and does not issue session cookies", async () => {
