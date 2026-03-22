@@ -1,4 +1,4 @@
-import { Request, Router } from 'express';
+import { Request, Response, Router } from 'express';
 import { z } from 'zod';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
@@ -37,6 +37,8 @@ const loginDeviceVerifySchema = z.object({ phone: z.string().min(5), requestId: 
 
 const refreshCookieOptions = authService.getRefreshCookieOptions();
 const trustedDeviceCookieOptions = deviceTrustService.getCookieOptions();
+const refreshCookieClearOptions = { ...refreshCookieOptions, maxAge: undefined } as const;
+const trustedDeviceCookieClearOptions = { ...trustedDeviceCookieOptions, maxAge: undefined } as const;
 
 const verifyTurnstile = async (token: string) => {
   if (!env.turnstileSecretKey) return true;
@@ -49,15 +51,42 @@ const parseAuthToken = (req: AuthRequest) => req.headers.authorization?.replace(
 const decodeAuthToken = (token: string) => jwt.verify(token, env.jwtSecret) as { userId?: string; registrationSessionId?: string; role?: string; scope?: string };
 const createPasswordResetToken = (payload: { userId: string }) => jwt.sign({ ...payload, scope: 'password_reset' }, env.jwtSecret, { expiresIn: '10m' });
 const parsePlusofonWebhookPayload = (body: unknown) => { const source = body && typeof body === 'object' ? (body as Record<string, unknown>) : {}; const data = source.data && typeof source.data === 'object' ? (source.data as Record<string, unknown>) : null; const merged = data ? { ...source, ...data } : source; const pick = (...keys: string[]) => { for (const key of keys) { const value = merged[key]; if (typeof value === 'string' && value.trim()) return value.trim(); } return null; }; return { requestId: pick('request_id', 'requestId', 'id', 'key'), status: pick('status', 'state'), phone: pick('phone', 'phone_number', 'recipient') }; };
-const clearSessionCookies = (res: Parameters<typeof authRoutes.post>[1], includeTrustedDevice = false) => {
-  res.clearCookie(env.authRefreshCookieName, refreshCookieOptions);
-  if (includeTrustedDevice) res.clearCookie(env.trustedDeviceCookieName, trustedDeviceCookieOptions);
+const clearSessionCookies = (res: Response, includeTrustedDevice = false) => {
+  res.clearCookie(env.authRefreshCookieName, refreshCookieClearOptions);
+  if (includeTrustedDevice) res.clearCookie(env.trustedDeviceCookieName, trustedDeviceCookieClearOptions);
 };
 const finalizeAuthorizedSession = async (args: { res: any; req: Request; user: any; trustedDeviceId?: string | null; rawTrustedDeviceToken?: string | null; }) => {
   const tokens = await authService.issueTokens(args.user, args.trustedDeviceId);
   args.res.cookie(env.authRefreshCookieName, tokens.refreshToken, refreshCookieOptions);
   if (args.rawTrustedDeviceToken) args.res.cookie(env.trustedDeviceCookieName, args.rawTrustedDeviceToken, trustedDeviceCookieOptions);
   return args.res.json({ data: { accessToken: tokens.accessToken, user: authService.getPublicUser(args.user), session: { accessTokenTtlMinutes: env.authAccessTokenTtlMinutes, refreshTokenTtlDays: env.authRefreshTokenTtlDays, trustedDevice: Boolean(args.trustedDeviceId) } } });
+};
+const isTrustedDeviceFlowEnabled = () => env.isProduction || env.authTrustedDeviceEnforced;
+const normalizeLoginError = (error: unknown) => {
+  if (!(error instanceof Error)) return error;
+  if (error.message === 'INVALID_CREDENTIALS') {
+    return {
+      status: 400,
+      body: {
+        error: {
+          code: 'INVALID_CREDENTIALS',
+          message: 'Неверный номер телефона или пароль'
+        }
+      }
+    };
+  }
+  if (error.message === 'INVALID_PHONE') {
+    return {
+      status: 400,
+      body: {
+        error: {
+          code: 'INVALID_PHONE',
+          message: 'Неверный номер телефона или пароль'
+        }
+      }
+    };
+  }
+  return error;
 };
 
 authRoutes.post('/register', authLimiter, async (req, res, next) => { try { const payload = registerSchema.parse(req.body); const phone = normalizePhone(payload.phone); const result = await authService.startRegistration(payload.name, payload.fullName, payload.email, payload.password, payload.role, phone, payload.address); const tempToken = authService.issueRegistrationOtpToken(result.pending.id); res.json({ requiresOtp: true, tempToken, user: authService.getPublicUser({ ...result.pending, id: result.pending.id }) }); } catch (error) { next(error); } });
@@ -76,17 +105,38 @@ authRoutes.post('/login', authLimiter, async (req, res, next) => {
       return res.json({ requiresOtp: true, tempToken, user: authService.getPublicUser(user) });
     }
 
+    if (!isTrustedDeviceFlowEnabled()) {
+      clearSessionCookies(res);
+      return finalizeAuthorizedSession({ res, req, user });
+    }
+
     const trustedDeviceToken = req.cookies?.[env.trustedDeviceCookieName] as string | undefined;
     const trustedDevice = await deviceTrustService.findTrustedDeviceForRequest(user.id, trustedDeviceToken, req);
 
     if (!trustedDevice) {
       clearSessionCookies(res);
       const tempToken = authService.issueLoginDeviceOtpToken(user);
-      return res.json({ requiresDeviceVerification: true, tempToken, user: authService.getPublicUser(user), verification: { channel: 'PHONE_CALL', provider: 'PLUSOFON', phone: user.phone, reason: 'new_device' } });
+      return res.status(403).json({
+        error: {
+          code: 'DEVICE_VERIFICATION_REQUIRED',
+          message: 'Для входа с нового устройства нужно дополнительное подтверждение'
+        },
+        requiresDeviceVerification: true,
+        tempToken,
+        user: authService.getPublicUser(user),
+        verification: { channel: 'PHONE_CALL', provider: 'PLUSOFON', phone: user.phone, reason: 'new_device' }
+      });
     }
 
     return finalizeAuthorizedSession({ res, req, user, trustedDeviceId: trustedDevice.id });
-  } catch (error) { next(error); }
+  } catch (error) {
+    const normalized = normalizeLoginError(error);
+    if (normalized && typeof normalized === 'object' && 'status' in normalized && 'body' in normalized) {
+      clearSessionCookies(res);
+      return res.status(normalized.status as number).json(normalized.body);
+    }
+    next(error);
+  }
 });
 
 authRoutes.post('/refresh', async (req, res, next) => {
