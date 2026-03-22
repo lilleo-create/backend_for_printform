@@ -28,6 +28,7 @@ const authCookieSameSite = ['strict', 'lax', 'none'].includes(authCookieSameSite
   ? (authCookieSameSiteRaw as 'strict' | 'lax' | 'none')
   : 'lax';
 const authCookieDomain = process.env.AUTH_COOKIE_DOMAIN ?? '';
+const authTrustedDeviceEnforced = (process.env.AUTH_TRUSTED_DEVICE_ENFORCED ?? '').toLowerCase() === 'true';
 
 if (
   Number.isNaN(authAccessTokenTtlMinutes) ||
@@ -106,6 +107,7 @@ export const env = {
   authRefreshCookieName,
   authCookieSameSite,
   authCookieDomain,
+  authTrustedDeviceEnforced,
   jwtSecret,
   jwtRefreshSecret,
   frontendUrl: requireEnv('FRONTEND_URL'),
