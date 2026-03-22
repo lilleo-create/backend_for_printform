@@ -69,18 +69,75 @@ const toShipmentView = (shipment: any) => {
 // Schemas
 // ---------------------------------------------------------
 /** Минимальная регистрация продавца: только базовые поля. Данные для мерчанта NDD и KYC — в разделе «Подключение продавца». */
-const sellerTypeInputSchema = z.enum(['IP', 'SELF_EMPLOYED', 'LLC', 'ИП', 'Самозанятый', 'ООО']);
+const sellerTypeInputSchema = z.enum(['IP', 'SELF_EMPLOYED', 'LLC', 'ИП', 'Самозанятый', 'ООО'], {
+  invalid_type_error: 'Укажите корректный тип продавца.',
+  required_error: 'Укажите тип продавца.'
+});
+
+const sellerTypeFieldSchema = sellerTypeInputSchema.optional();
+const sellerLifecycleStatusSchema = z.string().trim().min(1).optional();
+const optionalTrimmedString = () => z.preprocess(
+  (value) => {
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : undefined;
+  },
+  z.string().min(2).optional()
+);
 
 const sellerOnboardingSchema = z.object({
-  name: z.string().min(2),
-  phone: z.string().min(5),
-  email: z.string().email().optional().or(z.literal('')),
-  sellerType: sellerTypeInputSchema,
-  storeName: z.string().optional(),
-  city: z.string().min(2),
-  referenceCategory: z.string().min(2).optional(),
-  catalogPosition: z.string().min(2)
-});
+  name: z.string({ required_error: 'Укажите имя продавца.' }).trim().min(2, 'Имя продавца должно содержать минимум 2 символа.'),
+  phone: z.string({ required_error: 'Укажите номер телефона.' }).trim().min(5, 'Укажите корректный номер телефона.'),
+  email: z.union([
+    z.string().trim().email('Укажите корректный email.'),
+    z.literal('')
+  ]).optional(),
+  sellerType: sellerTypeFieldSchema,
+  status: sellerLifecycleStatusSchema,
+  storeName: z.string().trim().optional(),
+  city: z.string({ required_error: 'Укажите город.' }).trim().min(2, 'Название города должно содержать минимум 2 символа.'),
+  referenceCategory: optionalTrimmedString(),
+  catalogPosition: z.string({ required_error: 'Укажите позицию каталога.' }).trim().min(2, 'Укажите позицию каталога.')
+}).superRefine((payload, ctx) => {
+  if (!payload.sellerType && !payload.status) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['status'],
+      message: 'Укажите тип продавца.'
+    });
+    return;
+  }
+
+  if (payload.status && !['ИП', 'Самозанятый', 'ООО', 'IP', 'SELF_EMPLOYED', 'LLC'].includes(payload.status)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['status'],
+      message: 'Поле status должно содержать тип продавца: ИП, Самозанятый или ООО.'
+    });
+  }
+
+  if (payload.sellerType && payload.status) {
+    const normalizedSellerType = normalizeSellerType(payload.sellerType);
+    const normalizedStatus = normalizeSellerType(payload.status as z.infer<typeof sellerTypeInputSchema>);
+    if (normalizedSellerType !== normalizedStatus) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['status'],
+        message: 'Поля status и sellerType передают один и тот же тип продавца и не должны конфликтовать.'
+      });
+    }
+  }
+}).transform((payload) => ({
+  ...payload,
+  sellerType: normalizeSellerType((payload.sellerType ?? payload.status) as z.infer<typeof sellerTypeInputSchema>),
+  status: undefined,
+  storeName: payload.storeName?.trim() || undefined,
+  email: payload.email?.trim() || '',
+  city: payload.city.trim(),
+  name: payload.name.trim(),
+  phone: payload.phone.trim(),
+  catalogPosition: payload.catalogPosition.trim()
+}));
 
 /** Данные для мерчанта NDD (раздел «Подключение продавца»). */
 const merchantDataBaseSchema = z.object({
@@ -330,9 +387,9 @@ sellerRoutes.post('/onboarding', requireAuth, writeLimiter, async (req: AuthRequ
     if (!user?.phoneVerifiedAt) return res.status(403).json({ error: { code: 'PHONE_NOT_VERIFIED' } });
 
     const phone = user.phone ?? payload.phone;
-    const storeName = (payload.storeName ?? '').trim() || payload.name;
-    const contactEmail = (payload.email ?? user.email ?? '').trim() || null;
-    const sellerType = normalizeSellerType(payload.sellerType);
+    const storeName = payload.storeName || payload.name;
+    const contactEmail = (payload.email || user.email || '').trim() || null;
+    const sellerType = payload.sellerType;
     const legacySellerType = sellerTypeToLegacyLabel[sellerType];
 
     const profileData = {
@@ -341,7 +398,7 @@ sellerRoutes.post('/onboarding', requireAuth, writeLimiter, async (req: AuthRequ
       storeName,
       phone,
       city: payload.city,
-      referenceCategory: payload.referenceCategory?.trim() || null,
+      referenceCategory: payload.referenceCategory || null,
       catalogPosition: payload.catalogPosition,
       legalType: legacySellerType,
       contactName: payload.name.trim(),
