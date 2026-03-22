@@ -401,6 +401,9 @@ model ChatThread {
   id              String           @id @default(cuid())
   kind            ChatThreadKind   @default(SUPPORT)
   userId          String
+  sellerId        String?
+  shopId          String?
+  supportTopic    String?
   status          ChatThreadStatus @default(ACTIVE)
   returnRequestId String?          @unique
   lastMessageAt   DateTime?
@@ -411,6 +414,10 @@ model ChatThread {
   user            User             @relation(fields: [userId], references: [id])
 
   @@index([userId])
+  @@index([sellerId])
+  @@index([shopId])
+  @@index([kind, userId, sellerId, shopId])
+  @@index([kind, supportTopic])
   @@index([status])
   @@index([lastMessageAt])
 }

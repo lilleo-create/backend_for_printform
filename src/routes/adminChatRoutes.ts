@@ -7,6 +7,8 @@ import { writeLimiter } from '../middleware/rateLimiters';
 
 export const adminChatRoutes = Router();
 
+const DEFAULT_SUPPORT_TOPIC = 'GENERAL';
+
 const listSchema = z.object({
   status: z.enum(['ACTIVE', 'CLOSED']).optional(),
   q: z.string().trim().min(1).optional()
@@ -60,6 +62,7 @@ adminChatRoutes.get('/', async (req, res, next) => {
     });
     const shaped = threads.map((thread) => ({
       ...thread,
+      supportTopic: thread.supportTopic ?? (thread.kind === 'SUPPORT' ? DEFAULT_SUPPORT_TOPIC : null),
       lastMessage: thread.messages[0] ?? null,
       messages: undefined
     }));
@@ -101,7 +104,7 @@ adminChatRoutes.get('/:id', async (req, res, next) => {
       where: { threadId: thread.id },
       orderBy: { createdAt: 'asc' }
     });
-    res.json({ data: { thread, messages } });
+    res.json({ data: { thread: { ...thread, supportTopic: thread.supportTopic ?? (thread.kind === 'SUPPORT' ? DEFAULT_SUPPORT_TOPIC : null) }, messages } });
   } catch (error) {
     next(error);
   }

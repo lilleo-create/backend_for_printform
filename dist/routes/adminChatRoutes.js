@@ -7,6 +7,7 @@ const authMiddleware_1 = require("../middleware/authMiddleware");
 const prisma_1 = require("../lib/prisma");
 const rateLimiters_1 = require("../middleware/rateLimiters");
 exports.adminChatRoutes = (0, express_1.Router)();
+const DEFAULT_SUPPORT_TOPIC = 'GENERAL';
 const listSchema = zod_1.z.object({
     status: zod_1.z.enum(['ACTIVE', 'CLOSED']).optional(),
     q: zod_1.z.string().trim().min(1).optional()
@@ -56,6 +57,7 @@ exports.adminChatRoutes.get('/', async (req, res, next) => {
         });
         const shaped = threads.map((thread) => ({
             ...thread,
+            supportTopic: thread.supportTopic ?? (thread.kind === 'SUPPORT' ? DEFAULT_SUPPORT_TOPIC : null),
             lastMessage: thread.messages[0] ?? null,
             messages: undefined
         }));
@@ -97,7 +99,7 @@ exports.adminChatRoutes.get('/:id', async (req, res, next) => {
             where: { threadId: thread.id },
             orderBy: { createdAt: 'asc' }
         });
-        res.json({ data: { thread, messages } });
+        res.json({ data: { thread: { ...thread, supportTopic: thread.supportTopic ?? (thread.kind === 'SUPPORT' ? DEFAULT_SUPPORT_TOPIC : null) }, messages } });
     }
     catch (error) {
         next(error);
