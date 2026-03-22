@@ -45,6 +45,15 @@ meRoutes.get('/', requireAuth, async (req: AuthRequest, res, next) => {
         name: user.name,
         fullName: user.fullName,
         role: user.role,
+        roles: {
+          isAdmin: req.user!.isAdmin,
+          isSeller: req.user!.isSeller,
+          isBuyer: true
+        },
+        capabilities: {
+          canAccessAdmin: req.user!.isAdmin,
+          canAccessSeller: req.user!.isSeller
+        },
         email: user.email
       }
     });

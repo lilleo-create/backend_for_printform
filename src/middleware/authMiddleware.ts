@@ -8,6 +8,8 @@ import { forbidden, unauthorized } from '../utils/httpErrors';
 export type AuthUser = {
   userId: string;
   role: Role;
+  isAdmin: boolean;
+  isSeller: boolean;
 };
 
 export type AuthRequest = Request & {
@@ -18,13 +20,29 @@ export type OtpAuthRequest = Request & {
   otp?: { userId: string };
 };
 
-const loadUserRole = async (userId: string): Promise<Role | null> => {
+const loadUserAccess = async (userId: string): Promise<{ role: Role; isAdmin: boolean; isSeller: boolean } | null> => {
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { role: true }
+    select: {
+      role: true,
+      sellerProfile: {
+        select: { id: true }
+      }
+    }
   });
 
-  return user?.role ?? null;
+  if (!user) {
+    return null;
+  }
+
+  const isAdmin = user.role === 'ADMIN';
+  const isSeller = isAdmin || Boolean(user.sellerProfile);
+
+  return {
+    role: user.role,
+    isAdmin,
+    isSeller
+  };
 };
 
 export const requireAuth = async (
@@ -52,12 +70,12 @@ export const requireAuth = async (
       return unauthorized(res);
     }
 
-    const role = await loadUserRole(decoded.userId);
-    if (!role) {
+    const access = await loadUserAccess(decoded.userId);
+    if (!access) {
       return unauthorized(res);
     }
 
-    req.user = { userId: decoded.userId, role };
+    req.user = { userId: decoded.userId, role: access.role, isAdmin: access.isAdmin, isSeller: access.isSeller };
     return next();
   } catch {
     return unauthorized(res);
@@ -99,7 +117,7 @@ export const requireAdmin = (
   res: Response,
   next: NextFunction
 ): Response | void => {
-  if (!req.user || req.user.role !== 'ADMIN') {
+  if (!req.user || !req.user.isAdmin) {
     return forbidden(res, 'Admin only');
   }
 
@@ -115,16 +133,11 @@ export const requireSeller = async (
     return unauthorized(res);
   }
 
-  if (req.user.role === 'ADMIN') {
+  if (req.user.isSeller) {
     return next();
   }
 
-  const profile = await prisma.sellerProfile.findUnique({
-    where: { userId: req.user.userId },
-    select: { id: true }
-  });
-
-  if (!profile) {
+  if (!req.user.isSeller) {
     return forbidden(res, 'Seller only');
   }
 
