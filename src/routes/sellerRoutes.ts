@@ -205,6 +205,44 @@ type PreparationChecklist = {
   readyForDropoffAt?: string;
 };
 
+type SellerMediaInput = {
+  type: 'IMAGE' | 'VIDEO';
+  url: string;
+  isPrimary?: boolean;
+  sortOrder?: number;
+};
+
+type SellerProductPayload = Partial<z.infer<typeof sellerProductSchema>>;
+
+const normalizeProductMediaInput = (payload: SellerProductPayload): SellerMediaInput[] => {
+  if (payload.media !== undefined) {
+    return payload.media.map((item, index) => ({
+      type: item.type,
+      url: item.url,
+      isPrimary: item.isPrimary ?? false,
+      sortOrder: item.sortOrder ?? index
+    }));
+  }
+
+  const imageUrls = payload.imageUrls ?? (payload.image ? [payload.image] : []);
+  const videoUrls = payload.videoUrls ?? [];
+
+  return [
+    ...imageUrls.map((url, index) => ({
+      type: 'IMAGE' as const,
+      url,
+      isPrimary: index === 0,
+      sortOrder: index
+    })),
+    ...videoUrls.map((url, index) => ({
+      type: 'VIDEO' as const,
+      url,
+      isPrimary: false,
+      sortOrder: imageUrls.length + index
+    }))
+  ];
+};
+
 function readPreparationChecklist(statusRaw: unknown): PreparationChecklist {
   const raw = (statusRaw && typeof statusRaw === 'object' ? statusRaw : {}) as Record<string, unknown>;
   const prep = (raw.preparationChecklist && typeof raw.preparationChecklist === 'object' ? raw.preparationChecklist : {}) as Record<string, unknown>;
@@ -552,7 +590,10 @@ sellerRoutes.get('/products', async (req: AuthRequest, res, next) => {
 
     const sellerProducts = await prisma.product.findMany({
       where: { sellerId: req.user!.userId },
-      include: { images: { orderBy: { sortOrder: 'asc' } } }
+      include: {
+        images: { orderBy: { sortOrder: 'asc' } },
+        media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] }
+      }
     });
 
     res.json({ data: sellerProducts });
@@ -572,13 +613,13 @@ sellerRoutes.post('/products', writeLimiter, async (req: AuthRequest, res, next)
     const normalizedCategory = await ensureReferenceCategory(payload.category);
     const skuFallback = payload.sku ?? `SKU-${Date.now()}`;
 
-    if (!payload.imageUrls?.length && !payload.image) {
+    const media = normalizeProductMediaInput(payload);
+    const imageMedia = media.filter((item) => item.type === 'IMAGE');
+    const videoMedia = media.filter((item) => item.type === 'VIDEO');
+
+    if (!imageMedia.length) {
       return res.status(400).json({ error: { code: 'IMAGE_REQUIRED' } });
     }
-
-    const providedImageUrls = payload.imageUrls ?? [];
-    const imageUrls = providedImageUrls.length ? providedImageUrls : payload.image ? [payload.image] : [];
-    const videoUrls = payload.videoUrls ?? [];
 
     const product = await productUseCases.create({
       ...payload,
@@ -588,9 +629,10 @@ sellerRoutes.post('/products', writeLimiter, async (req: AuthRequest, res, next)
       sku: skuFallback,
       currency: payload.currency ?? 'RUB',
       sellerId: req.user!.userId,
-      image: imageUrls[0],
-      imageUrls,
-      videoUrls,
+      image: imageMedia[0].url,
+      imageUrls: imageMedia.map((item) => item.url),
+      videoUrls: videoMedia.map((item) => item.url),
+      media
     });
 
     res.status(201).json({ data: product });
@@ -611,8 +653,11 @@ sellerRoutes.put('/products/:id', writeLimiter, async (req: AuthRequest, res, ne
 
     const payload = sellerProductSchema.partial().parse(req.body);
     const normalizedCategory = payload.category ? await ensureReferenceCategory(payload.category) : undefined;
-    const imageUrls = payload.imageUrls ?? (payload.image ? [payload.image] : undefined);
-    const videoUrls = payload.videoUrls;
+    const media = payload.media !== undefined || payload.imageUrls !== undefined || payload.videoUrls !== undefined || payload.image !== undefined
+      ? normalizeProductMediaInput(payload)
+      : undefined;
+    const imageMedia = media?.filter((item) => item.type === 'IMAGE') ?? [];
+    const videoMedia = media?.filter((item) => item.type === 'VIDEO') ?? [];
 
     const product = await productUseCases.update(req.params.id, {
       ...payload,
@@ -622,9 +667,10 @@ sellerRoutes.put('/products/:id', writeLimiter, async (req: AuthRequest, res, ne
       sku: payload.sku,
       currency: payload.currency,
       sellerId: req.user!.userId,
-      image: imageUrls?.[0] ?? payload.image,
-      imageUrls,
-      videoUrls,
+      image: imageMedia[0]?.url ?? payload.image,
+      imageUrls: media ? imageMedia.map((item) => item.url) : undefined,
+      videoUrls: media ? videoMedia.map((item) => item.url) : undefined,
+      media
     });
 
     res.json({ data: product });

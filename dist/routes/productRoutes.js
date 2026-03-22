@@ -72,6 +72,14 @@ exports.sellerProductSchema = zod_1.z.object({
     image: mediaUrlSchema.optional(),
     imageUrls: zod_1.z.array(mediaUrlSchema).optional(),
     videoUrls: zod_1.z.array(mediaUrlSchema).optional(),
+    media: zod_1.z
+        .array(zod_1.z.object({
+        type: zod_1.z.enum(['IMAGE', 'VIDEO']),
+        url: mediaUrlSchema,
+        isPrimary: zod_1.z.boolean().optional(),
+        sortOrder: zod_1.z.number().int().min(0).optional()
+    }))
+        .optional(),
     description: zod_1.z.string().min(5),
     descriptionShort: zod_1.z.string().min(5).optional(),
     descriptionFull: zod_1.z.string().min(10).optional(),
