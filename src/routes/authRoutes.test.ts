@@ -8,6 +8,7 @@ import { errorHandler } from '../middleware/errorHandler';
 import { userRepository } from '../repositories/userRepository';
 import { deviceTrustService } from '../services/deviceTrustService';
 import { authService } from '../services/authService';
+import { otpService } from '../services/otpService';
 import { env } from '../config/env';
 
 const buildApp = () => {
@@ -95,20 +96,27 @@ test('POST /auth/login accepts phone sent in email field and authorizes without 
   assert.equal(response.body.data.session.trustedDevice, false);
 });
 
-test('POST /auth/login returns separate device verification state without refresh-session cookies when trusted-device flow is enabled', async () => {
+test('POST /auth/login starts existing OTP flow for a new device and returns challenge contract without issuing session tokens', async () => {
   env.authTrustedDeviceEnforced = true;
   let trustedLookupCalls = 0;
-  (deviceTrustService.cleanupExpired as any) = async () => {};
-  (deviceTrustService.findTrustedDeviceForRequest as any) = async () => {
+  let otpRequests = 0;
+  (deviceTrustService.cleanupExpired as unknown as () => Promise<void>) = async () => {};
+  (deviceTrustService.findTrustedDeviceForRequest as unknown as () => Promise<null>) = async () => {
     trustedLookupCalls += 1;
     return null;
   };
-  (authService.login as any) = async ({ phone }: { phone: string }) => {
+  (authService.login as unknown as (args: { phone: string }, password: string) => Promise<{ user: typeof baseUser }>) = async ({ phone }: { phone: string }) => {
     assert.equal(phone, '+79991234567');
     return { user: baseUser };
   };
-  (authService.issueTokens as any) = async () => {
+  (authService.issueTokens as unknown as () => Promise<never>) = async () => {
     throw new Error('issueTokens should not run for a new device challenge');
+  };
+  (otpService.requestOtp as unknown as (payload: { phone: string; purpose: string }) => Promise<{ ok: true; data: { requestId: string; phone: string; provider: 'plusofon'; verificationType: 'call_to_auth'; callToAuthNumber: string | null } }>) = async (payload) => {
+    otpRequests += 1;
+    assert.equal(payload.phone, '+79991234567');
+    assert.equal(payload.purpose, 'login_device');
+    return { ok: true, data: { requestId: 'req-123', phone: '+79991234567', provider: 'plusofon', verificationType: 'call_to_auth', callToAuthNumber: '+78005553535' } };
   };
 
   const response = await request(buildApp())
@@ -117,8 +125,48 @@ test('POST /auth/login returns separate device verification state without refres
 
   assert.equal(response.status, 403);
   assert.equal(trustedLookupCalls, 1);
+  assert.equal(otpRequests, 1);
   assert.equal(response.body.error.code, 'DEVICE_VERIFICATION_REQUIRED');
   assert.equal(response.body.requiresDeviceVerification, true);
-  assert.equal(response.body.verification.reason, 'new_device');
+  assert.equal(response.body.verificationMethod, 'existing_otp_flow');
+  assert.equal(response.body.requestId, 'req-123');
+  assert.equal(response.body.phone, '+79991234567');
   assert.equal(response.headers['set-cookie']?.some((value: string) => value.includes(`${env.authRefreshCookieName}=`)), true);
+});
+
+test('POST /auth/otp/verify completes login_device challenge via existing OTP endpoint and trusts device', async () => {
+  const tempToken = authService.issueLoginDeviceOtpToken({ id: baseUser.id });
+  let trustCalls = 0;
+  let issueTokensCalls = 0;
+  (otpService.verifyOtpByRequestId as unknown as (payload: { phone: string; requestId: string; purpose: string }) => Promise<{ phone: string }>) = async (payload) => {
+    assert.equal(payload.phone, '+7 (999) 123-45-67');
+    assert.equal(payload.requestId, 'req-verified');
+    assert.equal(payload.purpose, 'login_device');
+    return { phone: '+79991234567' };
+  };
+  (userRepository.findById as unknown as (id: string) => Promise<typeof baseUser | null>) = async (id) => {
+    assert.equal(id, baseUser.id);
+    return baseUser;
+  };
+  (deviceTrustService.trustCurrentDevice as unknown as (userId: string) => Promise<{ device: { id: string }; token: string }>) = async (userId) => {
+    trustCalls += 1;
+    assert.equal(userId, baseUser.id);
+    return { device: { id: 'trusted-1' }, token: 'trusted-token' };
+  };
+  (authService.issueTokens as unknown as () => Promise<{ accessToken: string; refreshToken: string; refreshExpiresAt: Date }>) = async () => {
+    issueTokensCalls += 1;
+    return { accessToken: 'access-token', refreshToken: 'refresh-token', refreshExpiresAt: new Date() };
+  };
+
+  const response = await request(buildApp())
+    .post('/auth/otp/verify')
+    .set('Authorization', `Bearer ${tempToken}`)
+    .send({ phone: '+7 (999) 123-45-67', requestId: 'req-verified', purpose: 'login_device' });
+
+  assert.equal(response.status, 200);
+  assert.equal(trustCalls, 1);
+  assert.equal(issueTokensCalls, 1);
+  assert.equal(response.body.data.accessToken, 'access-token');
+  assert.equal(response.body.data.session.trustedDevice, true);
+  assert.equal(response.headers['set-cookie']?.some((value: string) => value.includes(`${env.trustedDeviceCookieName}=trusted-token`)), true);
 });
