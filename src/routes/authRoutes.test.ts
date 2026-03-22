@@ -171,6 +171,39 @@ test('POST /auth/otp/verify completes login_device challenge via existing OTP en
   assert.equal(response.headers['set-cookie']?.some((value: string) => value.includes(`${env.trustedDeviceCookieName}=trusted-token`)), true);
 });
 
+test('POST /auth/login/device/verify accepts tempToken from body and completes device verification without explicit purpose', async () => {
+  const tempToken = authService.issueLoginDeviceOtpToken({ id: baseUser.id });
+  let trustCalls = 0;
+  (otpService.verifyOtpByRequestId as unknown as (payload: { phone: string; requestId: string; purpose: string }) => Promise<{ phone: string }>) = async (payload) => {
+    assert.equal(payload.phone, '+7 (999) 123-45-67');
+    assert.equal(payload.requestId, 'req-device-body');
+    assert.equal(payload.purpose, 'login_device');
+    return { phone: '+79991234567' };
+  };
+  (userRepository.findById as unknown as (id: string) => Promise<typeof baseUser | null>) = async (id) => {
+    assert.equal(id, baseUser.id);
+    return baseUser;
+  };
+  (deviceTrustService.trustCurrentDevice as unknown as (userId: string) => Promise<{ device: { id: string }; token: string }>) = async (userId) => {
+    trustCalls += 1;
+    assert.equal(userId, baseUser.id);
+    return { device: { id: 'trusted-2' }, token: 'trusted-token-2' };
+  };
+  (authService.issueTokens as unknown as () => Promise<{ accessToken: string; refreshToken: string; refreshExpiresAt: Date }>) = async () => {
+    return { accessToken: 'access-token-2', refreshToken: 'refresh-token-2', refreshExpiresAt: new Date() };
+  };
+
+  const response = await request(buildApp())
+    .post('/auth/login/device/verify')
+    .send({ phone: '+7 (999) 123-45-67', requestId: 'req-device-body', tempToken });
+
+  assert.equal(response.status, 200);
+  assert.equal(trustCalls, 1);
+  assert.equal(response.body.data.accessToken, 'access-token-2');
+  assert.equal(response.body.data.session.trustedDevice, true);
+  assert.equal(response.headers['set-cookie']?.some((value: string) => value.includes(`${env.trustedDeviceCookieName}=trusted-token-2`)), true);
+});
+
 
 test('POST /auth/password-reset/request starts the existing OTP flow and returns reusable challenge contract', async () => {
   let otpRequests = 0;
@@ -215,6 +248,28 @@ test('POST /auth/password-reset/verify validates password reset via the existing
     .post('/auth/password-reset/verify')
     .set('Authorization', `Bearer ${tempToken}`)
     .send({ phone: '+7 (999) 123-45-67', requestId: 'reset-req-verified' });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.ok, true);
+  assert.equal(typeof response.body.resetToken, 'string');
+});
+
+test('POST /auth/otp/verify infers password_reset purpose from tempToken when purpose is omitted', async () => {
+  const tempToken = authService.issuePasswordResetOtpToken({ id: baseUser.id });
+  (userRepository.findById as unknown as (id: string) => Promise<typeof baseUser | null>) = async (id) => {
+    assert.equal(id, baseUser.id);
+    return baseUser;
+  };
+  (otpService.verifyOtpByRequestId as unknown as (payload: { phone: string; requestId: string; purpose: string }) => Promise<{ phone: string }>) = async (payload) => {
+    assert.equal(payload.phone, '+7 (999) 123-45-67');
+    assert.equal(payload.requestId, 'reset-req-generic');
+    assert.equal(payload.purpose, 'password_reset');
+    return { phone: '+79991234567' };
+  };
+
+  const response = await request(buildApp())
+    .post('/auth/otp/verify')
+    .send({ phone: '+7 (999) 123-45-67', requestId: 'reset-req-generic', tempToken });
 
   assert.equal(response.status, 200);
   assert.equal(response.body.ok, true);
