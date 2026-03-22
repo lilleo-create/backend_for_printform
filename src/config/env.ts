@@ -18,6 +18,25 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error('PORT must be a valid number');
 }
 
+const authAccessTokenTtlMinutes = Number(process.env.AUTH_ACCESS_TOKEN_TTL_MINUTES ?? 15);
+const authRefreshTokenTtlDays = Number(process.env.AUTH_REFRESH_TOKEN_TTL_DAYS ?? 30);
+const trustedDeviceTtlDays = Number(process.env.TRUSTED_DEVICE_TTL_DAYS ?? 30);
+const trustedDeviceCookieName = process.env.TRUSTED_DEVICE_COOKIE_NAME ?? 'trustedDeviceToken';
+const authRefreshCookieName = process.env.AUTH_REFRESH_COOKIE_NAME ?? 'refreshToken';
+const authCookieSameSiteRaw = (process.env.AUTH_COOKIE_SAME_SITE ?? 'lax').toLowerCase();
+const authCookieSameSite = ['strict', 'lax', 'none'].includes(authCookieSameSiteRaw)
+  ? (authCookieSameSiteRaw as 'strict' | 'lax' | 'none')
+  : 'lax';
+const authCookieDomain = process.env.AUTH_COOKIE_DOMAIN ?? '';
+
+if (
+  Number.isNaN(authAccessTokenTtlMinutes) ||
+  Number.isNaN(authRefreshTokenTtlDays) ||
+  Number.isNaN(trustedDeviceTtlDays)
+) {
+  throw new Error('AUTH_ACCESS_TOKEN_TTL_MINUTES, AUTH_REFRESH_TOKEN_TTL_DAYS, TRUSTED_DEVICE_TTL_DAYS must be numbers');
+}
+
 const jwtSecret = requireEnv('JWT_SECRET');
 const jwtRefreshSecret = requireEnv('JWT_REFRESH_SECRET');
 const otpPepper = requireEnv('OTP_HASH_PEPPER');
@@ -80,6 +99,13 @@ export const env = {
   port,
   databaseUrl: requireEnv('DATABASE_URL'),
   backendUrl: process.env.BACKEND_URL ?? `http://localhost:${port}`,
+  authAccessTokenTtlMinutes,
+  authRefreshTokenTtlDays,
+  trustedDeviceTtlDays,
+  trustedDeviceCookieName,
+  authRefreshCookieName,
+  authCookieSameSite,
+  authCookieDomain,
   jwtSecret,
   jwtRefreshSecret,
   frontendUrl: requireEnv('FRONTEND_URL'),
