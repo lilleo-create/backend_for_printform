@@ -315,18 +315,23 @@ const buildOtpLifecycleSnapshot = async (
   };
 };
 
-const resolveOtpPurpose = (
-  requestedPurpose: OtpPurpose | undefined,
-  decoded: DecodedAuthToken | null | undefined,
-):
-  | { purpose: OtpPurpose; error?: undefined }
+type ResolvedPurpose =
   | {
-      purpose?: undefined;
+      ok: true;
+      purpose: OtpPurpose;
+    }
+  | {
+      ok: false;
       error: {
         status: number;
         body: { error: { code: string }; expectedPurpose?: string };
       };
-    } => {
+    };
+
+const resolveOtpPurpose = (
+  requestedPurpose: OtpPurpose | undefined,
+  decoded: DecodedAuthToken | null | undefined,
+): ResolvedPurpose => {
   const inferredPurpose = inferOtpPurposeFromScope(decoded?.scope);
   if (
     inferredPurpose &&
@@ -334,6 +339,7 @@ const resolveOtpPurpose = (
     requestedPurpose !== inferredPurpose
   ) {
     return {
+      ok: false,
       error: {
         status: 409,
         body: {
@@ -341,11 +347,13 @@ const resolveOtpPurpose = (
           expectedPurpose: inferredPurpose,
         },
       },
-    } as const;
+    };
   }
+
   return {
+    ok: true,
     purpose: inferredPurpose ?? requestedPurpose ?? "buyer_register_phone",
-  } as const;
+  };
 };
 
 const buildOtpChallengeResponse = async (
@@ -934,10 +942,11 @@ authRoutes.post("/otp/request", otpRequestLimiter, async (req, res, next) => {
       payload.purpose as OtpPurpose | undefined,
       parsed.decoded,
     );
-    if ("error" in resolvedPurpose)
+    if (!resolvedPurpose.ok) {
       return res
         .status(resolvedPurpose.error.status)
         .json(resolvedPurpose.error.body);
+    }
     const purpose = resolvedPurpose.purpose;
     if (env.turnstileSecretKey && isTurnstileRequiredForPurpose(purpose)) {
       if (!payload.turnstileToken)
@@ -1034,10 +1043,11 @@ authRoutes.post("/otp/verify", otpVerifyLimiter, async (req, res, next) => {
       payload.purpose as OtpPurpose | undefined,
       parsed.decoded,
     );
-    if ("error" in resolvedPurpose)
+    if (!resolvedPurpose.ok) {
       return res
         .status(resolvedPurpose.error.status)
         .json(resolvedPurpose.error.body);
+    }
     const purpose = resolvedPurpose.purpose;
     const access = await verifyPurposeAccess(
       purpose,
