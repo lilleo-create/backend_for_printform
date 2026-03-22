@@ -40,13 +40,14 @@ model User {
 }
 
 model SellerProfile {
-  id                String   @id @default(cuid())
-  userId            String   @unique
-  status            String
+  id                String     @id @default(cuid())
+  userId            String     @unique
+  status            String     @default("PENDING")
+  sellerType        SellerType?
   storeName         String
   phone             String
   city              String
-  referenceCategory String
+  referenceCategory String?
   catalogPosition   String
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
@@ -700,6 +701,12 @@ enum Role {
   BUYER
   SELLER
   ADMIN
+}
+
+enum SellerType {
+  IP
+  SELF_EMPLOYED
+  LLC
 }
 
 enum ProductModerationStatus {

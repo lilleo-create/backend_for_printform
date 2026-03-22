@@ -5,7 +5,7 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import { requireAuth, requireSeller, AuthRequest } from "../middleware/authMiddleware";
-import { OrderStatus, type Prisma } from "@prisma/client";
+import { OrderStatus, SellerType, type Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { productUseCases } from "../usecases/productUseCases";
 import { orderUseCases } from "../usecases/orderUseCases";
@@ -69,14 +69,16 @@ const toShipmentView = (shipment: any) => {
 // Schemas
 // ---------------------------------------------------------
 /** Минимальная регистрация продавца: только базовые поля. Данные для мерчанта NDD и KYC — в разделе «Подключение продавца». */
+const sellerTypeInputSchema = z.enum(['IP', 'SELF_EMPLOYED', 'LLC', 'ИП', 'Самозанятый', 'ООО']);
+
 const sellerOnboardingSchema = z.object({
   name: z.string().min(2),
   phone: z.string().min(5),
   email: z.string().email().optional().or(z.literal('')),
-  status: z.enum(['ИП', 'ООО', 'Самозанятый']),
+  sellerType: sellerTypeInputSchema,
   storeName: z.string().optional(),
   city: z.string().min(2),
-  referenceCategory: z.string().min(2),
+  referenceCategory: z.string().min(2).optional(),
   catalogPosition: z.string().min(2)
 });
 
@@ -119,6 +121,29 @@ const merchantDataSchemaSamozanyaty = merchantDataBaseSchema.required({
   inn: true
 }).refine((d) => /^\d{12}$/.test(d.inn ?? ''), { message: 'ИНН самозанятого — 12 цифр', path: ['inn'] })
   .transform((d) => ({ ...d, kpp: undefined }));
+
+
+const sellerTypeToLegacyLabel: Record<SellerType, 'ИП' | 'Самозанятый' | 'ООО'> = {
+  IP: 'ИП',
+  SELF_EMPLOYED: 'Самозанятый',
+  LLC: 'ООО'
+};
+
+const normalizeSellerType = (value: z.infer<typeof sellerTypeInputSchema>): SellerType => {
+  if (value === 'ИП') return 'IP';
+  if (value === 'Самозанятый') return 'SELF_EMPLOYED';
+  if (value === 'ООО') return 'LLC';
+  return value;
+};
+
+const getSellerTypeFromProfile = (profile: { sellerType?: SellerType | null; legalType?: string | null; status?: string | null }) => {
+  if (profile.sellerType) return profile.sellerType;
+  const legacy = profile.legalType ?? profile.status ?? '';
+  if (legacy === 'ИП' || legacy === 'IP') return 'IP' as const;
+  if (legacy === 'Самозанятый' || legacy === 'SELF_EMPLOYED') return 'SELF_EMPLOYED' as const;
+  if (legacy === 'ООО' || legacy === 'LLC') return 'LLC' as const;
+  return null;
+};
 
 function parseMerchantDataPayload(body: unknown, status: 'ООО' | 'ИП' | 'Самозанятый') {
   if (status === 'ООО') return merchantDataSchemaOOO.parse(body);
@@ -307,15 +332,18 @@ sellerRoutes.post('/onboarding', requireAuth, writeLimiter, async (req: AuthRequ
     const phone = user.phone ?? payload.phone;
     const storeName = (payload.storeName ?? '').trim() || payload.name;
     const contactEmail = (payload.email ?? user.email ?? '').trim() || null;
+    const sellerType = normalizeSellerType(payload.sellerType);
+    const legacySellerType = sellerTypeToLegacyLabel[sellerType];
 
     const profileData = {
-      status: payload.status,
+      status: 'PENDING',
+      sellerType,
       storeName,
       phone,
       city: payload.city,
-      referenceCategory: payload.referenceCategory,
+      referenceCategory: payload.referenceCategory?.trim() || null,
       catalogPosition: payload.catalogPosition,
-      legalType: payload.status,
+      legalType: legacySellerType,
       contactName: payload.name.trim(),
       contactPhone: phone,
       contactEmail
@@ -326,7 +354,7 @@ sellerRoutes.post('/onboarding', requireAuth, writeLimiter, async (req: AuthRequ
       data: {
         name: payload.name,
         phone,
-        role: 'SELLER',
+        role: req.user!.isAdmin ? 'ADMIN' : 'SELLER',
         sellerProfile: {
           upsert: {
             create: profileData,
@@ -342,7 +370,13 @@ sellerRoutes.post('/onboarding', requireAuth, writeLimiter, async (req: AuthRequ
         name: updated.name,
         email: updated.email,
         phone: updated.phone,
-        role: updated.role
+        role: updated.role,
+        sellerType,
+        sellerStatus: profileData.status,
+        capabilities: {
+          isAdmin: req.user!.isAdmin,
+          isSeller: true
+        }
       }
     });
   } catch (error) {
@@ -383,11 +417,9 @@ const loadSellerContext = async (userId: string) => {
 };
 
 const respondSellerContext = async (req: AuthRequest, res: Response) => {
-  if (req.user?.role !== 'SELLER') return res.status(403).json({ code: 'FORBIDDEN', message: 'Seller only' });
-
-  const context = await loadSellerContext(req.user.userId);
+  const context = await loadSellerContext(req.user!.userId);
   if (!context) {
-    console.warn('Seller profile missing for user', { userId: req.user.userId });
+    console.warn('Seller profile missing for user', { userId: req.user!.userId });
     return res.status(409).json({ code: 'SELLER_PROFILE_MISSING', message: 'Seller onboarding required' });
   }
 
@@ -458,14 +490,19 @@ sellerRoutes.post('/kyc/submit', writeLimiter, async (req: AuthRequest, res, nex
 
     const profile = await prisma.sellerProfile.findFirst({
       where: { userId: req.user!.userId },
-      select: { status: true }
+      select: { status: true, sellerType: true, legalType: true }
     });
     if (!profile) {
       return res.status(409).json({ error: { code: 'SELLER_PROFILE_MISSING', message: 'Сначала завершите регистрацию продавца.' } });
     }
 
-    const status = profile.status as 'ООО' | 'ИП' | 'Самозанятый';
-    const merchantPayload = parseMerchantDataPayload(submitPayload.merchantData, status);
+    const sellerType = getSellerTypeFromProfile(profile);
+    if (!sellerType) {
+      return res.status(409).json({ error: { code: 'SELLER_TYPE_MISSING', message: 'Тип продавца не заполнен. Повторите onboarding.' } });
+    }
+
+    const legalType = sellerTypeToLegacyLabel[sellerType];
+    const merchantPayload = parseMerchantDataPayload(submitPayload.merchantData, legalType);
 
     const latestSubmission = await prisma.sellerKycSubmission.findFirst({
       where: { userId: req.user!.userId },
@@ -499,7 +536,7 @@ sellerRoutes.post('/kyc/submit', writeLimiter, async (req: AuthRequest, res, nex
       await tx.sellerProfile.update({
         where: { userId: req.user!.userId },
         data: {
-          ...normalizeMerchantUpdateData(merchantPayload, status),
+          ...normalizeMerchantUpdateData(merchantPayload, legalType),
           ...consentData
         }
       });
