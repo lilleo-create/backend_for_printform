@@ -1,28 +1,45 @@
-import rateLimit from 'express-rate-limit';
-import type { Request } from 'express';
-import { env } from '../config/env';
+import rateLimit from "express-rate-limit";
+import type { Request } from "express";
+import { env } from "../config/env";
 
-const isPublicProductRead = (req: Request) => req.method === 'GET' && req.path.startsWith('/products');
+const isPublicProductRead = (req: Request) =>
+  req.method === "GET" && req.path.startsWith("/products");
 
-const createLimiter = (options: { windowMs: number; max: number; skip?: (req: Request) => boolean }) =>
+const createLimiter = (options: {
+  windowMs: number;
+  max: number;
+  skip?: (req: Request) => boolean;
+}) =>
   rateLimit({
     windowMs: options.windowMs,
     max: options.max,
     standardHeaders: true,
     legacyHeaders: false,
-    message: { error: { code: 'RATE_LIMITED' } },
+    handler: (_req, res, _next, opts) => {
+      const retryAfterMs =
+        typeof opts.windowMs === "number" ? opts.windowMs : options.windowMs;
+      const retryAfterSeconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
+      res.setHeader("Retry-After", String(retryAfterSeconds));
+      return res.status(opts.statusCode).json({
+        error: {
+          code: "RATE_LIMITED",
+          retryAfterSeconds,
+          resendAvailableAt: new Date(Date.now() + retryAfterMs).toISOString(),
+        },
+      });
+    },
     skip: (req) =>
-      req.method === 'OPTIONS' ||
-      req.path === '/health' ||
-      (options.skip ? options.skip(req) : false)
+      req.method === "OPTIONS" ||
+      req.path === "/health" ||
+      (options.skip ? options.skip(req) : false),
   });
 
-const isDev = process.env.NODE_ENV !== 'production';
+const isDev = process.env.NODE_ENV !== "production";
 const globalMax = env.isProduction ? 200 : 1000;
 export const globalLimiter = createLimiter({
   windowMs: 5 * 60 * 1000,
   max: globalMax,
-  skip: isPublicProductRead
+  skip: isPublicProductRead,
 });
 export const authLimiter = createLimiter({ windowMs: 15 * 60 * 1000, max: 30 });
 export const otpRequestLimiter = createLimiter({
@@ -34,4 +51,8 @@ export const otpVerifyLimiter = createLimiter({
   max: 10,
 });
 export const writeLimiter = createLimiter({ windowMs: 5 * 60 * 1000, max: 60 });
-export const publicReadLimiter = createLimiter({ windowMs: 60 * 1000, max: 120 });
+export const publicReadLimiter = createLimiter({
+  windowMs: 60 * 1000,
+  max: 120,
+});
+void isDev;
