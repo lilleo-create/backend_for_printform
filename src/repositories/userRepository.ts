@@ -38,5 +38,17 @@ export const userRepository = {
     prisma.user.update({
       where: { id },
       data: { passwordHash }
+    }),
+  updatePasswordAndInvalidateSessions: (id: string, passwordHash: string) =>
+    prisma.$transaction(async (tx) => {
+      const user = await tx.user.update({
+        where: { id },
+        data: { passwordHash }
+      });
+      await tx.refreshToken.updateMany({
+        where: { userId: id, revokedAt: null },
+        data: { revokedAt: new Date() }
+      });
+      return user;
     })
 };

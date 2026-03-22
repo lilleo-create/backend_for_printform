@@ -28,6 +28,7 @@ model User {
   moderatedProducts      Product[]              @relation("ProductModerator")
   products               Product[]
   refreshTokens          RefreshToken[]
+  trustedDevices         TrustedDevice[]
   returnRequests         ReturnRequest[]
   moderatedReviews       Review[]               @relation("ReviewModerator")
   reviews                Review[]
@@ -550,11 +551,38 @@ model PendingRegistration {
   @@index([expiresAt])
 }
 model RefreshToken {
-  id        String   @id @default(cuid())
-  token     String   @unique
-  userId    String
-  expiresAt DateTime
-  user      User     @relation(fields: [userId], references: [id])
+  id              String   @id @default(cuid())
+  token           String   @unique
+  userId          String
+  expiresAt       DateTime
+  trustedDeviceId String?
+  createdAt       DateTime @default(now())
+  lastUsedAt      DateTime?
+  revokedAt       DateTime?
+  user            User     @relation(fields: [userId], references: [id])
+  trustedDevice   TrustedDevice? @relation(fields: [trustedDeviceId], references: [id])
+
+  @@index([userId, expiresAt])
+}
+
+model TrustedDevice {
+  id              String   @id @default(cuid())
+  userId          String
+  tokenHash       String   @unique
+  fingerprintHash String
+  label           String?
+  userAgent       String?
+  lastIp          String?
+  lastSeenAt      DateTime @default(now())
+  expiresAt       DateTime
+  revokedAt       DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  user            User     @relation(fields: [userId], references: [id])
+  refreshTokens   RefreshToken[]
+
+  @@index([userId, expiresAt])
+  @@index([userId, fingerprintHash])
 }
 
 model PhoneOtp {
@@ -699,6 +727,7 @@ enum OtpPurpose {
   SELLER_CHANGE_PAYOUT_DETAILS
   SELLER_PAYOUT_SETTINGS_VERIFY
   PASSWORD_RESET
+  LOGIN_DEVICE
 }
 
 enum OtpChannel {
