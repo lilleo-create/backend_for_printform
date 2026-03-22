@@ -121,14 +121,11 @@ export const plusofonService = {
           'auth_number'
         ]) ?? null;
 
-      const resolvedPhone =
-        pickFromRecord(candidate, ['phone', 'recipient', 'phone_number']) ?? phone;
-
       return {
         requestId,
         verificationType: 'call_to_auth',
         callToAuthNumber,
-        phone: resolvedPhone,
+        phone,
         raw
       };
     } catch (error) {
