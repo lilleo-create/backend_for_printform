@@ -93,7 +93,7 @@ const otpRequestSchema = z.object({
 });
 const otpVerifySchema = z
   .object({
-    phone: z.string().min(5),
+    phone: z.string().min(5).optional(),
     code: z.string().min(4).optional(),
     requestId: z.string().min(2).optional(),
     purpose: otpPurposeSchema.optional(),
@@ -102,11 +102,15 @@ const otpVerifySchema = z
   .refine((value) => Boolean(value.code || value.requestId), {
     message: "code or requestId is required",
     path: ["code"],
+  })
+  .refine((value) => Boolean(value.requestId || value.phone), {
+    message: "phone is required when requestId is missing",
+    path: ["phone"],
   });
 const passwordResetRequestSchema = z.object({ phone: z.string().min(5) });
 const passwordResetVerifySchema = z
   .object({
-    phone: z.string().min(5),
+    phone: z.string().min(5).optional(),
     code: z.string().min(4).optional(),
     requestId: z.string().min(2).optional(),
     tempToken: z.string().min(10).optional(),
@@ -114,10 +118,14 @@ const passwordResetVerifySchema = z
   .refine((value) => Boolean(value.code || value.requestId), {
     message: "code or requestId is required",
     path: ["code"],
+  })
+  .refine((value) => Boolean(value.requestId || value.phone), {
+    message: "phone is required when requestId is missing",
+    path: ["phone"],
   });
 const deviceLoginVerifySchema = z
   .object({
-    phone: z.string().min(5),
+    phone: z.string().min(5).optional(),
     code: z.string().min(4).optional(),
     requestId: z.string().min(2).optional(),
     tempToken: z.string().min(10).optional(),
@@ -125,6 +133,10 @@ const deviceLoginVerifySchema = z
   .refine((value) => Boolean(value.code || value.requestId), {
     message: "code or requestId is required",
     path: ["code"],
+  })
+  .refine((value) => Boolean(value.requestId || value.phone), {
+    message: "phone is required when requestId is missing",
+    path: ["phone"],
   });
 const passwordResetConfirmSchema = z.object({
   token: z.string().min(10),
@@ -544,7 +556,7 @@ type PurposeAccessResult =
 const verifyPurposeAccess = async (
   purpose: OtpPurpose,
   decoded: DecodedAuthToken | null | undefined,
-  phoneRaw: string,
+  phoneRaw?: string,
 ): Promise<PurposeAccessResult> => {
   if (!decoded || !canUseExistingOtpFlow(decoded.scope, purpose)) {
     return {
@@ -566,7 +578,7 @@ const verifyPurposeAccess = async (
     };
   }
 
-  const phone = normalizePhone(phoneRaw);
+  const phone = phoneRaw ? normalizePhone(phoneRaw) : null;
   if (purpose === "buyer_register_phone") {
     const pending = await prisma.pendingRegistration.findUnique({
       where: { id: decoded.registrationSessionId },
@@ -577,6 +589,10 @@ const verifyPurposeAccess = async (
           status: 401,
           body: { error: { code: "REGISTRATION_SESSION_INVALID" } },
         },
+      };
+    if (!phone)
+      return {
+        error: { status: 400, body: { error: { code: "PHONE_REQUIRED" } } },
       };
     if (phone !== pending.phone)
       return {
@@ -590,10 +606,19 @@ const verifyPurposeAccess = async (
     : null;
   if (!user?.phone)
     return { error: { status: 404, body: { error: { code: "NOT_FOUND" } } } };
-  if (phone !== user.phone)
+  if (!phone) return { phone: user.phone, user };
+  if (phone !== user.phone) {
+    console.info("[AUTH][OTP_VERIFY][PHONE_MISMATCH]", {
+      purpose,
+      userId: user.id,
+      storedUserPhone: user.phone,
+      incomingPhoneRaw: phoneRaw,
+      incomingPhoneNormalized: phone,
+    });
     return {
       error: { status: 400, body: { error: { code: "PHONE_MISMATCH" } } },
     };
+  }
   return { phone, user };
 };
 
@@ -819,7 +844,7 @@ authRoutes.post(
             purpose: "password_reset",
           })
         : otpService.verifyOtp({
-            phone: payload.phone,
+            phone: payload.phone!,
             code: payload.code!,
             purpose: "password_reset",
           }));
@@ -854,7 +879,7 @@ authRoutes.post(
             purpose: "login_device",
           })
         : await otpService.verifyOtp({
-            phone: payload.phone,
+            phone: payload.phone!,
             code: payload.code!,
             purpose: "login_device",
           });
@@ -1028,7 +1053,7 @@ authRoutes.post("/otp/verify", otpVerifyLimiter, async (req, res, next) => {
           purpose,
         })
       : await otpService.verifyOtp({
-          phone: payload.phone,
+          phone: payload.phone!,
           code: payload.code!,
           purpose,
         });
