@@ -5,6 +5,8 @@ declare global {
     interface User {
       userId: string;
       role: Role;
+      isAdmin: boolean;
+      isSeller: boolean;
     }
 
     interface Request {
