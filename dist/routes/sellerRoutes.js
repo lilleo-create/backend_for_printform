@@ -67,16 +67,67 @@ const toShipmentView = (shipment) => {
 // Schemas
 // ---------------------------------------------------------
 /** Минимальная регистрация продавца: только базовые поля. Данные для мерчанта NDD и KYC — в разделе «Подключение продавца». */
-const sellerOnboardingSchema = zod_1.z.object({
-    name: zod_1.z.string().min(2),
-    phone: zod_1.z.string().min(5),
-    email: zod_1.z.string().email().optional().or(zod_1.z.literal('')),
-    status: zod_1.z.enum(['ИП', 'ООО', 'Самозанятый']),
-    storeName: zod_1.z.string().optional(),
-    city: zod_1.z.string().min(2),
-    referenceCategory: zod_1.z.string().min(2),
-    catalogPosition: zod_1.z.string().min(2)
+const sellerTypeInputSchema = zod_1.z.enum(['IP', 'SELF_EMPLOYED', 'LLC', 'ИП', 'Самозанятый', 'ООО'], {
+    invalid_type_error: 'Укажите корректный тип продавца.',
+    required_error: 'Укажите тип продавца.'
 });
+const sellerTypeFieldSchema = sellerTypeInputSchema.optional();
+const sellerLifecycleStatusSchema = zod_1.z.string().trim().min(1).optional();
+const optionalTrimmedString = () => zod_1.z.preprocess((value) => {
+    if (typeof value !== 'string')
+        return value;
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : undefined;
+}, zod_1.z.string().min(2).optional());
+const sellerOnboardingSchema = zod_1.z.object({
+    name: zod_1.z.string({ required_error: 'Укажите имя продавца.' }).trim().min(2, 'Имя продавца должно содержать минимум 2 символа.'),
+    phone: zod_1.z.string({ required_error: 'Укажите номер телефона.' }).trim().min(5, 'Укажите корректный номер телефона.'),
+    email: zod_1.z.union([
+        zod_1.z.string().trim().email('Укажите корректный email.'),
+        zod_1.z.literal('')
+    ]).optional(),
+    sellerType: sellerTypeFieldSchema,
+    status: sellerLifecycleStatusSchema,
+    storeName: zod_1.z.string().trim().optional(),
+    city: zod_1.z.string({ required_error: 'Укажите город.' }).trim().min(2, 'Название города должно содержать минимум 2 символа.'),
+    referenceCategory: optionalTrimmedString()
+}).superRefine((payload, ctx) => {
+    if (!payload.sellerType && !payload.status) {
+        ctx.addIssue({
+            code: zod_1.z.ZodIssueCode.custom,
+            path: ['status'],
+            message: 'Укажите тип продавца.'
+        });
+        return;
+    }
+    if (payload.status && !['ИП', 'Самозанятый', 'ООО', 'IP', 'SELF_EMPLOYED', 'LLC'].includes(payload.status)) {
+        ctx.addIssue({
+            code: zod_1.z.ZodIssueCode.custom,
+            path: ['status'],
+            message: 'Поле status должно содержать тип продавца: ИП, Самозанятый или ООО.'
+        });
+    }
+    if (payload.sellerType && payload.status) {
+        const normalizedSellerType = normalizeSellerType(payload.sellerType);
+        const normalizedStatus = normalizeSellerType(payload.status);
+        if (normalizedSellerType !== normalizedStatus) {
+            ctx.addIssue({
+                code: zod_1.z.ZodIssueCode.custom,
+                path: ['status'],
+                message: 'Поля status и sellerType передают один и тот же тип продавца и не должны конфликтовать.'
+            });
+        }
+    }
+}).transform((payload) => ({
+    ...payload,
+    sellerType: normalizeSellerType((payload.sellerType ?? payload.status)),
+    status: undefined,
+    storeName: payload.storeName?.trim() || undefined,
+    email: payload.email?.trim() || '',
+    city: payload.city.trim(),
+    name: payload.name.trim(),
+    phone: payload.phone.trim()
+}));
 /** Данные для мерчанта NDD (раздел «Подключение продавца»). */
 const merchantDataBaseSchema = zod_1.z.object({
     contactName: zod_1.z.string().trim().min(2).optional(),
@@ -113,6 +164,32 @@ const merchantDataSchemaSamozanyaty = merchantDataBaseSchema.required({
     inn: true
 }).refine((d) => /^\d{12}$/.test(d.inn ?? ''), { message: 'ИНН самозанятого — 12 цифр', path: ['inn'] })
     .transform((d) => ({ ...d, kpp: undefined }));
+const sellerTypeToLegacyLabel = {
+    IP: 'ИП',
+    SELF_EMPLOYED: 'Самозанятый',
+    LLC: 'ООО'
+};
+const normalizeSellerType = (value) => {
+    if (value === 'ИП')
+        return 'IP';
+    if (value === 'Самозанятый')
+        return 'SELF_EMPLOYED';
+    if (value === 'ООО')
+        return 'LLC';
+    return value;
+};
+const getSellerTypeFromProfile = (profile) => {
+    if (profile.sellerType)
+        return profile.sellerType;
+    const legacy = profile.legalType ?? profile.status ?? '';
+    if (legacy === 'ИП' || legacy === 'IP')
+        return 'IP';
+    if (legacy === 'Самозанятый' || legacy === 'SELF_EMPLOYED')
+        return 'SELF_EMPLOYED';
+    if (legacy === 'ООО' || legacy === 'LLC')
+        return 'LLC';
+    return null;
+};
 function parseMerchantDataPayload(body, status) {
     if (status === 'ООО')
         return merchantDataSchemaOOO.parse(body);
@@ -265,16 +342,18 @@ exports.sellerRoutes.post('/onboarding', authMiddleware_1.requireAuth, rateLimit
         if (!user?.phoneVerifiedAt)
             return res.status(403).json({ error: { code: 'PHONE_NOT_VERIFIED' } });
         const phone = user.phone ?? payload.phone;
-        const storeName = (payload.storeName ?? '').trim() || payload.name;
-        const contactEmail = (payload.email ?? user.email ?? '').trim() || null;
+        const storeName = payload.storeName || payload.name;
+        const contactEmail = (payload.email || user.email || '').trim() || null;
+        const sellerType = payload.sellerType;
+        const legacySellerType = sellerTypeToLegacyLabel[sellerType];
         const profileData = {
-            status: payload.status,
+            status: 'PENDING',
+            sellerType,
             storeName,
             phone,
             city: payload.city,
-            referenceCategory: payload.referenceCategory,
-            catalogPosition: payload.catalogPosition,
-            legalType: payload.status,
+            referenceCategory: payload.referenceCategory || null,
+            legalType: legacySellerType,
             contactName: payload.name.trim(),
             contactPhone: phone,
             contactEmail
@@ -284,7 +363,7 @@ exports.sellerRoutes.post('/onboarding', authMiddleware_1.requireAuth, rateLimit
             data: {
                 name: payload.name,
                 phone,
-                role: 'SELLER',
+                role: req.user.isAdmin ? 'ADMIN' : 'SELLER',
                 sellerProfile: {
                     upsert: {
                         create: profileData,
@@ -299,7 +378,13 @@ exports.sellerRoutes.post('/onboarding', authMiddleware_1.requireAuth, rateLimit
                 name: updated.name,
                 email: updated.email,
                 phone: updated.phone,
-                role: updated.role
+                role: updated.role,
+                sellerType,
+                sellerStatus: profileData.status,
+                capabilities: {
+                    isAdmin: req.user.isAdmin,
+                    isSeller: true
+                }
             }
         });
     }
@@ -337,8 +422,6 @@ const loadSellerContext = async (userId) => {
     };
 };
 const respondSellerContext = async (req, res) => {
-    if (req.user?.role !== 'SELLER')
-        return res.status(403).json({ code: 'FORBIDDEN', message: 'Seller only' });
     const context = await loadSellerContext(req.user.userId);
     if (!context) {
         console.warn('Seller profile missing for user', { userId: req.user.userId });
@@ -414,13 +497,17 @@ exports.sellerRoutes.post('/kyc/submit', rateLimiters_1.writeLimiter, async (req
         }
         const profile = await prisma_1.prisma.sellerProfile.findFirst({
             where: { userId: req.user.userId },
-            select: { status: true }
+            select: { status: true, sellerType: true, legalType: true }
         });
         if (!profile) {
             return res.status(409).json({ error: { code: 'SELLER_PROFILE_MISSING', message: 'Сначала завершите регистрацию продавца.' } });
         }
-        const status = profile.status;
-        const merchantPayload = parseMerchantDataPayload(submitPayload.merchantData, status);
+        const sellerType = getSellerTypeFromProfile(profile);
+        if (!sellerType) {
+            return res.status(409).json({ error: { code: 'SELLER_TYPE_MISSING', message: 'Тип продавца не заполнен. Повторите onboarding.' } });
+        }
+        const legalType = sellerTypeToLegacyLabel[sellerType];
+        const merchantPayload = parseMerchantDataPayload(submitPayload.merchantData, legalType);
         const latestSubmission = await prisma_1.prisma.sellerKycSubmission.findFirst({
             where: { userId: req.user.userId },
             orderBy: { createdAt: 'desc' },
@@ -450,7 +537,7 @@ exports.sellerRoutes.post('/kyc/submit', rateLimiters_1.writeLimiter, async (req
             await tx.sellerProfile.update({
                 where: { userId: req.user.userId },
                 data: {
-                    ...normalizeMerchantUpdateData(merchantPayload, status),
+                    ...normalizeMerchantUpdateData(merchantPayload, legalType),
                     ...consentData
                 }
             });

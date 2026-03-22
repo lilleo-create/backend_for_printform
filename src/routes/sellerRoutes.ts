@@ -96,8 +96,7 @@ const sellerOnboardingSchema = z.object({
   status: sellerLifecycleStatusSchema,
   storeName: z.string().trim().optional(),
   city: z.string({ required_error: 'Укажите город.' }).trim().min(2, 'Название города должно содержать минимум 2 символа.'),
-  referenceCategory: optionalTrimmedString(),
-  catalogPosition: z.string({ required_error: 'Укажите позицию каталога.' }).trim().min(2, 'Укажите позицию каталога.')
+  referenceCategory: optionalTrimmedString()
 }).superRefine((payload, ctx) => {
   if (!payload.sellerType && !payload.status) {
     ctx.addIssue({
@@ -135,8 +134,7 @@ const sellerOnboardingSchema = z.object({
   email: payload.email?.trim() || '',
   city: payload.city.trim(),
   name: payload.name.trim(),
-  phone: payload.phone.trim(),
-  catalogPosition: payload.catalogPosition.trim()
+  phone: payload.phone.trim()
 }));
 
 /** Данные для мерчанта NDD (раздел «Подключение продавца»). */
@@ -399,7 +397,6 @@ sellerRoutes.post('/onboarding', requireAuth, writeLimiter, async (req: AuthRequ
       phone,
       city: payload.city,
       referenceCategory: payload.referenceCategory || null,
-      catalogPosition: payload.catalogPosition,
       legalType: legacySellerType,
       contactName: payload.name.trim(),
       contactPhone: phone,

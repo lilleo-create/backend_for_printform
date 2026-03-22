@@ -89,7 +89,6 @@ test('POST /seller/onboarding maps frontend status to sellerType and accepts emp
       email: 'LaggerFint@yandex.ru',
       status: 'ИП',
       city: 'Москва',
-      catalogPosition: 'standard',
       referenceCategory: ''
     });
 
@@ -98,6 +97,7 @@ test('POST /seller/onboarding maps frontend status to sellerType and accepts emp
   assert.equal(capturedUpdateArgs?.data.sellerProfile.upsert.create.sellerType, 'IP');
   assert.equal(capturedUpdateArgs?.data.sellerProfile.upsert.create.legalType, 'ИП');
   assert.equal(capturedUpdateArgs?.data.sellerProfile.upsert.create.referenceCategory, null);
+  assert.equal('catalogPosition' in (capturedUpdateArgs?.data.sellerProfile.upsert.create ?? {}), false);
   assert.equal(capturedUpdateArgs?.data.phone, '+79991234567');
 });
 
@@ -110,14 +110,14 @@ test('POST /seller/onboarding still supports legacy sellerType payloads', async 
       phone: '+79990000000',
       email: 'seller@example.com',
       sellerType: 'SELF_EMPLOYED',
-      city: 'Казань',
-      catalogPosition: 'priority'
+      city: 'Казань'
     });
 
   assert.equal(response.status, 200);
   assert.equal(response.body.data.sellerType, 'SELF_EMPLOYED');
   assert.equal(capturedUpdateArgs?.data.sellerProfile.upsert.create.sellerType, 'SELF_EMPLOYED');
   assert.equal(capturedUpdateArgs?.data.sellerProfile.upsert.create.legalType, 'Самозанятый');
+  assert.equal('catalogPosition' in (capturedUpdateArgs?.data.sellerProfile.upsert.create ?? {}), false);
 });
 
 test('POST /seller/onboarding returns business validation message when status and sellerType conflict', async () => {
@@ -130,8 +130,7 @@ test('POST /seller/onboarding returns business validation message when status an
       email: 'seller@example.com',
       sellerType: 'LLC',
       status: 'ИП',
-      city: 'Казань',
-      catalogPosition: 'priority'
+      city: 'Казань'
     });
 
   assert.equal(response.status, 400);
