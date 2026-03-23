@@ -267,3 +267,87 @@ test('GET /seller/context returns profile.sellerType in seller context payload',
     }
   });
 });
+
+
+test('GET /seller/context keeps seller access for admin with seller profile', async () => {
+  const adminToken = jwt.sign({ userId, role: 'ADMIN', scope: 'access' }, env.jwtSecret);
+
+  (prisma.user.findUnique as unknown as (args: any) => Promise<any>) = async (args: any) => {
+    if (args?.select?.sellerProfile) {
+      return { role: 'ADMIN', sellerProfile: { id: 'profile-1', status: 'APPROVED' } };
+    }
+
+    throw new Error(`Unexpected prisma.user.findUnique call: ${JSON.stringify(args)}`);
+  };
+
+  (prisma.sellerProfile.findUnique as unknown as (args: any) => Promise<any>) = async (args: any) => {
+    assert.deepEqual(args, { where: { userId } });
+    return {
+      id: 'profile-1',
+      userId,
+      sellerType: 'IP',
+      legalType: 'ИП',
+      displayName: 'Admin seller shop',
+      storeName: 'Admin seller shop',
+      city: 'Москва',
+      referenceCategory: null,
+      catalogPosition: null,
+      status: 'APPROVED',
+      createdAt: new Date('2026-03-22T00:00:00.000Z'),
+      updatedAt: new Date('2026-03-22T00:00:00.000Z')
+    };
+  };
+
+  let findFirstCall = 0;
+  (prisma.sellerKycSubmission.findFirst as unknown as (args: any) => Promise<any>) = async () => {
+    findFirstCall += 1;
+    if (findFirstCall === 1) {
+      return {
+        id: 'kyc-1',
+        userId,
+        status: 'APPROVED',
+        createdAt: new Date('2026-03-22T00:00:00.000Z'),
+        updatedAt: new Date('2026-03-22T00:00:00.000Z'),
+        documents: []
+      };
+    }
+
+    return {
+      id: 'kyc-1',
+      userId,
+      status: 'APPROVED',
+      reviewedAt: new Date('2026-03-22T00:00:00.000Z')
+    };
+  };
+
+  const response = await request(buildApp())
+    .get('/seller/context')
+    .set('Authorization', `Bearer ${adminToken}`);
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.data.isSeller, true);
+  assert.equal(response.body.data.profile.id, 'profile-1');
+  assert.equal(response.body.data.canSell, true);
+});
+
+test('GET /seller/context does not grant seller access to admin without seller profile', async () => {
+  const adminToken = jwt.sign({ userId, role: 'ADMIN', scope: 'access' }, env.jwtSecret);
+
+  (prisma.user.findUnique as unknown as (args: any) => Promise<any>) = async (args: any) => {
+    if (args?.select?.sellerProfile) {
+      return { role: 'ADMIN', sellerProfile: null };
+    }
+
+    throw new Error(`Unexpected prisma.user.findUnique call: ${JSON.stringify(args)}`);
+  };
+
+  (prisma.sellerProfile.findUnique as unknown as () => Promise<any>) = async () => null;
+  (prisma.sellerKycSubmission.findFirst as unknown as () => Promise<any>) = async () => null;
+
+  const response = await request(buildApp())
+    .get('/seller/kyc/me')
+    .set('Authorization', `Bearer ${adminToken}`);
+
+  assert.equal(response.status, 403);
+  assert.deepEqual(response.body, { error: { code: 'FORBIDDEN', message: 'Seller only' } });
+});
