@@ -34,7 +34,7 @@ export const canAccessSellerCabinet = (user: UserAccessShape | null | undefined)
     return false;
   }
 
-  return isAdminRole(user.role) || isSellerAccount(user);
+  return isSellerAccount(user);
 };
 
 export const resolveRoleAfterSellerEnablement = (role: Role): Role => {
