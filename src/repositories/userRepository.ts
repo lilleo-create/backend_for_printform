@@ -9,7 +9,7 @@ export const userRepository = {
     email: string;
     fullName?: string | null;
     passwordHash: string;
-    role?: 'BUYER' | 'SELLER';
+    role?: 'BUYER' | 'SELLER' | 'ADMIN';
     phone?: string | null;
     address?: string | null;
   }) =>

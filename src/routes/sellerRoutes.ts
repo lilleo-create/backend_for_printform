@@ -15,6 +15,7 @@ import { sellerDeliveryProfileService } from "../services/sellerDeliveryProfileS
 import { payoutService } from "../services/payoutService";
 import { shipmentService } from "../services/shipmentService";
 import { sellerOrderDocumentsService } from "../services/sellerOrderDocumentsService";
+import { resolveRoleAfterSellerEnablement } from '../utils/accessControl';
 import { cdekService } from "../services/cdekService";
 export const sellerRoutes = Router();
 
@@ -408,7 +409,7 @@ sellerRoutes.post('/onboarding', requireAuth, writeLimiter, async (req: AuthRequ
       data: {
         name: payload.name,
         phone,
-        role: req.user!.isAdmin ? 'ADMIN' : 'SELLER',
+        role: resolveRoleAfterSellerEnablement(req.user!.role),
         sellerProfile: {
           upsert: {
             create: profileData,

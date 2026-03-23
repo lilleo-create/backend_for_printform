@@ -15,10 +15,10 @@ const buildApp = () => {
   return app;
 };
 
-const tokenFor = (userId: string) => jwt.sign({ userId, role: 'SELLER', scope: 'access' }, env.jwtSecret);
+const tokenFor = (userId: string, role: 'SELLER' | 'ADMIN' = 'SELLER') => jwt.sign({ userId, role, scope: 'access' }, env.jwtSecret);
 
 const mockAuth = () => {
-  (prisma.user.findUnique as any) = async () => ({ role: 'SELLER' });
+  (prisma.user.findUnique as any) = async () => ({ role: 'SELLER', sellerProfile: { id: 'sp-1', status: 'PENDING' } });
   (prisma.sellerProfile.findUnique as any) = async () => ({ id: 'sp-1' });
   (prisma.order.update as any) = async ({ where }: any) => ({ id: where?.id ?? 'order-own' });
   (prisma.orderShipment.update as any) = async ({ where, data }: any) => ({ id: where?.id ?? 'shipment-1', ...data });
@@ -161,4 +161,26 @@ test('seller label route returns FORMS_NOT_READY when print task is processing',
 
   assert.equal(label.status, 409);
   assert.equal(label.body?.error?.code, 'FORMS_NOT_READY');
+});
+
+
+test('admin with seller profile can access seller documents endpoints', async () => {
+  mockAuth();
+  (prisma.user.findUnique as any) = async () => ({ role: 'ADMIN', sellerProfile: { id: 'sp-1', status: 'PENDING' } });
+  (cdekService.getOrderPrintStatus as any) = async () => ({ status: 'READY' });
+  (cdekService.downloadOrderPrintPdf as any) = async () => Buffer.from('%PDF-ready%');
+  (prisma.order.findFirst as any) = async ({ where }: any) => {
+    if (where.id === 'order-own') return mockOrder('order-own');
+    return null;
+  };
+
+  const app = buildApp();
+  const auth = `Bearer ${tokenFor('seller-1', 'ADMIN')}`;
+
+  const packing = await request(app)
+    .get('/seller/orders/order-own/documents/packing-slip.pdf')
+    .set('Authorization', auth);
+
+  assert.equal(packing.status, 200);
+  assert.match(packing.headers['content-type'] ?? '', /application\/pdf/);
 });

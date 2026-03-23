@@ -8,7 +8,7 @@ import { prisma } from '../lib/prisma';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { notFound } from '../utils/httpErrors';
 import { asyncHandler } from "../utils/asyncHandler";
-
+import { resolveRoleAfterSellerEnablement } from '../utils/accessControl';
 
 export const adminRoutes = Router();
 
@@ -129,7 +129,7 @@ const reviewSubmission = async (
   if (status === 'APPROVED') {
     await prisma.user.update({
       where: { id: updated.userId },
-      data: { role: 'SELLER' }
+      data: { role: resolveRoleAfterSellerEnablement(updated.user.role) }
     });
   }
   return updated;
