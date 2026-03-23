@@ -147,3 +147,41 @@ test('POST /seller/onboarding returns business validation message when status an
     }
   });
 });
+
+
+test('POST /seller/onboarding keeps ADMIN role while enabling seller profile', async () => {
+  const adminToken = jwt.sign({ userId, role: 'ADMIN', scope: 'access' }, env.jwtSecret);
+
+  (prisma.user.findUnique as unknown as (args: any) => Promise<any>) = async (args: any) => {
+    if (args?.select?.sellerProfile) {
+      return { role: 'ADMIN', sellerProfile: null };
+    }
+
+    if (args?.select?.phoneVerifiedAt) {
+      return {
+        phoneVerifiedAt: new Date('2026-03-22T00:00:00.000Z'),
+        phone: '+79991234567',
+        email: 'seller@example.com'
+      };
+    }
+
+    throw new Error(`Unexpected prisma.user.findUnique call: ${JSON.stringify(args)}`);
+  };
+
+  const response = await request(buildApp())
+    .post('/seller/onboarding')
+    .set('Authorization', `Bearer ${adminToken}`)
+    .send({
+      name: 'Админ Продавец',
+      phone: '+79990000000',
+      email: 'admin-seller@example.com',
+      sellerType: 'IP',
+      city: 'Москва'
+    });
+
+  assert.equal(response.status, 200);
+  assert.equal(capturedUpdateArgs?.data.role, 'ADMIN');
+  assert.equal(response.body.data.role, 'ADMIN');
+  assert.equal(response.body.data.capabilities.isAdmin, true);
+  assert.equal(response.body.data.capabilities.isSeller, true);
+});

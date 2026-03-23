@@ -59,7 +59,7 @@ export const authService = {
     fullName: string,
     email: string,
     password: string,
-    role?: 'BUYER' | 'SELLER',
+    role?: 'BUYER' | 'SELLER' | 'ADMIN',
     phone?: string,
     address?: string
   ) {

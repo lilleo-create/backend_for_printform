@@ -4,6 +4,7 @@ import { Role } from '@prisma/client';
 import { env } from '../config/env';
 import { prisma } from '../lib/prisma';
 import { forbidden, unauthorized } from '../utils/httpErrors';
+import { canAccessSellerCabinet, isAdminRole } from '../utils/accessControl';
 
 export type AuthUser = Express.User;
 
@@ -19,7 +20,7 @@ const loadUserAccess = async (userId: string): Promise<{ role: Role; isAdmin: bo
     select: {
       role: true,
       sellerProfile: {
-        select: { id: true }
+        select: { id: true, status: true }
       }
     }
   });
@@ -28,8 +29,8 @@ const loadUserAccess = async (userId: string): Promise<{ role: Role; isAdmin: bo
     return null;
   }
 
-  const isAdmin = user.role === 'ADMIN';
-  const isSeller = isAdmin || Boolean(user.sellerProfile);
+  const isAdmin = isAdminRole(user.role);
+  const isSeller = canAccessSellerCabinet(user);
 
   return {
     role: user.role,
@@ -124,10 +125,6 @@ export const requireSeller = async (
 ): Promise<void | Response> => {
   if (!req.user) {
     return unauthorized(res);
-  }
-
-  if (req.user.isSeller) {
-    return next();
   }
 
   if (!req.user.isSeller) {
