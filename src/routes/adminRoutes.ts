@@ -88,7 +88,7 @@ adminRoutes.get('/seller-documents/:id/download', async (req, res, next) => {
 });
 
 const kycSubmissionInclude = {
-  user: { select: { id: true, name: true, email: true, phone: true } },
+  user: { select: { id: true, name: true, email: true, phone: true, role: true } },
   documents: true
 } as const;
 

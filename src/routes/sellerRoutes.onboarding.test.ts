@@ -21,6 +21,8 @@ const accessToken = jwt.sign({ userId, role: 'BUYER', scope: 'access' }, env.jwt
 
 const originalFindUnique = prisma.user.findUnique;
 const originalUpdate = prisma.user.update;
+const originalSellerProfileFindUnique = prisma.sellerProfile.findUnique;
+const originalSellerKycFindFirst = prisma.sellerKycSubmission.findFirst;
 
 type OnboardingUpdateArgs = {
   where: { id: string };
@@ -68,6 +70,9 @@ const installPrismaMocks = () => {
       role: args.data.role
     };
   };
+
+  (prisma.sellerProfile.findUnique as unknown as (args: any) => Promise<any>) = async () => null;
+  (prisma.sellerKycSubmission.findFirst as unknown as (args: any) => Promise<any>) = async () => null;
 };
 
 test.beforeEach(() => {
@@ -77,6 +82,8 @@ test.beforeEach(() => {
 test.after(() => {
   (prisma.user.findUnique as any) = originalFindUnique;
   (prisma.user.update as any) = originalUpdate;
+  (prisma.sellerProfile.findUnique as any) = originalSellerProfileFindUnique;
+  (prisma.sellerKycSubmission.findFirst as any) = originalSellerKycFindFirst;
 });
 
 test('POST /seller/onboarding maps frontend status to sellerType and accepts empty referenceCategory', async () => {
@@ -184,4 +191,79 @@ test('POST /seller/onboarding keeps ADMIN role while enabling seller profile', a
   assert.equal(response.body.data.role, 'ADMIN');
   assert.equal(response.body.data.capabilities.isAdmin, true);
   assert.equal(response.body.data.capabilities.isSeller, true);
+});
+
+
+test('GET /seller/context returns profile.sellerType in seller context payload', async () => {
+  (prisma.sellerProfile.findUnique as unknown as (args: any) => Promise<any>) = async (args: any) => {
+    assert.deepEqual(args, { where: { userId } });
+    return {
+      id: 'profile-1',
+      userId,
+      sellerType: 'IP',
+      legalType: 'ИП',
+      displayName: 'Мой магазин',
+      storeName: 'Мой магазин',
+      city: 'Москва',
+      referenceCategory: null,
+      catalogPosition: null,
+      createdAt: new Date('2026-03-22T00:00:00.000Z'),
+      updatedAt: new Date('2026-03-22T00:00:00.000Z')
+    };
+  };
+
+  let findFirstCall = 0;
+  (prisma.sellerKycSubmission.findFirst as unknown as (args: any) => Promise<any>) = async (args: any) => {
+    findFirstCall += 1;
+    if (findFirstCall === 1) {
+      assert.equal(args.where.userId, userId);
+      assert.deepEqual(args.orderBy, { createdAt: 'desc' });
+      assert.deepEqual(args.include, { documents: true });
+      return {
+        id: 'kyc-1',
+        userId,
+        status: 'PENDING',
+        createdAt: new Date('2026-03-22T00:00:00.000Z'),
+        updatedAt: new Date('2026-03-22T00:00:00.000Z'),
+        documents: []
+      };
+    }
+
+    assert.deepEqual(args.where, { userId, status: 'APPROVED' });
+    assert.deepEqual(args.orderBy, { reviewedAt: 'desc' });
+    return null;
+  };
+
+  const response = await request(buildApp())
+    .get('/seller/context')
+    .set('Authorization', `Bearer ${accessToken}`);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body, {
+    data: {
+      isSeller: true,
+      profile: {
+        id: 'profile-1',
+        userId,
+        sellerType: 'IP',
+        legalType: 'ИП',
+        displayName: 'Мой магазин',
+        storeName: 'Мой магазин',
+        city: 'Москва',
+        referenceCategory: null,
+        catalogPosition: null,
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z'
+      },
+      kyc: {
+        id: 'kyc-1',
+        userId,
+        status: 'PENDING',
+        createdAt: '2026-03-22T00:00:00.000Z',
+        updatedAt: '2026-03-22T00:00:00.000Z',
+        documents: []
+      },
+      canSell: false
+    }
+  });
 });

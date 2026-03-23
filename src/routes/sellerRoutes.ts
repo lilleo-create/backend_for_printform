@@ -5,7 +5,7 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import { requireAuth, requireSeller, AuthRequest } from "../middleware/authMiddleware";
-import { OrderStatus, SellerType, type Prisma } from "@prisma/client";
+import { OrderStatus, SellerType, type Prisma, type SellerKycSubmission, type SellerProfile } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import { productUseCases } from "../usecases/productUseCases";
 import { orderUseCases } from "../usecases/orderUseCases";
@@ -18,6 +18,15 @@ import { sellerOrderDocumentsService } from "../services/sellerOrderDocumentsSer
 import { resolveRoleAfterSellerEnablement } from '../utils/accessControl';
 import { cdekService } from "../services/cdekService";
 export const sellerRoutes = Router();
+
+export type SellerKycSubmissionWithDocuments = Prisma.SellerKycSubmissionGetPayload<{ include: { documents: true } }>;
+
+export interface SellerContextResponse {
+  isSeller: boolean;
+  profile: SellerProfile | null;
+  kyc?: SellerKycSubmissionWithDocuments | SellerKycSubmission | null;
+  canSell?: boolean;
+}
 
 // ---------------------------------------------------------
 // Uploads
@@ -448,7 +457,7 @@ sellerRoutes.post('/onboarding', requireAuth, writeLimiter, async (req: AuthRequ
   }
 });
 
-const loadSellerContext = async (userId: string) => {
+const loadSellerContext = async (userId: string): Promise<SellerContextResponse | null> => {
   const profile = await prisma.sellerProfile.findUnique({ where: { userId } });
   if (!profile) return null;
 
