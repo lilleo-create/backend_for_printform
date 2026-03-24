@@ -30,13 +30,12 @@ export interface ProductInput {
   variantSize?: string;
   variantAttributes?: Prisma.InputJsonValue;
   variantGroupId?: string | null;
+  parentProductId?: string | null;
   weightGrossG?: number;
   dxCm?: number;
   dyCm?: number;
   dzCm?: number;
   sellerId: string;
-  variantGroupId?: string;
-  parentProductId?: string;
 }
 
 export interface ProductVariantItemInput extends Omit<ProductInput, 'sellerId'> {}
