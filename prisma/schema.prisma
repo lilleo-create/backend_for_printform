@@ -119,6 +119,8 @@ model Product {
   dyCm                  Int?
   dzCm                  Int?
   sellerId              String
+  variantGroupId        String?
+  parentProductId       String?
   moderationStatus      ProductModerationStatus @default(PENDING)
   moderationNotes       String?
   publishedAt           DateTime?
@@ -128,12 +130,17 @@ model Product {
   updatedAt             DateTime                @updatedAt
   orderItems            OrderItem[]
   moderatedBy           User?                   @relation("ProductModerator", fields: [moderatedById], references: [id])
+  parentProduct         Product?                @relation("ProductParentVariants", fields: [parentProductId], references: [id])
+  childProducts         Product[]               @relation("ProductParentVariants")
   seller                User                    @relation(fields: [sellerId], references: [id])
   images                ProductImage[]
   media                 ProductMedia[]
   specs                 ProductSpec[]
   variants              ProductVariant[]
   reviews               Review[]
+
+  @@index([variantGroupId])
+  @@index([parentProductId])
 }
 
 model ProductMedia {
