@@ -65,6 +65,18 @@ productRoutes.get('/:id', publicReadLimiter, async (req, res, next) => {
   }
 });
 
+productRoutes.get('/:id/variants', publicReadLimiter, async (req, res, next) => {
+  try {
+    const variants = await productUseCases.listVariants(req.params.id);
+    if (variants === null) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND' } });
+    }
+    return res.json({ data: variants });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 export const sellerProductSchema = z.object({
   title: z.string().min(2),
   category: z.string().min(2),
@@ -95,10 +107,38 @@ export const sellerProductSchema = z.object({
   printTime: z.string().min(2).optional(),
   productionTimeHours: z.number().int().min(1).max(720).optional(),
   color: z.string().min(2),
+  variantLabel: z.string().min(1).max(120).optional(),
+  variantSize: z.string().min(1).max(64).optional(),
+  variantAttributes: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
   weightGrossG: z.number().int().positive().optional(),
   dxCm: z.number().int().positive().optional(),
   dyCm: z.number().int().positive().optional(),
   dzCm: z.number().int().positive().optional(),
+  variants: z
+    .array(
+      z.object({
+        sku: z.string().min(3),
+        price: z.number().int().positive().optional(),
+        color: z.string().min(2).optional(),
+        variantLabel: z.string().min(1).max(120).optional(),
+        variantSize: z.string().min(1).max(64).optional(),
+        variantAttributes: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+        image: mediaUrlSchema.optional(),
+        imageUrls: z.array(mediaUrlSchema).optional(),
+        videoUrls: z.array(mediaUrlSchema).optional(),
+        media: z
+          .array(
+            z.object({
+              type: z.enum(['IMAGE', 'VIDEO']),
+              url: mediaUrlSchema,
+              isPrimary: z.boolean().optional(),
+              sortOrder: z.number().int().min(0).optional()
+            })
+          )
+          .optional()
+      })
+    )
+    .optional(),
 });
 
 const reviewSchema = z.object({

@@ -97,6 +97,10 @@ model City {
 
 model Product {
   id                    String                  @id @default(cuid())
+  variantGroupId        String?
+  variantLabel          String?
+  variantSize           String?
+  variantAttributes     Json?
   title                 String
   descriptionShort      String
   descriptionFull       String
@@ -134,6 +138,8 @@ model Product {
   specs                 ProductSpec[]
   variants              ProductVariant[]
   reviews               Review[]
+
+  @@index([variantGroupId])
 }
 
 model ProductMedia {
