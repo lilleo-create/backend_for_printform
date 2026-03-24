@@ -40,27 +40,27 @@ model User {
 }
 
 model SellerProfile {
-  id                String     @id @default(cuid())
-  userId            String     @unique
-  status            String     @default("PENDING")
+  id                String      @id @default(cuid())
+  userId            String      @unique
+  status            String      @default("PENDING")
   sellerType        SellerType?
   storeName         String
   phone             String
   city              String
   referenceCategory String?
   catalogPosition   String?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  user              User     @relation(fields: [userId], references: [id])
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  user              User        @relation(fields: [userId], references: [id])
 
   // Контакты для мерчанта NDD
-  contactName         String?
-  contactEmail        String?
-  contactPhone        String?
-  representativeName  String?
+  contactName        String?
+  contactEmail       String?
+  contactPhone       String?
+  representativeName String?
 
   // Юр. данные
-  legalType        String?   // ООО | ИП | Самозанятый (дублирует status для мерчанта)
+  legalType        String? // ООО | ИП | Самозанятый (дублирует status для мерчанта)
   legalName        String?
   inn              String?
   ogrn             String?
@@ -69,18 +69,18 @@ model SellerProfile {
 
   // Параметры мерчанта
   siteUrl      String?
-  shipmentType String?   @default("import") // import | withdraw
+  shipmentType String? @default("import") // import | withdraw
 
   // Согласия
-  acceptedRulesAt        DateTime?
-  acceptedRulesSlug      String?
-  acceptedPersonalDataAt DateTime?
+  acceptedRulesAt          DateTime?
+  acceptedRulesSlug        String?
+  acceptedPersonalDataAt   DateTime?
   acceptedPersonalDataSlug String?
 
   // Состояние регистрации в Яндекс NDD
   yandexMerchantRegistrationId String?
   yandexMerchantId             String?
-  yandexMerchantStatus         String?   // in_progress | success | validation_error
+  yandexMerchantStatus         String? // in_progress | success | validation_error
   yandexMerchantError          Json?
 }
 
@@ -98,6 +98,7 @@ model City {
 model Product {
   id                    String                  @id @default(cuid())
   variantGroupId        String?
+  parentProductId       String?
   variantLabel          String?
   variantSize           String?
   variantAttributes     Json?
@@ -123,8 +124,6 @@ model Product {
   dyCm                  Int?
   dzCm                  Int?
   sellerId              String
-  variantGroupId        String?
-  parentProductId       String?
   moderationStatus      ProductModerationStatus @default(PENDING)
   moderationNotes       String?
   publishedAt           DateTime?
@@ -223,63 +222,63 @@ model Review {
 }
 
 model Order {
-  id                   String               @id @default(cuid())
-  buyerId              String
-  status               OrderStatus          @default(CREATED)
-  statusUpdatedAt      DateTime             @default(now())
-  total                Int
-  currency             String               @default("RUB")
-  createdAt            DateTime             @default(now())
-  updatedAt            DateTime             @updatedAt
-  contactId            String?
-  shippingAddressId    String?
-  trackingNumber       String?
-  carrier              String?
-  buyerPickupPvzId     String?
-  buyerPickupPvzMeta   Json?
-  sellerDropoffPvzId   String?
-  sellerDropoffPvzMeta Json?
-  yandexOfferId        String?
-  yandexRequestId      String?
-  yandexStatus         String?
-  yandexSharingUrl     String?
-  yandexCourierOrderId String?
-  yandexSelfPickupCode Json?
-  yandexActualInfo     Json?
-  cdekOrderId          String?
-  cdekStatus           String?
-  payoutStatus         String               @default("HOLD")
-  deliveryDaysMin      Int?
-  deliveryDaysMax      Int?
-  deliveryEtaText      String?
+  id                       String               @id @default(cuid())
+  buyerId                  String
+  status                   OrderStatus          @default(CREATED)
+  statusUpdatedAt          DateTime             @default(now())
+  total                    Int
+  currency                 String               @default("RUB")
+  createdAt                DateTime             @default(now())
+  updatedAt                DateTime             @updatedAt
+  contactId                String?
+  shippingAddressId        String?
+  trackingNumber           String?
+  carrier                  String?
+  buyerPickupPvzId         String?
+  buyerPickupPvzMeta       Json?
+  sellerDropoffPvzId       String?
+  sellerDropoffPvzMeta     Json?
+  yandexOfferId            String?
+  yandexRequestId          String?
+  yandexStatus             String?
+  yandexSharingUrl         String?
+  yandexCourierOrderId     String?
+  yandexSelfPickupCode     Json?
+  yandexActualInfo         Json?
+  cdekOrderId              String?
+  cdekStatus               String?
+  payoutStatus             String               @default("HOLD")
+  deliveryDaysMin          Int?
+  deliveryDaysMax          Int?
+  deliveryEtaText          String?
   estimatedDeliveryDateMin DateTime?
   estimatedDeliveryDateMax DateTime?
-  deliveryTariffCode   Int?
-  deliveryCalculatedAt DateTime?
-  readyForShipmentAt   DateTime?
-  isPacked             Boolean              @default(false)
-  isLabelPrinted       Boolean              @default(false)
-  isActPrinted         Boolean              @default(false)
-  fulfillmentUpdatedAt DateTime?
-  dropoffDeadlineAt    DateTime?
-  paymentAttemptKey    String?
-  paymentProvider      String?
-  paymentId            String?
-  paidAt               DateTime?
-  recipientName        String?
-  recipientPhone       String?
-  recipientEmail       String?
-  packagesCount        Int                  @default(1)
-  orderLabels          Json?
-  buyer                User                 @relation(fields: [buyerId], references: [id])
-  contact              Contact?             @relation("OrderContact", fields: [contactId], references: [id])
-  shippingAddress      Address?             @relation("OrderShippingAddress", fields: [shippingAddressId], references: [id])
-  deliveryEvents       OrderDeliveryEvent[]
-  items                OrderItem[]
-  shipment             OrderShipment?
-  payments             Payment[]
-  payout               Payout?
-  order_shipments      order_shipments?
+  deliveryTariffCode       Int?
+  deliveryCalculatedAt     DateTime?
+  readyForShipmentAt       DateTime?
+  isPacked                 Boolean              @default(false)
+  isLabelPrinted           Boolean              @default(false)
+  isActPrinted             Boolean              @default(false)
+  fulfillmentUpdatedAt     DateTime?
+  dropoffDeadlineAt        DateTime?
+  paymentAttemptKey        String?
+  paymentProvider          String?
+  paymentId                String?
+  paidAt                   DateTime?
+  recipientName            String?
+  recipientPhone           String?
+  recipientEmail           String?
+  packagesCount            Int                  @default(1)
+  orderLabels              Json?
+  buyer                    User                 @relation(fields: [buyerId], references: [id])
+  contact                  Contact?             @relation("OrderContact", fields: [contactId], references: [id])
+  shippingAddress          Address?             @relation("OrderShippingAddress", fields: [shippingAddressId], references: [id])
+  deliveryEvents           OrderDeliveryEvent[]
+  items                    OrderItem[]
+  shipment                 OrderShipment?
+  payments                 Payment[]
+  payout                   Payout?
+  order_shipments          order_shipments?
 
   @@unique([buyerId, paymentAttemptKey])
 }
@@ -300,13 +299,13 @@ model Payout {
 }
 
 model SellerSettings {
-  sellerId              String   @id
+  sellerId               String   @id
   defaultDropoffProvider String   @default("CDEK")
-  defaultDropoffPvzId   String?
-  defaultDropoffPvzMeta Json?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  seller                User     @relation(fields: [sellerId], references: [id])
+  defaultDropoffPvzId    String?
+  defaultDropoffPvzMeta  Json?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  seller                 User     @relation(fields: [sellerId], references: [id])
 }
 
 model OrderDeliveryEvent {
@@ -536,6 +535,7 @@ model SellerKycSubmission {
   documents       SellerDocument[]
   reviewer        User?            @relation("KycReviewer", fields: [reviewerId], references: [id])
   user            User             @relation(fields: [userId], references: [id])
+
   @@index([userId, status])
 }
 
@@ -566,54 +566,53 @@ model Payment {
   @@index([orderId, status])
 }
 
-
-
 model PendingRegistration {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   name         String
   fullName     String?
   email        String
   passwordHash String
-  role         Role     @default(BUYER)
-  phone        String   @unique
+  role         Role      @default(BUYER)
+  phone        String    @unique
   address      String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
   expiresAt    DateTime
   usedAt       DateTime?
 
   @@index([email])
   @@index([expiresAt])
 }
+
 model RefreshToken {
-  id              String   @id @default(cuid())
-  token           String   @unique
+  id              String         @id @default(cuid())
+  token           String         @unique
   userId          String
   expiresAt       DateTime
   trustedDeviceId String?
-  createdAt       DateTime @default(now())
+  createdAt       DateTime       @default(now())
   lastUsedAt      DateTime?
   revokedAt       DateTime?
-  user            User     @relation(fields: [userId], references: [id])
+  user            User           @relation(fields: [userId], references: [id])
   trustedDevice   TrustedDevice? @relation(fields: [trustedDeviceId], references: [id])
 
   @@index([userId, expiresAt])
 }
 
 model TrustedDevice {
-  id              String   @id @default(cuid())
+  id              String         @id @default(cuid())
   userId          String
-  tokenHash       String   @unique
+  tokenHash       String         @unique
   fingerprintHash String
   label           String?
   userAgent       String?
   lastIp          String?
-  lastSeenAt      DateTime @default(now())
+  lastSeenAt      DateTime       @default(now())
   expiresAt       DateTime
   revokedAt       DateTime?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  user            User     @relation(fields: [userId], references: [id])
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  user            User           @relation(fields: [userId], references: [id])
   refreshTokens   RefreshToken[]
 
   @@index([userId, expiresAt])
@@ -621,22 +620,22 @@ model TrustedDevice {
 }
 
 model PhoneOtp {
-  id          String     @id @default(cuid())
-  phone       String
-  codeHash    String
-  purpose     OtpPurpose
-  channel     OtpChannel  @default(TELEGRAM)
-  provider    OtpProvider @default(TELEGRAM_GATEWAY)
+  id                String            @id @default(cuid())
+  phone             String
+  codeHash          String
+  purpose           OtpPurpose
+  channel           OtpChannel        @default(TELEGRAM)
+  provider          OtpProvider       @default(TELEGRAM_GATEWAY)
   providerRequestId String?
   providerPayload   Json?
   deliveryStatus    OtpDeliveryStatus @default(SENT)
-  attempts    Int        @default(0)
-  maxAttempts Int        @default(5)
-  ip          String?
-  userAgent   String?
-  createdAt   DateTime   @default(now())
-  expiresAt   DateTime
-  consumedAt  DateTime?
+  attempts          Int               @default(0)
+  maxAttempts       Int               @default(5)
+  ip                String?
+  userAgent         String?
+  createdAt         DateTime          @default(now())
+  expiresAt         DateTime
+  consumedAt        DateTime?
 
   @@index([phone, purpose, createdAt])
   @@index([expiresAt])
