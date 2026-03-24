@@ -35,6 +35,8 @@ export interface ProductInput {
   dyCm?: number;
   dzCm?: number;
   sellerId: string;
+  variantGroupId?: string;
+  parentProductId?: string;
 }
 
 export interface ProductVariantItemInput extends Omit<ProductInput, 'sellerId'> {}
@@ -110,6 +112,31 @@ const toProductView = <T extends {
         : imageMedia.map((item) => ({ url: item.url, sortOrder: item.sortOrder }))
   };
 };
+
+interface ProductVariantCard {
+  id: string;
+  title: string;
+  shortLabel: string;
+  color: string;
+  previewImage: string;
+  sku: string | null;
+}
+
+const toVariantCard = (product: {
+  id: string;
+  title: string;
+  descriptionShort: string;
+  color: string;
+  image: string;
+  sku: string;
+}): ProductVariantCard => ({
+  id: product.id,
+  title: product.title,
+  shortLabel: product.descriptionShort || product.title,
+  color: product.color,
+  previewImage: product.image,
+  sku: product.sku ?? null
+});
 
 const replaceProductRelations = async (
   tx: Prisma.TransactionClient,
@@ -288,7 +315,55 @@ export const productRepository = {
       include: productInclude
     });
 
-    return product ? attachVariantGroup(product) : null;
+    if (!product) {
+      return null;
+    }
+
+    const parentProduct = product.parentProductId
+      ? await prisma.product.findFirst({
+          where: { id: product.parentProductId, moderationStatus: 'APPROVED' },
+          select: { id: true, variantGroupId: true }
+        })
+      : null;
+
+    const hasVariantRelation = Boolean(product.variantGroupId || product.parentProductId || parentProduct?.id);
+
+    if (!hasVariantRelation) {
+      return toProductView(product);
+    }
+
+    const effectiveVariantGroupId = product.variantGroupId ?? parentProduct?.variantGroupId ?? parentProduct?.id ?? null;
+    const parentId = product.parentProductId ?? parentProduct?.id ?? null;
+
+    const relatedProducts = await prisma.product.findMany({
+      where: {
+        moderationStatus: 'APPROVED',
+        OR: [
+          { id: product.id },
+          ...(effectiveVariantGroupId ? [{ variantGroupId: effectiveVariantGroupId }] : []),
+          ...(parentId ? [{ parentProductId: parentId }, { id: parentId }] : [])
+        ]
+      },
+      select: {
+        id: true,
+        title: true,
+        descriptionShort: true,
+        color: true,
+        image: true,
+        sku: true
+      }
+    });
+
+    const uniqueVariants = Array.from(new Map(relatedProducts.map((item) => [item.id, item])).values());
+
+    return {
+      ...toProductView(product),
+      variantRelation: {
+        variantGroupId: effectiveVariantGroupId,
+        parentProductId: parentId
+      },
+      availableVariants: uniqueVariants.map(toVariantCard)
+    };
   },
   create: async (data: ProductWithVariantsInput) => {
     ensureUniqueSkus(data.sku, data.variants);
