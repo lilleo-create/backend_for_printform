@@ -327,6 +327,7 @@ type SellerMediaInput = {
 };
 
 type SellerProductPayload = Partial<z.infer<typeof sellerProductSchema>>;
+type SellerProductVariantPayload = NonNullable<z.infer<typeof sellerProductSchema>['variants']>[number];
 
 const normalizeProductMediaInput = (payload: SellerProductPayload): SellerMediaInput[] => {
   if (payload.media !== undefined) {
@@ -355,6 +356,49 @@ const normalizeProductMediaInput = (payload: SellerProductPayload): SellerMediaI
       sortOrder: imageUrls.length + index
     }))
   ];
+};
+
+const normalizeVariantPayload = (
+  basePayload: z.infer<typeof sellerProductSchema>,
+  variantPayload: SellerProductVariantPayload
+) => {
+  const mergedPayload: SellerProductPayload = {
+    image: variantPayload.image ?? basePayload.image,
+    imageUrls: variantPayload.imageUrls ?? basePayload.imageUrls,
+    videoUrls: variantPayload.videoUrls ?? basePayload.videoUrls,
+    media: variantPayload.media ?? basePayload.media
+  };
+
+  const media = normalizeProductMediaInput(mergedPayload);
+  const imageMedia = media.filter((item) => item.type === 'IMAGE');
+  const videoMedia = media.filter((item) => item.type === 'VIDEO');
+
+  return {
+    sku: variantPayload.sku,
+    title: basePayload.title,
+    category: basePayload.category,
+    price: variantPayload.price ?? basePayload.price,
+    currency: basePayload.currency ?? 'RUB',
+    description: basePayload.description,
+    descriptionShort: basePayload.descriptionShort ?? basePayload.description,
+    descriptionFull: basePayload.descriptionFull ?? basePayload.description,
+    material: basePayload.material,
+    technology: basePayload.technology,
+    printTime: basePayload.printTime,
+    productionTimeHours: basePayload.productionTimeHours,
+    color: variantPayload.color ?? basePayload.color,
+    variantLabel: variantPayload.variantLabel,
+    variantSize: variantPayload.variantSize,
+    variantAttributes: variantPayload.variantAttributes,
+    weightGrossG: basePayload.weightGrossG,
+    dxCm: basePayload.dxCm,
+    dyCm: basePayload.dyCm,
+    dzCm: basePayload.dzCm,
+    image: imageMedia[0]?.url ?? basePayload.image ?? '',
+    imageUrls: imageMedia.map((item) => item.url),
+    videoUrls: videoMedia.map((item) => item.url),
+    media
+  };
 };
 
 function readPreparationChecklist(statusRaw: unknown): PreparationChecklist {
@@ -757,13 +801,19 @@ sellerRoutes.post('/products', writeLimiter, async (req: AuthRequest, res, next)
       image: imageMedia[0].url,
       imageUrls: imageMedia.map((item) => item.url),
       videoUrls: videoMedia.map((item) => item.url),
-      media
+      media,
+      variants: payload.variants?.map((variantPayload) =>
+        normalizeVariantPayload(payload, variantPayload)
+      )
     });
 
     res.status(201).json({ data: product });
   } catch (error) {
     if (error instanceof Error && error.message === 'CATEGORY_INVALID') {
       return res.status(400).json({ error: { code: 'CATEGORY_INVALID', message: 'Категория недоступна.' } });
+    }
+    if (error instanceof Error && error.message === 'SKU_DUPLICATE_IN_VARIANTS') {
+      return res.status(400).json({ error: { code: 'SKU_DUPLICATE_IN_VARIANTS', message: 'SKU варианта должен быть уникальным.' } });
     }
     next(error);
   }
