@@ -59,6 +59,12 @@ export const errorHandler = (
     });
   }
 
+  if (isAppError(error) && error.message === 'PRODUCT_UPLOAD_FILE_TYPE_INVALID') {
+    return res.status(400).json({
+      error: { code: 'PRODUCT_UPLOAD_FILE_TYPE_INVALID' }
+    });
+  }
+
   if (isAppError(error)) {
     const errorCode = typeof error.code === 'string' ? error.code : undefined;
 
@@ -106,6 +112,9 @@ export const errorHandler = (
         message === 'KYC_FILE_TYPE_INVALID' ||
         message === 'AMOUNT_MISMATCH' ||
         message === 'PAYMENT_REQUIRED' ||
+        message === 'PRODUCT_UPLOAD_FILE_TYPE_INVALID' ||
+        message === 'PRODUCT_UPLOAD_IMAGE_TOO_LARGE' ||
+        message === 'PRODUCT_UPLOAD_VIDEO_TOO_LARGE' ||
         message === 'SELLER_DROPOFF_REQUIRED' ||
         message === 'SELLER_DROPOFF_PVZ_REQUIRED' ||
         message === 'BUYER_PICKUP_REQUIRED' ||

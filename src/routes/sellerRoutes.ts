@@ -41,17 +41,41 @@ const storage = multer.diskStorage({
   }
 });
 
-const allowedImageTypes = ["image/jpeg", "image/png", "image/webp"];
-const allowedVideoTypes = ["video/mp4", "video/webm"];
+const IMAGE_UPLOAD_RULES: ReadonlyArray<{ mime: string; extensions: string[] }> = [
+  { mime: "image/jpeg", extensions: [".jpg", ".jpeg"] },
+  { mime: "image/png", extensions: [".png"] },
+  { mime: "image/webp", extensions: [".webp"] },
+  { mime: "image/heic", extensions: [".heic"] },
+  { mime: "image/heif", extensions: [".heif"] }
+];
+
+const VIDEO_UPLOAD_RULES: ReadonlyArray<{ mime: string; extensions: string[] }> = [
+  { mime: "video/mp4", extensions: [".mp4", ".m4v"] },
+  { mime: "video/quicktime", extensions: [".mov", ".qt"] },
+  { mime: "video/webm", extensions: [".webm"] }
+];
+
+const allowedImageTypes = IMAGE_UPLOAD_RULES.map((rule) => rule.mime);
+const allowedVideoTypes = VIDEO_UPLOAD_RULES.map((rule) => rule.mime);
 const maxImageSize = 10 * 1024 * 1024;
 const maxVideoSize = 100 * 1024 * 1024;
+
+const resolveUploadKind = (file: Pick<Express.Multer.File, "mimetype" | "originalname">): "IMAGE" | "VIDEO" | null => {
+  const extension = path.extname(file.originalname ?? "").toLowerCase();
+  const isAllowed = (rules: ReadonlyArray<{ mime: string; extensions: string[] }>) =>
+    rules.some((rule) => rule.mime === file.mimetype && rule.extensions.includes(extension));
+
+  if (isAllowed(IMAGE_UPLOAD_RULES)) return "IMAGE";
+  if (isAllowed(VIDEO_UPLOAD_RULES)) return "VIDEO";
+  return null;
+};
 
 const upload = multer({
   storage,
   limits: { fileSize: maxVideoSize },
   fileFilter: (_req, file, cb) => {
-    if ([...allowedImageTypes, ...allowedVideoTypes].includes(file.mimetype)) return cb(null, true);
-    return cb(new Error("UPLOAD_FILE_TYPE_INVALID"));
+    if (resolveUploadKind(file)) return cb(null, true);
+    return cb(new Error("PRODUCT_UPLOAD_FILE_TYPE_INVALID"));
   }
 });
 
@@ -815,19 +839,30 @@ sellerRoutes.post('/uploads', writeLimiter, upload.array('files', 10), async (re
     return res.status(400).json({ error: { code: 'FILES_REQUIRED' } });
   }
 
-  const oversizedFiles = files.filter((file) => {
-    if (allowedImageTypes.includes(file.mimetype)) return file.size > maxImageSize;
-    if (allowedVideoTypes.includes(file.mimetype)) return file.size > maxVideoSize;
-    return true;
-  });
-
-  if (oversizedFiles.length) {
+  const invalidFiles = files.filter((file) => !resolveUploadKind(file));
+  if (invalidFiles.length) {
     await Promise.all(
       files.map((file) =>
         file.path ? fs.promises.unlink(file.path).catch(() => undefined) : Promise.resolve()
       )
     );
-    return res.status(400).json({ error: { code: 'FILE_TOO_LARGE' } });
+    return res.status(400).json({ error: { code: 'PRODUCT_UPLOAD_FILE_TYPE_INVALID' } });
+  }
+
+  const oversizedImageFiles = files.filter((file) => resolveUploadKind(file) === 'IMAGE' && file.size > maxImageSize);
+  const oversizedVideoFiles = files.filter((file) => resolveUploadKind(file) === 'VIDEO' && file.size > maxVideoSize);
+
+  if (oversizedImageFiles.length || oversizedVideoFiles.length) {
+    await Promise.all(
+      files.map((file) =>
+        file.path ? fs.promises.unlink(file.path).catch(() => undefined) : Promise.resolve()
+      )
+    );
+    return res.status(400).json({
+      error: {
+        code: oversizedVideoFiles.length ? 'PRODUCT_UPLOAD_VIDEO_TOO_LARGE' : 'PRODUCT_UPLOAD_IMAGE_TOO_LARGE'
+      }
+    });
   }
 
   const urls = files
