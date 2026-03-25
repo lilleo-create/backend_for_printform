@@ -15,6 +15,17 @@ export const productUseCases = {
   }) => productRepository.findMany(filters),
   get: (id: string) => productRepository.findById(id),
   listVariants: (id: string) => productRepository.listVariants(id),
+  getSellerProductWithVariants: (id: string, sellerId: string) => productRepository.findSellerProductWithVariants(id, sellerId),
+  createVariant: (masterProductId: string, sellerId: string, data: Parameters<typeof productRepository.createVariant>[2]) =>
+    productRepository.createVariant(masterProductId, sellerId, data),
+  updateVariant: (
+    masterProductId: string,
+    variantId: string,
+    sellerId: string,
+    data: Parameters<typeof productRepository.updateVariant>[3]
+  ) => productRepository.updateVariant(masterProductId, variantId, sellerId, data),
+  removeVariant: (masterProductId: string, variantId: string, sellerId: string) =>
+    productRepository.removeVariant(masterProductId, variantId, sellerId),
   create: productRepository.create,
   update: productRepository.update,
   remove: productRepository.remove
