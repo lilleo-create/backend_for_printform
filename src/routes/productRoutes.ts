@@ -78,7 +78,13 @@ productRoutes.get('/:id/variants', publicReadLimiter, async (req, res, next) => 
   }
 });
 
-export const sellerProductSchema = z.object({
+const productSpecificationSchema = z.object({
+  key: z.string().min(1),
+  value: z.string().min(1),
+  sortOrder: z.number().int().min(0).optional()
+});
+
+export const sellerProductCreateSchema = z.object({
   title: z.string().min(2),
   category: z.string().min(2),
   price: z.preprocess(
@@ -98,6 +104,8 @@ export const sellerProductSchema = z.object({
       })
     )
     .optional(),
+  characteristics: z.array(productSpecificationSchema).optional(),
+  specifications: z.array(productSpecificationSchema).optional(),
   description: z.string().min(5),
   descriptionShort: z.string().min(5).optional(),
   descriptionFull: z.string().min(10).optional(),
@@ -141,6 +149,9 @@ export const sellerProductSchema = z.object({
     )
     .optional(),
 });
+
+export const sellerProductUpdateSchema = sellerProductCreateSchema.partial();
+export const sellerProductSchema = sellerProductCreateSchema;
 
 const reviewSchema = z.object({
   rating: z.number().int().min(1).max(5),
