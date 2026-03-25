@@ -321,7 +321,7 @@ const sellerMediaUrlSchema = z.string().refine((value) => {
 });
 
 const sellerVariantMutationSchema = z.object({
-  sku: z.string().min(3),
+  sku: z.string().min(3).optional(),
   price: z.number().int().positive().optional(),
   color: z.string().min(2).optional(),
   variantLabel: z.string().min(1).max(120).optional(),
@@ -362,6 +362,12 @@ type SellerMediaInput = {
 
 type SellerProductPayload = Partial<z.infer<typeof sellerProductCreateSchema>>;
 type SellerProductVariantPayload = NonNullable<z.infer<typeof sellerProductCreateSchema>['variants']>[number];
+
+const generateSkuFallback = (suffix?: string) => {
+  const randomPart = Math.random().toString(36).slice(2, 8).toUpperCase();
+  const normalizedSuffix = suffix ? `-${suffix}` : '';
+  return `SKU-${Date.now()}-${randomPart}${normalizedSuffix}`;
+};
 
 const normalizeProductMediaInput = (payload: SellerProductPayload): SellerMediaInput[] => {
   if (payload.media !== undefined) {
@@ -408,7 +414,7 @@ const normalizeVariantPayload = (
   const videoMedia = media.filter((item) => item.type === 'VIDEO');
 
   return {
-    sku: variantPayload.sku,
+    sku: variantPayload.sku ?? generateSkuFallback(),
     title: basePayload.title,
     category: basePayload.category,
     price: variantPayload.price ?? basePayload.price,
@@ -834,7 +840,7 @@ sellerRoutes.post('/products', writeLimiter, async (req: AuthRequest, res, next)
 
     const payload = sellerProductCreateSchema.parse(req.body);
     const normalizedCategory = await ensureReferenceCategory(payload.category);
-    const skuFallback = payload.sku ?? `SKU-${Date.now()}`;
+    const skuFallback = payload.sku ?? generateSkuFallback();
 
     const media = normalizeProductMediaInput(payload);
     const imageMedia = media.filter((item) => item.type === 'IMAGE');
@@ -971,7 +977,7 @@ sellerRoutes.post('/products/:id/variants', writeLimiter, async (req: AuthReques
     const imageMedia = media.filter((item) => item.type === 'IMAGE');
     const videoMedia = media.filter((item) => item.type === 'VIDEO');
     const variantInput = {
-      sku: payload.sku,
+      sku: payload.sku ?? generateSkuFallback(),
       title: baseProduct.title,
       category: baseProduct.category,
       price: payload.price ?? baseProduct.price,
