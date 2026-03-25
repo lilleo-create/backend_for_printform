@@ -27,8 +27,19 @@ test('review reaction wrong method returns JSON not HTML', async () => {
 
 test('review reaction without auth returns JSON auth error', async () => {
   const response = await request(buildApp())
-    .put('/products/product-1/reviews/review-1/reaction')
+    .patch('/products/product-1/reviews/review-1/reaction')
     .send({ type: 'LIKE' });
+
+  assert.equal(response.status, 401);
+  assert.match(response.headers['content-type'] ?? '', /application\/json/);
+  assert.equal(response.body.error.code, 'UNAUTHORIZED');
+  assert.equal(response.body.error.message, 'UNAUTHORIZED');
+});
+
+test('standalone reaction route without auth returns JSON auth error', async () => {
+  const response = await request(buildApp())
+    .patch('/products/reviews/review-1/reaction')
+    .send({ type: 'DISLIKE' });
 
   assert.equal(response.status, 401);
   assert.match(response.headers['content-type'] ?? '', /application\/json/);

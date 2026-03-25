@@ -1,4 +1,5 @@
 import { NextFunction, Request, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import { MulterError } from 'multer';
 import { ZodError } from 'zod';
 
@@ -63,6 +64,34 @@ export const errorHandler = (
   if (isAppError(error) && error.message === 'PRODUCT_UPLOAD_FILE_TYPE_INVALID') {
     return res.status(400).json({
       error: { code: 'PRODUCT_UPLOAD_FILE_TYPE_INVALID', message: 'PRODUCT_UPLOAD_FILE_TYPE_INVALID' }
+    });
+  }
+
+  if (error instanceof Prisma.PrismaClientValidationError) {
+    console.error('[errorHandler] prisma validation error', { message: error.message });
+    return res.status(400).json({
+      error: {
+        code: 'DATABASE_VALIDATION_ERROR',
+        message: 'Некорректные данные запроса.'
+      }
+    });
+  }
+
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    if (error.code === 'P2002') {
+      return res.status(409).json({
+        error: {
+          code: 'CONFLICT',
+          message: 'Запись с такими данными уже существует.'
+        }
+      });
+    }
+    console.error('[errorHandler] prisma known request error', { code: error.code, message: error.message });
+    return res.status(400).json({
+      error: {
+        code: 'DATABASE_ERROR',
+        message: 'Ошибка обработки запроса.'
+      }
     });
   }
 

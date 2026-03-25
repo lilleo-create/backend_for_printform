@@ -312,6 +312,20 @@ const ensureUniqueSkus = (baseSku: string, variants: ProductVariantItemInput[] =
   }
 };
 
+const buildSkuFallback = () => `SKU-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+
+const stripClientOnlyProductFields = <T extends Partial<ProductInput>>(data: T) => {
+  const {
+    imageUrls: _imageUrls,
+    videoUrls: _videoUrls,
+    media: _media,
+    characteristics: _characteristics,
+    specifications: _specifications,
+    ...productData
+  } = data;
+  return productData;
+};
+
 export const productRepository = {
   findMany: async (filters: {
     shopId?: string;
@@ -497,10 +511,11 @@ export const productRepository = {
             variantMedia.find((item) => item.isPrimary && item.type === 'IMAGE')?.url ??
             variantImageUrls[0] ??
             variant.image;
+          const variantData = stripClientOnlyProductFields(variant);
 
           await tx.product.create({
             data: {
-              ...variant,
+              ...variantData,
               sellerId: data.sellerId,
               variantGroupId: mainProduct.id,
               parentProductId: mainProduct.id,
@@ -766,10 +781,12 @@ export const productRepository = {
     const mediaRecords = buildMediaRecords(data);
     const imageUrls = mediaRecords.filter((item) => item.type === 'IMAGE').map((item) => item.url);
     const primaryImage = mediaRecords.find((item) => item.isPrimary && item.type === 'IMAGE')?.url ?? imageUrls[0] ?? data.image;
+    const productData = stripClientOnlyProductFields(data);
 
     const created = await prisma.product.create({
       data: {
-        ...data,
+        ...productData,
+        sku: data.sku ?? buildSkuFallback(),
         sellerId,
         variantGroupId: groupId,
         parentProductId: masterProduct.id,
