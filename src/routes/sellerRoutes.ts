@@ -9,7 +9,7 @@ import { OrderStatus, SellerType, type Prisma, type SellerKycSubmission, type Se
 import { prisma } from "../lib/prisma";
 import { productUseCases } from "../usecases/productUseCases";
 import { orderUseCases } from "../usecases/orderUseCases";
-import { sellerProductSchema } from "./productRoutes";
+import { sellerProductCreateSchema, sellerProductUpdateSchema } from "./productRoutes";
 import { writeLimiter } from "../middleware/rateLimiters";
 import { sellerDeliveryProfileService } from "../services/sellerDeliveryProfileService";
 import { payoutService } from "../services/payoutService";
@@ -326,8 +326,8 @@ type SellerMediaInput = {
   sortOrder?: number;
 };
 
-type SellerProductPayload = Partial<z.infer<typeof sellerProductSchema>>;
-type SellerProductVariantPayload = NonNullable<z.infer<typeof sellerProductSchema>['variants']>[number];
+type SellerProductPayload = Partial<z.infer<typeof sellerProductCreateSchema>>;
+type SellerProductVariantPayload = NonNullable<z.infer<typeof sellerProductCreateSchema>['variants']>[number];
 
 const normalizeProductMediaInput = (payload: SellerProductPayload): SellerMediaInput[] => {
   if (payload.media !== undefined) {
@@ -359,7 +359,7 @@ const normalizeProductMediaInput = (payload: SellerProductPayload): SellerMediaI
 };
 
 const normalizeVariantPayload = (
-  basePayload: z.infer<typeof sellerProductSchema>,
+  basePayload: z.infer<typeof sellerProductCreateSchema>,
   variantPayload: SellerProductVariantPayload
 ) => {
   const mergedPayload: SellerProductPayload = {
@@ -771,6 +771,26 @@ sellerRoutes.get('/products', async (req: AuthRequest, res, next) => {
   }
 });
 
+sellerRoutes.get('/products/:id', async (req: AuthRequest, res, next) => {
+  try {
+    const productResult = await productUseCases.getForSellerEdit(req.params.id, req.user!.userId);
+
+    if (productResult.code === 'NOT_FOUND') {
+      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Товар не найден.' } });
+    }
+
+    if (productResult.code === 'FORBIDDEN') {
+      return res.status(403).json({
+        error: { code: 'SELLER_PRODUCT_FORBIDDEN', message: 'У вас нет доступа к этому товару.' }
+      });
+    }
+
+    return res.json({ data: productResult.data });
+  } catch (error) {
+    next(error);
+  }
+});
+
 sellerRoutes.post('/products', writeLimiter, async (req: AuthRequest, res, next) => {
   try {
     const approved = await ensureKycApproved(req.user!.userId);
@@ -778,7 +798,7 @@ sellerRoutes.post('/products', writeLimiter, async (req: AuthRequest, res, next)
       return res.status(403).json({ error: { code: 'KYC_NOT_APPROVED', message: 'KYC not approved' } });
     }
 
-    const payload = sellerProductSchema.parse(req.body);
+    const payload = sellerProductCreateSchema.parse(req.body);
     const normalizedCategory = await ensureReferenceCategory(payload.category);
     const skuFallback = payload.sku ?? `SKU-${Date.now()}`;
 
@@ -804,7 +824,9 @@ sellerRoutes.post('/products', writeLimiter, async (req: AuthRequest, res, next)
       media,
       variants: payload.variants?.map((variantPayload) =>
         normalizeVariantPayload(payload, variantPayload)
-      )
+      ),
+      characteristics: payload.characteristics ?? payload.specifications,
+      specifications: payload.specifications ?? payload.characteristics
     });
 
     res.status(201).json({ data: product });
@@ -826,7 +848,19 @@ sellerRoutes.put('/products/:id', writeLimiter, async (req: AuthRequest, res, ne
       return res.status(403).json({ error: { code: 'KYC_NOT_APPROVED', message: 'KYC not approved' } });
     }
 
-    const payload = sellerProductSchema.partial().parse(req.body);
+    const payload = sellerProductUpdateSchema.parse(req.body);
+    const productAccessResult = await productUseCases.getForSellerEdit(req.params.id, req.user!.userId);
+
+    if (productAccessResult.code === 'NOT_FOUND') {
+      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Товар не найден.' } });
+    }
+
+    if (productAccessResult.code === 'FORBIDDEN') {
+      return res.status(403).json({
+        error: { code: 'SELLER_PRODUCT_FORBIDDEN', message: 'У вас нет доступа к этому товару.' }
+      });
+    }
+
     const normalizedCategory = payload.category ? await ensureReferenceCategory(payload.category) : undefined;
     const media = payload.media !== undefined || payload.imageUrls !== undefined || payload.videoUrls !== undefined || payload.image !== undefined
       ? normalizeProductMediaInput(payload)
@@ -845,7 +879,9 @@ sellerRoutes.put('/products/:id', writeLimiter, async (req: AuthRequest, res, ne
       image: imageMedia[0]?.url ?? payload.image,
       imageUrls: media ? imageMedia.map((item) => item.url) : undefined,
       videoUrls: media ? videoMedia.map((item) => item.url) : undefined,
-      media
+      media,
+      characteristics: payload.characteristics ?? payload.specifications,
+      specifications: payload.specifications ?? payload.characteristics
     });
 
     res.json({ data: product });
@@ -862,6 +898,15 @@ sellerRoutes.delete('/products/:id', writeLimiter, async (req: AuthRequest, res,
     const approved = await ensureKycApproved(req.user!.userId);
     if (!approved && req.user!.role !== 'ADMIN') {
       return res.status(403).json({ error: { code: 'KYC_NOT_APPROVED', message: 'KYC not approved' } });
+    }
+    const productAccessResult = await productUseCases.getForSellerEdit(req.params.id, req.user!.userId);
+    if (productAccessResult.code === 'NOT_FOUND') {
+      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Товар не найден.' } });
+    }
+    if (productAccessResult.code === 'FORBIDDEN') {
+      return res.status(403).json({
+        error: { code: 'SELLER_PRODUCT_FORBIDDEN', message: 'У вас нет доступа к этому товару.' }
+      });
     }
     await productUseCases.remove(req.params.id);
     res.json({ success: true });

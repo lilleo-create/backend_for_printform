@@ -8,6 +8,12 @@ export interface ProductMediaInput {
   sortOrder?: number;
 }
 
+export interface ProductSpecificationInput {
+  key: string;
+  value: string;
+  sortOrder?: number;
+}
+
 export interface ProductInput {
   title: string;
   category: string;
@@ -16,6 +22,8 @@ export interface ProductInput {
   imageUrls?: string[];
   videoUrls?: string[];
   media?: ProductMediaInput[];
+  characteristics?: ProductSpecificationInput[];
+  specifications?: ProductSpecificationInput[];
   description: string;
   descriptionShort: string;
   descriptionFull: string;
@@ -49,6 +57,23 @@ const productInclude = {
   media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
   variants: true,
   specs: { orderBy: { sortOrder: 'asc' } }
+} satisfies Prisma.ProductInclude;
+
+const sellerProductEditInclude = {
+  ...productInclude,
+  seller: {
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      sellerProfile: {
+        select: {
+          storeName: true,
+          city: true
+        }
+      }
+    }
+  }
 } satisfies Prisma.ProductInclude;
 
 const buildMediaRecords = (data: Pick<ProductInput, 'image' | 'imageUrls' | 'videoUrls' | 'media'>): ProductMediaInput[] => {
@@ -92,6 +117,7 @@ const toProductView = <T extends {
   videoUrls?: string[];
   images?: Array<{ url: string; sortOrder: number }>;
   media?: Array<{ type: 'IMAGE' | 'VIDEO'; url: string; isPrimary: boolean; sortOrder: number }>;
+  specs?: Array<{ key: string; value: string; sortOrder: number }>;
 }>(product: T) => {
   const media = product.media ?? [];
   const imageMedia = media.filter((item) => item.type === 'IMAGE');
@@ -101,6 +127,8 @@ const toProductView = <T extends {
   return {
     ...product,
     media,
+    characteristics: product.specs ?? [],
+    specifications: product.specs ?? [],
     primaryMedia,
     image: primaryMedia?.type === 'IMAGE' ? primaryMedia.url : imageMedia[0]?.url ?? product.image,
     imageUrls: imageMedia.map((item) => item.url),
@@ -110,6 +138,12 @@ const toProductView = <T extends {
         ? product.images
         : imageMedia.map((item) => ({ url: item.url, sortOrder: item.sortOrder }))
   };
+};
+
+const resolveSpecificationsInput = (data: Partial<ProductInput>): ProductSpecificationInput[] | undefined => {
+  if (data.specifications !== undefined) return data.specifications;
+  if (data.characteristics !== undefined) return data.characteristics;
+  return undefined;
 };
 
 interface ProductVariantCard {
@@ -370,11 +404,14 @@ export const productRepository = {
     if (data.variants?.length) {
       const created = await prisma.$transaction(async (tx) => {
         const variantsInput = data.variants ?? [];
+        const specifications = resolveSpecificationsInput(data);
         const {
           variants: _variants,
           imageUrls: _imageUrls,
           videoUrls: _videoUrls,
           media: _media,
+          specifications: _specifications,
+          characteristics: _characteristics,
           ...productData
         } = data;
         const mediaRecords = buildMediaRecords(data);
@@ -409,6 +446,15 @@ export const productRepository = {
                     type: item.type,
                     url: item.url,
                     isPrimary: item.isPrimary ?? index === 0,
+                    sortOrder: item.sortOrder ?? index
+                  }))
+                }
+              : undefined,
+            specs: specifications?.length
+              ? {
+                  create: specifications.map((item, index) => ({
+                    key: item.key,
+                    value: item.value,
                     sortOrder: item.sortOrder ?? index
                   }))
                 }
@@ -479,7 +525,16 @@ export const productRepository = {
       return toProductView(created);
     }
 
-    const { variants: _variants, imageUrls: _imageUrls, videoUrls: _videoUrls, media: _media, ...productData } = data;
+    const specifications = resolveSpecificationsInput(data);
+    const {
+      variants: _variants,
+      imageUrls: _imageUrls,
+      videoUrls: _videoUrls,
+      media: _media,
+      specifications: _specifications,
+      characteristics: _characteristics,
+      ...productData
+    } = data;
     const mediaRecords = buildMediaRecords(data);
     const imageUrls = mediaRecords.filter((item) => item.type === 'IMAGE').map((item) => item.url);
     const primaryImage =
@@ -514,6 +569,15 @@ export const productRepository = {
                 sortOrder: item.sortOrder ?? index
               }))
             }
+          : undefined,
+        specs: specifications?.length
+          ? {
+              create: specifications.map((item, index) => ({
+                key: item.key,
+                value: item.value,
+                sortOrder: item.sortOrder ?? index
+              }))
+            }
           : undefined
       },
       include: {
@@ -525,7 +589,8 @@ export const productRepository = {
     return toProductView(product);
   },
   update: async (id: string, data: Partial<ProductInput>) => {
-    const { imageUrls, videoUrls, media, ...rest } = data;
+    const { imageUrls, videoUrls, media, characteristics, specifications, ...rest } = data;
+    const nextSpecifications = specifications ?? characteristics;
     const mediaRecords = media !== undefined || imageUrls !== undefined || videoUrls !== undefined || data.image !== undefined
       ? buildMediaRecords({
           image: data.image ?? '',
@@ -559,12 +624,26 @@ export const productRepository = {
       });
 
       await replaceProductRelations(tx, id, mediaRecords, nextImageUrls);
+      if (nextSpecifications !== undefined) {
+        await tx.productSpec.deleteMany({ where: { productId: id } });
+        if (nextSpecifications.length > 0) {
+          await tx.productSpec.createMany({
+            data: nextSpecifications.map((item, index) => ({
+              productId: id,
+              key: item.key,
+              value: item.value,
+              sortOrder: item.sortOrder ?? index
+            }))
+          });
+        }
+      }
 
       return tx.product.findUnique({
         where: { id },
         include: {
           images: { orderBy: { sortOrder: 'asc' } },
-          media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] }
+          media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
+          specs: { orderBy: { sortOrder: 'asc' } }
         }
       });
     });
@@ -572,6 +651,55 @@ export const productRepository = {
     return product ? toProductView(product) : null;
   },
   remove: (id: string) => prisma.product.delete({ where: { id } })
+  ,
+  getSellerProductForEdit: async (id: string, sellerId: string) => {
+    const product = await prisma.product.findUnique({
+      where: { id },
+      include: sellerProductEditInclude
+    });
+
+    if (!product) {
+      return { code: 'NOT_FOUND' as const, data: null };
+    }
+
+    if (product.sellerId !== sellerId) {
+      return { code: 'FORBIDDEN' as const, data: null };
+    }
+
+    const variantGroupId = product.variantGroupId ?? product.id;
+    const variantProducts = await prisma.product.findMany({
+      where: {
+        variantGroupId,
+        sellerId
+      },
+      include: {
+        media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
+        specs: { orderBy: { sortOrder: 'asc' } }
+      },
+      orderBy: [{ createdAt: 'asc' }]
+    });
+
+    return {
+      code: 'OK' as const,
+      data: {
+        ...toProductView(product),
+        status: product.moderationStatus,
+        seller: {
+          id: product.seller.id,
+          name: product.seller.name,
+          email: product.seller.email,
+          store: {
+            storeName: product.seller.sellerProfile?.storeName ?? null,
+            city: product.seller.sellerProfile?.city ?? null
+          }
+        },
+        variants: variantProducts.map((variant) => ({
+          ...toProductView(variant),
+          status: variant.moderationStatus
+        }))
+      }
+    };
+  }
   ,
   listVariants: async (id: string) => {
     const baseProduct = await prisma.product.findUnique({

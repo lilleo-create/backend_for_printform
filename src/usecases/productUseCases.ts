@@ -14,6 +14,7 @@ export const productUseCases = {
     limit?: number;
   }) => productRepository.findMany(filters),
   get: (id: string) => productRepository.findById(id),
+  getForSellerEdit: (id: string, sellerId: string) => productRepository.getSellerProductForEdit(id, sellerId),
   listVariants: (id: string) => productRepository.listVariants(id),
   create: productRepository.create,
   update: productRepository.update,

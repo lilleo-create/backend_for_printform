@@ -20,6 +20,7 @@ const sellerDeliveryProfileService_1 = require("../services/sellerDeliveryProfil
 const payoutService_1 = require("../services/payoutService");
 const shipmentService_1 = require("../services/shipmentService");
 const sellerOrderDocumentsService_1 = require("../services/sellerOrderDocumentsService");
+const accessControl_1 = require("../utils/accessControl");
 const cdekService_1 = require("../services/cdekService");
 exports.sellerRoutes = (0, express_1.Router)();
 // ---------------------------------------------------------
@@ -33,17 +34,38 @@ const storage = multer_1.default.diskStorage({
         cb(null, `${unique}-${file.originalname}`);
     }
 });
-const allowedImageTypes = ["image/jpeg", "image/png", "image/webp"];
-const allowedVideoTypes = ["video/mp4", "video/webm"];
+const IMAGE_UPLOAD_RULES = [
+    { mime: "image/jpeg", extensions: [".jpg", ".jpeg"] },
+    { mime: "image/png", extensions: [".png"] },
+    { mime: "image/webp", extensions: [".webp"] },
+    { mime: "image/heic", extensions: [".heic"] },
+    { mime: "image/heif", extensions: [".heif"] }
+];
+const VIDEO_UPLOAD_RULES = [
+    { mime: "video/mp4", extensions: [".mp4", ".m4v"] },
+    { mime: "video/quicktime", extensions: [".mov", ".qt"] },
+    { mime: "video/webm", extensions: [".webm"] }
+];
+const allowedImageTypes = IMAGE_UPLOAD_RULES.map((rule) => rule.mime);
+const allowedVideoTypes = VIDEO_UPLOAD_RULES.map((rule) => rule.mime);
 const maxImageSize = 10 * 1024 * 1024;
 const maxVideoSize = 100 * 1024 * 1024;
+const resolveUploadKind = (file) => {
+    const extension = path_1.default.extname(file.originalname ?? "").toLowerCase();
+    const isAllowed = (rules) => rules.some((rule) => rule.mime === file.mimetype && rule.extensions.includes(extension));
+    if (isAllowed(IMAGE_UPLOAD_RULES))
+        return "IMAGE";
+    if (isAllowed(VIDEO_UPLOAD_RULES))
+        return "VIDEO";
+    return null;
+};
 const upload = (0, multer_1.default)({
     storage,
     limits: { fileSize: maxVideoSize },
     fileFilter: (_req, file, cb) => {
-        if ([...allowedImageTypes, ...allowedVideoTypes].includes(file.mimetype))
+        if (resolveUploadKind(file))
             return cb(null, true);
-        return cb(new Error("UPLOAD_FILE_TYPE_INVALID"));
+        return cb(new Error("PRODUCT_UPLOAD_FILE_TYPE_INVALID"));
     }
 });
 const toShipmentView = (shipment) => {
@@ -285,6 +307,43 @@ const normalizeProductMediaInput = (payload) => {
         }))
     ];
 };
+const normalizeVariantPayload = (basePayload, variantPayload) => {
+    const mergedPayload = {
+        image: variantPayload.image ?? basePayload.image,
+        imageUrls: variantPayload.imageUrls ?? basePayload.imageUrls,
+        videoUrls: variantPayload.videoUrls ?? basePayload.videoUrls,
+        media: variantPayload.media ?? basePayload.media
+    };
+    const media = normalizeProductMediaInput(mergedPayload);
+    const imageMedia = media.filter((item) => item.type === 'IMAGE');
+    const videoMedia = media.filter((item) => item.type === 'VIDEO');
+    return {
+        sku: variantPayload.sku,
+        title: basePayload.title,
+        category: basePayload.category,
+        price: variantPayload.price ?? basePayload.price,
+        currency: basePayload.currency ?? 'RUB',
+        description: basePayload.description,
+        descriptionShort: basePayload.descriptionShort ?? basePayload.description,
+        descriptionFull: basePayload.descriptionFull ?? basePayload.description,
+        material: basePayload.material,
+        technology: basePayload.technology,
+        printTime: basePayload.printTime,
+        productionTimeHours: basePayload.productionTimeHours,
+        color: variantPayload.color ?? basePayload.color,
+        variantLabel: variantPayload.variantLabel,
+        variantSize: variantPayload.variantSize,
+        variantAttributes: variantPayload.variantAttributes,
+        weightGrossG: basePayload.weightGrossG,
+        dxCm: basePayload.dxCm,
+        dyCm: basePayload.dyCm,
+        dzCm: basePayload.dzCm,
+        image: imageMedia[0]?.url ?? basePayload.image ?? '',
+        imageUrls: imageMedia.map((item) => item.url),
+        videoUrls: videoMedia.map((item) => item.url),
+        media
+    };
+};
 function readPreparationChecklist(statusRaw) {
     const raw = (statusRaw && typeof statusRaw === 'object' ? statusRaw : {});
     const prep = (raw.preparationChecklist && typeof raw.preparationChecklist === 'object' ? raw.preparationChecklist : {});
@@ -363,7 +422,7 @@ exports.sellerRoutes.post('/onboarding', authMiddleware_1.requireAuth, rateLimit
             data: {
                 name: payload.name,
                 phone,
-                role: req.user.isAdmin ? 'ADMIN' : 'SELLER',
+                role: (0, accessControl_1.resolveRoleAfterSellerEnablement)(req.user.role),
                 sellerProfile: {
                     upsert: {
                         create: profileData,
@@ -633,13 +692,30 @@ exports.sellerRoutes.get('/products', async (req, res, next) => {
         next(error);
     }
 });
+exports.sellerRoutes.get('/products/:id', async (req, res, next) => {
+    try {
+        const productResult = await productUseCases_1.productUseCases.getForSellerEdit(req.params.id, req.user.userId);
+        if (productResult.code === 'NOT_FOUND') {
+            return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Товар не найден.' } });
+        }
+        if (productResult.code === 'FORBIDDEN') {
+            return res.status(403).json({
+                error: { code: 'SELLER_PRODUCT_FORBIDDEN', message: 'У вас нет доступа к этому товару.' }
+            });
+        }
+        return res.json({ data: productResult.data });
+    }
+    catch (error) {
+        next(error);
+    }
+});
 exports.sellerRoutes.post('/products', rateLimiters_1.writeLimiter, async (req, res, next) => {
     try {
         const approved = await ensureKycApproved(req.user.userId);
         if (!approved && req.user.role !== 'ADMIN') {
             return res.status(403).json({ error: { code: 'KYC_NOT_APPROVED', message: 'KYC not approved' } });
         }
-        const payload = productRoutes_1.sellerProductSchema.parse(req.body);
+        const payload = productRoutes_1.sellerProductCreateSchema.parse(req.body);
         const normalizedCategory = await ensureReferenceCategory(payload.category);
         const skuFallback = payload.sku ?? `SKU-${Date.now()}`;
         const media = normalizeProductMediaInput(payload);
@@ -659,13 +735,19 @@ exports.sellerRoutes.post('/products', rateLimiters_1.writeLimiter, async (req, 
             image: imageMedia[0].url,
             imageUrls: imageMedia.map((item) => item.url),
             videoUrls: videoMedia.map((item) => item.url),
-            media
+            media,
+            variants: payload.variants?.map((variantPayload) => normalizeVariantPayload(payload, variantPayload)),
+            characteristics: payload.characteristics ?? payload.specifications,
+            specifications: payload.specifications ?? payload.characteristics
         });
         res.status(201).json({ data: product });
     }
     catch (error) {
         if (error instanceof Error && error.message === 'CATEGORY_INVALID') {
             return res.status(400).json({ error: { code: 'CATEGORY_INVALID', message: 'Категория недоступна.' } });
+        }
+        if (error instanceof Error && error.message === 'SKU_DUPLICATE_IN_VARIANTS') {
+            return res.status(400).json({ error: { code: 'SKU_DUPLICATE_IN_VARIANTS', message: 'SKU варианта должен быть уникальным.' } });
         }
         next(error);
     }
@@ -676,7 +758,16 @@ exports.sellerRoutes.put('/products/:id', rateLimiters_1.writeLimiter, async (re
         if (!approved && req.user.role !== 'ADMIN') {
             return res.status(403).json({ error: { code: 'KYC_NOT_APPROVED', message: 'KYC not approved' } });
         }
-        const payload = productRoutes_1.sellerProductSchema.partial().parse(req.body);
+        const payload = productRoutes_1.sellerProductUpdateSchema.parse(req.body);
+        const productAccessResult = await productUseCases_1.productUseCases.getForSellerEdit(req.params.id, req.user.userId);
+        if (productAccessResult.code === 'NOT_FOUND') {
+            return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Товар не найден.' } });
+        }
+        if (productAccessResult.code === 'FORBIDDEN') {
+            return res.status(403).json({
+                error: { code: 'SELLER_PRODUCT_FORBIDDEN', message: 'У вас нет доступа к этому товару.' }
+            });
+        }
         const normalizedCategory = payload.category ? await ensureReferenceCategory(payload.category) : undefined;
         const media = payload.media !== undefined || payload.imageUrls !== undefined || payload.videoUrls !== undefined || payload.image !== undefined
             ? normalizeProductMediaInput(payload)
@@ -694,7 +785,9 @@ exports.sellerRoutes.put('/products/:id', rateLimiters_1.writeLimiter, async (re
             image: imageMedia[0]?.url ?? payload.image,
             imageUrls: media ? imageMedia.map((item) => item.url) : undefined,
             videoUrls: media ? videoMedia.map((item) => item.url) : undefined,
-            media
+            media,
+            characteristics: payload.characteristics ?? payload.specifications,
+            specifications: payload.specifications ?? payload.characteristics
         });
         res.json({ data: product });
     }
@@ -711,6 +804,15 @@ exports.sellerRoutes.delete('/products/:id', rateLimiters_1.writeLimiter, async 
         if (!approved && req.user.role !== 'ADMIN') {
             return res.status(403).json({ error: { code: 'KYC_NOT_APPROVED', message: 'KYC not approved' } });
         }
+        const productAccessResult = await productUseCases_1.productUseCases.getForSellerEdit(req.params.id, req.user.userId);
+        if (productAccessResult.code === 'NOT_FOUND') {
+            return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Товар не найден.' } });
+        }
+        if (productAccessResult.code === 'FORBIDDEN') {
+            return res.status(403).json({
+                error: { code: 'SELLER_PRODUCT_FORBIDDEN', message: 'У вас нет доступа к этому товару.' }
+            });
+        }
         await productUseCases_1.productUseCases.remove(req.params.id);
         res.json({ success: true });
     }
@@ -723,16 +825,20 @@ exports.sellerRoutes.post('/uploads', rateLimiters_1.writeLimiter, upload.array(
     if (!files.length) {
         return res.status(400).json({ error: { code: 'FILES_REQUIRED' } });
     }
-    const oversizedFiles = files.filter((file) => {
-        if (allowedImageTypes.includes(file.mimetype))
-            return file.size > maxImageSize;
-        if (allowedVideoTypes.includes(file.mimetype))
-            return file.size > maxVideoSize;
-        return true;
-    });
-    if (oversizedFiles.length) {
+    const invalidFiles = files.filter((file) => !resolveUploadKind(file));
+    if (invalidFiles.length) {
         await Promise.all(files.map((file) => file.path ? fs_1.default.promises.unlink(file.path).catch(() => undefined) : Promise.resolve()));
-        return res.status(400).json({ error: { code: 'FILE_TOO_LARGE' } });
+        return res.status(400).json({ error: { code: 'PRODUCT_UPLOAD_FILE_TYPE_INVALID' } });
+    }
+    const oversizedImageFiles = files.filter((file) => resolveUploadKind(file) === 'IMAGE' && file.size > maxImageSize);
+    const oversizedVideoFiles = files.filter((file) => resolveUploadKind(file) === 'VIDEO' && file.size > maxVideoSize);
+    if (oversizedImageFiles.length || oversizedVideoFiles.length) {
+        await Promise.all(files.map((file) => file.path ? fs_1.default.promises.unlink(file.path).catch(() => undefined) : Promise.resolve()));
+        return res.status(400).json({
+            error: {
+                code: oversizedVideoFiles.length ? 'PRODUCT_UPLOAD_VIDEO_TOO_LARGE' : 'PRODUCT_UPLOAD_IMAGE_TOO_LARGE'
+            }
+        });
     }
     const urls = files
         .filter((file) => file.filename)

@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.sellerProductSchema = exports.productRoutes = void 0;
+exports.sellerProductSchema = exports.sellerProductUpdateSchema = exports.sellerProductCreateSchema = exports.productRoutes = void 0;
 const express_1 = require("express");
 const zod_1 = require("zod");
 const productUseCases_1 = require("../usecases/productUseCases");
@@ -65,7 +65,24 @@ exports.productRoutes.get('/:id', rateLimiters_1.publicReadLimiter, async (req, 
         return next(error);
     }
 });
-exports.sellerProductSchema = zod_1.z.object({
+exports.productRoutes.get('/:id/variants', rateLimiters_1.publicReadLimiter, async (req, res, next) => {
+    try {
+        const variants = await productUseCases_1.productUseCases.listVariants(req.params.id);
+        if (variants === null) {
+            return res.status(404).json({ error: { code: 'NOT_FOUND' } });
+        }
+        return res.json({ data: variants });
+    }
+    catch (error) {
+        return next(error);
+    }
+});
+const productSpecificationSchema = zod_1.z.object({
+    key: zod_1.z.string().min(1),
+    value: zod_1.z.string().min(1),
+    sortOrder: zod_1.z.number().int().min(0).optional()
+});
+exports.sellerProductCreateSchema = zod_1.z.object({
     title: zod_1.z.string().min(2),
     category: zod_1.z.string().min(2),
     price: zod_1.z.preprocess((value) => (typeof value === 'string' && value.trim() !== '' ? Number(value) : value), zod_1.z.number({ invalid_type_error: 'PRICE_INVALID' }).min(1)),
@@ -80,6 +97,8 @@ exports.sellerProductSchema = zod_1.z.object({
         sortOrder: zod_1.z.number().int().min(0).optional()
     }))
         .optional(),
+    characteristics: zod_1.z.array(productSpecificationSchema).optional(),
+    specifications: zod_1.z.array(productSpecificationSchema).optional(),
     description: zod_1.z.string().min(5),
     descriptionShort: zod_1.z.string().min(5).optional(),
     descriptionFull: zod_1.z.string().min(10).optional(),
@@ -90,11 +109,37 @@ exports.sellerProductSchema = zod_1.z.object({
     printTime: zod_1.z.string().min(2).optional(),
     productionTimeHours: zod_1.z.number().int().min(1).max(720).optional(),
     color: zod_1.z.string().min(2),
+    variantLabel: zod_1.z.string().min(1).max(120).optional(),
+    variantSize: zod_1.z.string().min(1).max(64).optional(),
+    variantAttributes: zod_1.z.record(zod_1.z.string(), zod_1.z.union([zod_1.z.string(), zod_1.z.number(), zod_1.z.boolean()])).optional(),
     weightGrossG: zod_1.z.number().int().positive().optional(),
     dxCm: zod_1.z.number().int().positive().optional(),
     dyCm: zod_1.z.number().int().positive().optional(),
     dzCm: zod_1.z.number().int().positive().optional(),
+    variants: zod_1.z
+        .array(zod_1.z.object({
+        sku: zod_1.z.string().min(3),
+        price: zod_1.z.number().int().positive().optional(),
+        color: zod_1.z.string().min(2).optional(),
+        variantLabel: zod_1.z.string().min(1).max(120).optional(),
+        variantSize: zod_1.z.string().min(1).max(64).optional(),
+        variantAttributes: zod_1.z.record(zod_1.z.string(), zod_1.z.union([zod_1.z.string(), zod_1.z.number(), zod_1.z.boolean()])).optional(),
+        image: mediaUrlSchema.optional(),
+        imageUrls: zod_1.z.array(mediaUrlSchema).optional(),
+        videoUrls: zod_1.z.array(mediaUrlSchema).optional(),
+        media: zod_1.z
+            .array(zod_1.z.object({
+            type: zod_1.z.enum(['IMAGE', 'VIDEO']),
+            url: mediaUrlSchema,
+            isPrimary: zod_1.z.boolean().optional(),
+            sortOrder: zod_1.z.number().int().min(0).optional()
+        }))
+            .optional()
+    }))
+        .optional(),
 });
+exports.sellerProductUpdateSchema = exports.sellerProductCreateSchema.partial();
+exports.sellerProductSchema = exports.sellerProductCreateSchema;
 const reviewSchema = zod_1.z.object({
     rating: zod_1.z.number().int().min(1).max(5),
     pros: zod_1.z.string().min(3).max(500),
