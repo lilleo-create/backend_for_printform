@@ -282,3 +282,12 @@ productRoutes.post('/reviews/:reviewId/replies', authenticate, writeLimiter, asy
     next(error);
   }
 });
+
+productRoutes.all('/:id/reviews*', (_req, res) => {
+  return res.status(404).json({
+    error: {
+      code: 'ROUTE_NOT_FOUND',
+      message: 'ROUTE_NOT_FOUND'
+    }
+  });
+});

@@ -34,6 +34,7 @@ export const errorHandler = (
     return res.status(400).json({
       error: {
         code: 'VALIDATION_ERROR',
+        message: 'VALIDATION_ERROR',
         issues: error.issues.map((issue) => ({
           path: issue.path.map(String),
           message: issue.message
@@ -49,19 +50,19 @@ export const errorHandler = (
         : 'LIMIT_UNEXPECTED_FILE';
 
     return res.status(400).json({
-      error: { code: mapMulterErrorCode(multerCode) }
+      error: { code: mapMulterErrorCode(multerCode), message: mapMulterErrorCode(multerCode) }
     });
   }
 
   if (isAppError(error) && error.message === 'RETURN_UPLOAD_FILE_TYPE_INVALID') {
     return res.status(400).json({
-      error: { code: 'RETURN_UPLOAD_FILE_TYPE_INVALID' }
+      error: { code: 'RETURN_UPLOAD_FILE_TYPE_INVALID', message: 'RETURN_UPLOAD_FILE_TYPE_INVALID' }
     });
   }
 
   if (isAppError(error) && error.message === 'PRODUCT_UPLOAD_FILE_TYPE_INVALID') {
     return res.status(400).json({
-      error: { code: 'PRODUCT_UPLOAD_FILE_TYPE_INVALID' }
+      error: { code: 'PRODUCT_UPLOAD_FILE_TYPE_INVALID', message: 'PRODUCT_UPLOAD_FILE_TYPE_INVALID' }
     });
   }
 
@@ -72,6 +73,7 @@ export const errorHandler = (
       return res.status(error.status ?? 502).json({
         error: {
           code: errorCode,
+          message: error.message || errorCode,
           details: error.details ?? null,
           ...(Array.isArray(error.issues) && error.issues.length
             ? { issues: error.issues }
@@ -142,6 +144,6 @@ export const errorHandler = (
   }
 
   return res.status(status).json({
-    error: { code: message }
+    error: { code: message, message }
   });
 };
