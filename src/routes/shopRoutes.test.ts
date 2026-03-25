@@ -98,3 +98,65 @@ test('GET /shops/:shopRef/products returns approved products for resolved shop',
   assert.equal(response.body.data[0].sellerId, 'seller-77');
   assert.equal(response.body.data[0].moderationStatus, 'APPROVED');
 });
+
+
+test('GET /shops/:shopRef returns STORE_NOT_PUBLIC for unpublished store in public flow', async () => {
+  (prisma.user.findUnique as any) = async () => null;
+  (prisma.user.findMany as any) = async () => ([
+    {
+      id: 'seller-80',
+      name: 'Hidden seller',
+      sellerProfile: {
+        status: 'ONBOARDING',
+        storeName: 'Hidden store',
+        sellerType: 'IP',
+        legalType: null,
+        phone: '+70000000001',
+        city: 'Kazan',
+        referenceCategory: null
+      }
+    }
+  ]);
+
+  const app = buildApp();
+  const response = await request(app).get('/shops/hidden-store');
+
+  assert.equal(response.status, 403);
+  assert.equal(response.body.error.code, 'STORE_NOT_PUBLIC');
+});
+
+test('GET /shops/me returns owner shop even when store is not published', async () => {
+  (prisma.user.findUnique as any) = async ({ where }: any) => {
+    if (where.id === 'seller-2') {
+      return {
+        id: 'seller-2',
+        name: 'Owner',
+        role: 'SELLER',
+        sellerProfile: {
+          status: 'ONBOARDING',
+          storeName: 'Owner private store',
+          sellerType: 'IP',
+          legalType: null,
+          phone: '+79991112233',
+          city: 'Moscow',
+          referenceCategory: 'Accessories'
+        }
+      };
+    }
+    return null;
+  };
+  (prisma.product.aggregate as any) = async () => ({
+    _avg: { ratingAvg: null },
+    _sum: { ratingCount: null }
+  });
+
+  const app = buildApp();
+  const response = await request(app)
+    .get('/shops/me')
+    .set('Authorization', `Bearer ${tokenFor('seller-2')}`);
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.data.id, 'seller-2');
+  assert.equal(response.body.data.legalInfo.status, 'ONBOARDING');
+  assert.equal(response.body.data.isPublished, false);
+});
