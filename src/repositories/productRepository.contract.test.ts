@@ -55,3 +55,77 @@ test('findById returns stable product contract with specs and normalized media f
     (prisma.product.findMany as any) = originalFindMany;
   }
 });
+
+test('getSellerProductForEdit returns specs contract for product and variants', async () => {
+  const originalFindUnique = prisma.product.findUnique;
+  const originalFindMany = prisma.product.findMany;
+
+  (prisma.product.findUnique as any) = async () => ({
+    id: 'prod-1',
+    sellerId: 'seller-1',
+    variantGroupId: 'group-1',
+    parentProductId: null,
+    title: 'Master',
+    descriptionShort: 'Short',
+    descriptionFull: 'Long text',
+    sku: 'SKU-MASTER',
+    price: 1200,
+    currency: 'RUB',
+    category: 'Cat',
+    image: '/uploads/master.jpg',
+    videoUrls: [],
+    description: 'Desc',
+    material: 'PLA',
+    technology: 'FDM',
+    color: 'White',
+    moderationStatus: 'APPROVED',
+    images: [],
+    variants: [],
+    specs: [{ key: 'Layer', value: '0.2mm', sortOrder: 0 }],
+    media: [{ type: 'IMAGE', url: '/uploads/master.jpg', isPrimary: true, sortOrder: 0, createdAt: new Date() }],
+    seller: {
+      id: 'seller-1',
+      name: 'Seller',
+      email: 'seller@example.com',
+      sellerProfile: { storeName: 'Print Hub', city: 'Moscow' }
+    }
+  });
+
+  (prisma.product.findMany as any) = async () => [
+    {
+      id: 'prod-2',
+      sellerId: 'seller-1',
+      variantGroupId: 'group-1',
+      parentProductId: 'prod-1',
+      title: 'Variant',
+      descriptionShort: 'Short',
+      descriptionFull: 'Long text',
+      sku: 'SKU-VAR',
+      price: 1300,
+      currency: 'RUB',
+      category: 'Cat',
+      image: '/uploads/variant.jpg',
+      videoUrls: [],
+      description: 'Desc',
+      material: 'PLA',
+      technology: 'FDM',
+      color: 'Black',
+      moderationStatus: 'PENDING',
+      specs: [{ key: 'Layer', value: '0.1mm', sortOrder: 0 }],
+      media: [{ type: 'IMAGE', url: '/uploads/variant.jpg', isPrimary: true, sortOrder: 0, createdAt: new Date() }]
+    }
+  ];
+
+  try {
+    const result = await productRepository.getSellerProductForEdit('prod-1', 'seller-1');
+    assert.equal(result.code, 'OK');
+    assert.ok(result.data);
+    assert.deepEqual(result.data.specs, [{ key: 'Layer', value: '0.2mm', sortOrder: 0 }]);
+    assert.deepEqual(result.data.characteristics, [{ key: 'Layer', value: '0.2mm', sortOrder: 0 }]);
+    assert.deepEqual(result.data.variants[0].specs, [{ key: 'Layer', value: '0.1mm', sortOrder: 0 }]);
+    assert.deepEqual(result.data.variants[0].characteristics, [{ key: 'Layer', value: '0.1mm', sortOrder: 0 }]);
+  } finally {
+    (prisma.product.findUnique as any) = originalFindUnique;
+    (prisma.product.findMany as any) = originalFindMany;
+  }
+});

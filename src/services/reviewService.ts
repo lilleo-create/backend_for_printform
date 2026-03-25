@@ -68,7 +68,7 @@ const mapReview = (
   user: review.user
     ? {
         id: review.user.id,
-        nickname: review.user.name
+        nickname: review.user.name ?? null
       }
     : null,
   currentUserReaction: review.currentUserReaction ?? null,
@@ -82,10 +82,12 @@ const mapReview = (
     updatedAt: reply.updatedAt,
     author: {
       id: reply.author?.id ?? null,
+      nickname: reply.author?.name ?? null,
+      storeName: reply.author?.sellerProfile?.storeName ?? null,
       displayName:
         reply.authorType === 'SELLER'
-          ? (reply.author?.sellerProfile?.storeName ?? reply.author?.name ?? 'Магазин')
-          : (reply.author?.name ?? 'Пользователь')
+          ? (reply.author?.sellerProfile?.storeName ?? reply.author?.name ?? null)
+          : (reply.author?.name ?? null)
     }
   }))
 });
@@ -346,7 +348,7 @@ export const reviewService = {
     });
   },
 
-  async addSellerReply(reviewId: string, authorId: string, text: string, productId?: string) {
+  async addReply(reviewId: string, authorId: string, text: string, productId?: string) {
     return prisma.$transaction(async (tx) => {
       const review = await tx.review.findUnique({
         where: { id: reviewId },
@@ -368,15 +370,13 @@ export const reviewService = {
         throw new Error('FORBIDDEN');
       }
 
-      if (review.product.sellerId !== authorId) {
-        throw new Error('FORBIDDEN');
-      }
+      const authorType = review.product.sellerId === authorId ? 'SELLER' : 'BUYER';
 
       const reply = await tx.reviewReply.create({
         data: {
           reviewId,
           authorId,
-          authorType: 'SELLER',
+          authorType,
           text
         },
         include: {
@@ -401,7 +401,12 @@ export const reviewService = {
         updatedAt: reply.updatedAt,
         author: {
           id: reply.author?.id ?? null,
-          displayName: reply.author?.sellerProfile?.storeName ?? reply.author?.name ?? 'Магазин'
+          nickname: reply.author?.name ?? null,
+          storeName: reply.author?.sellerProfile?.storeName ?? null,
+          displayName:
+            reply.authorType === 'SELLER'
+              ? (reply.author?.sellerProfile?.storeName ?? reply.author?.name ?? null)
+              : (reply.author?.name ?? null)
         }
       };
     });

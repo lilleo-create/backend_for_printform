@@ -27,7 +27,7 @@ test.afterEach(() => {
   (prisma.$transaction as any) = originalTransaction;
 });
 
-test('seller-owner can create review reply', async () => {
+test('authorized seller can create review reply as SELLER with storeName', async () => {
   (prisma.user.findUnique as any) = async ({ where }: any) => {
     if (where.id === 'seller-1') {
       return { role: 'SELLER', sellerProfile: { id: 'sp-1', status: 'APPROVED' } };
@@ -65,50 +65,20 @@ test('seller-owner can create review reply', async () => {
 
   assert.equal(response.status, 201);
   assert.equal(response.body.data.reviewId, 'review-1');
+  assert.equal(response.body.data.authorType, 'SELLER');
+  assert.equal(response.body.data.author.storeName, 'Owner Shop');
+  assert.equal(response.body.data.author.nickname, 'Owner');
   assert.equal(response.body.data.author.displayName, 'Owner Shop');
 });
 
-test('another seller cannot create review reply', async () => {
-  (prisma.user.findUnique as any) = async ({ where }: any) => {
-    if (where.id === 'seller-2') {
-      return { role: 'SELLER', sellerProfile: { id: 'sp-2', status: 'APPROVED' } };
-    }
-    return null;
-  };
-
-  (prisma.$transaction as any) = async (cb: any) =>
-    cb({
-      review: {
-        findUnique: async () => ({
-          id: 'review-1',
-          productId: 'product-1',
-          product: { sellerId: 'seller-1' }
-        })
-      },
-      reviewReply: {
-        create: async () => {
-          throw new Error('should not be called');
-        }
-      }
-    });
-
-  const app = buildApp();
-  const response = await request(app)
-    .post('/products/reviews/review-1/replies')
-    .set('Authorization', `Bearer ${tokenFor('seller-2')}`)
-    .send({ text: 'Чужой ответ' });
-
-  assert.equal(response.status, 403);
-  assert.equal(response.body.error.code, 'FORBIDDEN');
-});
-
-test('buyer cannot create review reply for shop', async () => {
+test('authorized user can create review reply as BUYER with nickname', async () => {
   (prisma.user.findUnique as any) = async ({ where }: any) => {
     if (where.id === 'buyer-1') {
       return { role: 'BUYER', sellerProfile: null };
     }
     return null;
   };
+
   (prisma.$transaction as any) = async (cb: any) =>
     cb({
       review: {
@@ -119,9 +89,15 @@ test('buyer cannot create review reply for shop', async () => {
         })
       },
       reviewReply: {
-        create: async () => {
-          throw new Error('should not be called');
-        }
+        create: async ({ data }: any) => ({
+          id: 'reply-2',
+          reviewId: data.reviewId,
+          authorType: data.authorType,
+          text: data.text,
+          createdAt: new Date('2026-03-25T12:00:00.000Z'),
+          updatedAt: new Date('2026-03-25T12:00:00.000Z'),
+          author: { id: 'buyer-1', name: 'Customer Nick', sellerProfile: null }
+        })
       }
     });
 
@@ -129,10 +105,13 @@ test('buyer cannot create review reply for shop', async () => {
   const response = await request(app)
     .post('/products/reviews/review-1/replies')
     .set('Authorization', `Bearer ${tokenFor('buyer-1', 'BUYER')}`)
-    .send({ text: 'Покупатель не может ответить от магазина' });
+    .send({ text: 'Ответ пользователя' });
 
-  assert.equal(response.status, 403);
-  assert.equal(response.body.error.code, 'FORBIDDEN');
+  assert.equal(response.status, 201);
+  assert.equal(response.body.data.authorType, 'BUYER');
+  assert.equal(response.body.data.author.nickname, 'Customer Nick');
+  assert.equal(response.body.data.author.storeName, null);
+  assert.equal(response.body.data.author.displayName, 'Customer Nick');
 });
 
 test('unauthenticated user cannot create review reply', async () => {
