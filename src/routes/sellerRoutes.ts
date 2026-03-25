@@ -308,6 +308,40 @@ const sellerFulfillmentStepsSchema = z.object({
   isActPrinted: z.boolean().optional()
 });
 
+const sellerMediaUrlSchema = z.string().refine((value) => {
+  if (value.startsWith('/uploads/')) {
+    return true;
+  }
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+});
+
+const sellerVariantMutationSchema = z.object({
+  sku: z.string().min(3),
+  price: z.number().int().positive().optional(),
+  color: z.string().min(2).optional(),
+  variantLabel: z.string().min(1).max(120).optional(),
+  variantSize: z.string().min(1).max(64).optional(),
+  variantAttributes: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+  image: sellerMediaUrlSchema.optional(),
+  imageUrls: z.array(sellerMediaUrlSchema).optional(),
+  videoUrls: z.array(sellerMediaUrlSchema).optional(),
+  media: z
+    .array(
+      z.object({
+        type: z.enum(['IMAGE', 'VIDEO']),
+        url: sellerMediaUrlSchema,
+        isPrimary: z.boolean().optional(),
+        sortOrder: z.number().int().min(0).optional()
+      })
+    )
+    .optional()
+});
+
 type PreparationChecklist = {
   packedDone?: boolean;
   packedAt?: string;
