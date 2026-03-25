@@ -743,8 +743,10 @@ authRoutes.post("/refresh", async (req, res, next) => {
     );
     return res.json({
       token: result.accessToken,
+      accessToken: result.accessToken,
       refreshTokenRotated: true,
       refreshTokenTtlDays: env.authRefreshTokenTtlDays,
+      accessTokenTtlMinutes: env.authAccessTokenTtlMinutes,
     });
   } catch (error) {
     clearSessionCookies(res);

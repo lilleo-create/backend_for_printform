@@ -22,7 +22,8 @@ export const authService = {
     return {
       httpOnly: true,
       sameSite: env.authCookieSameSite,
-      secure: env.isProduction,
+      secure: env.authCookieSecure,
+      path: env.authCookiePath,
       maxAge: env.authRefreshTokenTtlDays * 24 * 60 * 60 * 1000,
       ...(env.authCookieDomain ? { domain: env.authCookieDomain } : {})
     } as const;
