@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { ReviewReactionType } from '@prisma/client';
 import { productUseCases } from '../usecases/productUseCases';
 import { reviewService } from '../services/reviewService';
-import { authenticate, AuthRequest } from '../middleware/authMiddleware';
+import { authenticate, authenticateOptional, AuthRequest } from '../middleware/authMiddleware';
 import { publicReadLimiter, writeLimiter } from '../middleware/rateLimiters';
 
 export const productRoutes = Router();
@@ -161,7 +162,15 @@ const summaryQuerySchema = z.object({
   productIds: z.string().optional()
 });
 
-productRoutes.get('/:id/reviews', publicReadLimiter, async (req, res, next) => {
+const reactionSchema = z.object({
+  type: z.nativeEnum(ReviewReactionType)
+});
+
+const replySchema = z.object({
+  text: z.string().trim().min(1).max(2000)
+});
+
+productRoutes.get('/:id/reviews', publicReadLimiter, authenticateOptional, async (req: AuthRequest, res, next) => {
   try {
     const params = reviewListSchema.parse(req.query);
     const productIds = params.productIds
@@ -170,7 +179,9 @@ productRoutes.get('/:id/reviews', publicReadLimiter, async (req, res, next) => {
           .map((value) => value.trim())
           .filter(Boolean)
       : [req.params.id];
-    const reviews = await reviewService.listByProducts(productIds, params.page, params.limit, params.sort);
+    const reviews = await reviewService.listByProducts(productIds, params.page, params.limit, params.sort, {
+      currentUserId: req.user?.userId
+    });
     const total = await reviewService.countByProducts(productIds);
     res.json({ data: reviews, meta: { total } });
   } catch (error) {
@@ -207,6 +218,45 @@ productRoutes.get('/:id/reviews/summary', publicReadLimiter, async (req, res, ne
       : [req.params.id];
     const summary = await reviewService.summaryByProducts(productIds);
     res.json({ data: summary });
+  } catch (error) {
+    next(error);
+  }
+});
+
+productRoutes.put(
+  '/:id/reviews/:reviewId/reaction',
+  authenticate,
+  writeLimiter,
+  async (req: AuthRequest, res, next) => {
+    try {
+      const payload = reactionSchema.parse(req.body);
+      const reaction = await reviewService.setReaction(req.params.id, req.params.reviewId, req.user!.userId, payload.type);
+      res.json({ data: reaction });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+productRoutes.delete(
+  '/:id/reviews/:reviewId/reaction',
+  authenticate,
+  writeLimiter,
+  async (req: AuthRequest, res, next) => {
+    try {
+      const reaction = await reviewService.removeReaction(req.params.id, req.params.reviewId, req.user!.userId);
+      res.json({ data: reaction });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+productRoutes.post('/:id/reviews/:reviewId/replies', authenticate, writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const payload = replySchema.parse(req.body);
+    const reply = await reviewService.addSellerReply(req.params.id, req.params.reviewId, req.user!.userId, payload.text);
+    res.status(201).json({ data: reply });
   } catch (error) {
     next(error);
   }
