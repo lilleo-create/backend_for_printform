@@ -65,6 +65,7 @@ const toShopView = (user: { id: string; name: string; sellerProfile: any }, rati
     subscribersCount: null,
     ordersCount: null,
     addressSlug: buildStoreSlug(displayName) || user.id,
+    isPublished: profile.status === 'APPROVED',
     legalInfo: {
       name: displayName,
       status: profile.status,
@@ -123,16 +124,6 @@ shopRoutes.get('/me', requireAuth, async (req: AuthRequest, res, next) => {
         }
       });
     }
-
-    if (user.sellerProfile.status !== 'APPROVED') {
-      return res.status(409).json({
-        error: {
-          code: 'STORE_NOT_ACTIVE',
-          message: 'Магазин найден, но ещё не активирован.'
-        }
-      });
-    }
-
     const ratingSummary = await prisma.product.aggregate({
       where: { sellerId: user.id, moderationStatus: 'APPROVED' },
       _avg: { ratingAvg: true },
