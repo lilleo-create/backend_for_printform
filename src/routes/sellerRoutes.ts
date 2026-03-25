@@ -758,7 +758,7 @@ sellerRoutes.get('/products', async (req: AuthRequest, res, next) => {
     }
 
     const sellerProducts = await prisma.product.findMany({
-      where: { sellerId: req.user!.userId },
+      where: { sellerId: req.user!.userId, parentProductId: null },
       include: {
         images: { orderBy: { sortOrder: 'asc' } },
         media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] }
@@ -912,6 +912,97 @@ sellerRoutes.delete('/products/:id', writeLimiter, async (req: AuthRequest, res,
     res.json({ success: true });
   } catch (error) {
     next(error);
+  }
+});
+
+sellerRoutes.post('/products/:id/variants', writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const approved = await ensureKycApproved(req.user!.userId);
+    if (!approved && req.user!.role !== 'ADMIN') {
+      return res.status(403).json({ error: { code: 'KYC_NOT_APPROVED', message: 'KYC not approved' } });
+    }
+
+    const baseProduct = await productUseCases.getSellerProductWithVariants(req.params.id, req.user!.userId);
+    if (!baseProduct) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND' } });
+    }
+
+    const payload = sellerVariantMutationSchema.parse(req.body);
+    const media = normalizeProductMediaInput({
+      image: payload.image ?? baseProduct.image,
+      imageUrls: payload.imageUrls ?? baseProduct.imageUrls,
+      videoUrls: payload.videoUrls ?? baseProduct.videoUrls,
+      media: payload.media
+    });
+    const imageMedia = media.filter((item) => item.type === 'IMAGE');
+    const videoMedia = media.filter((item) => item.type === 'VIDEO');
+    const variantInput = {
+      sku: payload.sku,
+      title: baseProduct.title,
+      category: baseProduct.category,
+      price: payload.price ?? baseProduct.price,
+      currency: baseProduct.currency,
+      description: baseProduct.description,
+      descriptionShort: baseProduct.descriptionShort,
+      descriptionFull: baseProduct.descriptionFull,
+      material: baseProduct.material,
+      technology: baseProduct.technology,
+      productionTimeHours: baseProduct.productionTimeHours ?? undefined,
+      color: payload.color ?? baseProduct.color,
+      variantLabel: payload.variantLabel,
+      variantSize: payload.variantSize,
+      variantAttributes: payload.variantAttributes,
+      weightGrossG: baseProduct.weightGrossG ?? undefined,
+      dxCm: baseProduct.dxCm ?? undefined,
+      dyCm: baseProduct.dyCm ?? undefined,
+      dzCm: baseProduct.dzCm ?? undefined,
+      image: imageMedia[0]?.url ?? baseProduct.image,
+      imageUrls: imageMedia.map((item) => item.url),
+      videoUrls: videoMedia.map((item) => item.url),
+      media
+    };
+
+    const created = await productUseCases.createVariant(req.params.id, req.user!.userId, variantInput);
+    if (!created) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND' } });
+    }
+    return res.status(201).json({ data: created });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+sellerRoutes.put('/products/:id/variants/:variantId', writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const approved = await ensureKycApproved(req.user!.userId);
+    if (!approved && req.user!.role !== 'ADMIN') {
+      return res.status(403).json({ error: { code: 'KYC_NOT_APPROVED', message: 'KYC not approved' } });
+    }
+
+    const payload = sellerVariantMutationSchema.partial().parse(req.body);
+    const updated = await productUseCases.updateVariant(req.params.id, req.params.variantId, req.user!.userId, payload);
+    if (!updated) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND' } });
+    }
+    return res.json({ data: updated });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+sellerRoutes.delete('/products/:id/variants/:variantId', writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const approved = await ensureKycApproved(req.user!.userId);
+    if (!approved && req.user!.role !== 'ADMIN') {
+      return res.status(403).json({ error: { code: 'KYC_NOT_APPROVED', message: 'KYC not approved' } });
+    }
+    const removed = await productUseCases.removeVariant(req.params.id, req.params.variantId, req.user!.userId);
+    if (!removed) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND' } });
+    }
+    return res.json({ success: true });
+  } catch (error) {
+    return next(error);
   }
 });
 

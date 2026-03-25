@@ -31,6 +31,8 @@ model User {
   trustedDevices         TrustedDevice[]
   returnRequests         ReturnRequest[]
   moderatedReviews       Review[]               @relation("ReviewModerator")
+  reviewReactions        ReviewReaction[]
+  reviewReplies          ReviewReply[]
   reviews                Review[]
   sellerDeliveryProfile  SellerDeliveryProfile?
   reviewedKycSubmissions SellerKycSubmission[]  @relation("KycReviewer")
@@ -214,11 +216,43 @@ model Review {
   updatedAt        DateTime               @updatedAt
   moderatedBy      User?                  @relation("ReviewModerator", fields: [moderatedById], references: [id])
   product          Product                @relation(fields: [productId], references: [id])
+  reactions        ReviewReaction[]
+  replies          ReviewReply[]
   user             User?                  @relation(fields: [userId], references: [id])
 
   @@index([productId])
   @@index([createdAt])
   @@index([productId, status, isPublic])
+}
+
+model ReviewReaction {
+  id        String             @id @default(cuid())
+  reviewId  String
+  userId    String
+  type      ReviewReactionType
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+  review    Review             @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([reviewId, userId])
+  @@index([reviewId, type])
+  @@index([userId])
+}
+
+model ReviewReply {
+  id         String                @id @default(cuid())
+  reviewId   String
+  authorId   String?
+  authorType ReviewReplyAuthorType
+  text       String
+  createdAt  DateTime              @default(now())
+  updatedAt  DateTime              @updatedAt
+  review     Review                @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  author     User?                 @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([reviewId, createdAt])
+  @@index([authorId])
 }
 
 model Order {
@@ -757,6 +791,17 @@ enum ReviewModerationStatus {
   APPROVED
   REJECTED
   NEEDS_EDIT
+}
+
+enum ReviewReactionType {
+  LIKE
+  DISLIKE
+}
+
+enum ReviewReplyAuthorType {
+  BUYER
+  SELLER
+  ADMIN
 }
 
 enum DropoffSchedule {
