@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { ReviewReactionType } from '@prisma/client';
 import { productUseCases } from '../usecases/productUseCases';
 import { reviewService } from '../services/reviewService';
 import { authenticate, authenticateOptional, AuthRequest } from '../middleware/authMiddleware';
@@ -173,9 +172,23 @@ const summaryQuerySchema = z.object({
   productIds: z.string().optional()
 });
 
-const reactionSchema = z.object({
-  type: z.nativeEnum(ReviewReactionType)
-});
+const reactionSchema = z
+  .object({
+    type: z.enum(['LIKE', 'DISLIKE']).optional(),
+    reaction: z.enum(['LIKE', 'DISLIKE']).optional()
+  })
+  .superRefine((payload, ctx) => {
+    if (!payload.type && !payload.reaction) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['reaction'],
+        message: 'REACTION_REQUIRED'
+      });
+    }
+  })
+  .transform((payload) => ({
+    type: payload.type ?? payload.reaction!
+  }));
 
 const replySchema = z.object({
   text: z.string().trim().min(1).max(2000)
@@ -275,6 +288,7 @@ const removeReviewReactionStandaloneRoute = async (req: AuthRequest, res: any, n
 productRoutes.patch('/:id/reviews/:reviewId/reaction', authenticate, writeLimiter, setReviewReactionByProductRoute);
 productRoutes.put('/:id/reviews/:reviewId/reaction', authenticate, writeLimiter, setReviewReactionByProductRoute);
 productRoutes.patch('/reviews/:reviewId/reaction', authenticate, writeLimiter, setReviewReactionStandaloneRoute);
+productRoutes.put('/reviews/:reviewId/reaction', authenticate, writeLimiter, setReviewReactionStandaloneRoute);
 productRoutes.delete('/:id/reviews/:reviewId/reaction', authenticate, writeLimiter, removeReviewReactionByProductRoute);
 productRoutes.delete('/reviews/:reviewId/reaction', authenticate, writeLimiter, removeReviewReactionStandaloneRoute);
 
@@ -299,6 +313,15 @@ productRoutes.post('/reviews/:reviewId/replies', authenticate, writeLimiter, asy
 });
 
 productRoutes.all('/:id/reviews*', (_req, res) => {
+  return res.status(404).json({
+    error: {
+      code: 'ROUTE_NOT_FOUND',
+      message: 'ROUTE_NOT_FOUND'
+    }
+  });
+});
+
+productRoutes.all('/reviews*', (_req, res) => {
   return res.status(404).json({
     error: {
       code: 'ROUTE_NOT_FOUND',

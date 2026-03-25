@@ -831,6 +831,25 @@ sellerRoutes.get('/products/:id', async (req: AuthRequest, res, next) => {
   }
 });
 
+sellerRoutes.get('/products/:id/variants', async (req: AuthRequest, res, next) => {
+  try {
+    const product = await productUseCases.getSellerProductWithVariants(req.params.id, req.user!.userId);
+    if (!product) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND' } });
+    }
+
+    return res.json({
+      data: {
+        productId: product.id,
+        variantGroup: product.variantGroup ?? null,
+        variants: product.variants ?? []
+      }
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 sellerRoutes.post('/products', writeLimiter, async (req: AuthRequest, res, next) => {
   try {
     const approved = await ensureKycApproved(req.user!.userId);
