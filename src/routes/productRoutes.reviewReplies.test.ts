@@ -102,6 +102,39 @@ test('another seller cannot create review reply', async () => {
   assert.equal(response.body.error.code, 'FORBIDDEN');
 });
 
+test('buyer cannot create review reply for shop', async () => {
+  (prisma.user.findUnique as any) = async ({ where }: any) => {
+    if (where.id === 'buyer-1') {
+      return { role: 'BUYER', sellerProfile: null };
+    }
+    return null;
+  };
+  (prisma.$transaction as any) = async (cb: any) =>
+    cb({
+      review: {
+        findUnique: async () => ({
+          id: 'review-1',
+          productId: 'product-1',
+          product: { sellerId: 'seller-1' }
+        })
+      },
+      reviewReply: {
+        create: async () => {
+          throw new Error('should not be called');
+        }
+      }
+    });
+
+  const app = buildApp();
+  const response = await request(app)
+    .post('/products/reviews/review-1/replies')
+    .set('Authorization', `Bearer ${tokenFor('buyer-1', 'BUYER')}`)
+    .send({ text: 'Покупатель не может ответить от магазина' });
+
+  assert.equal(response.status, 403);
+  assert.equal(response.body.error.code, 'FORBIDDEN');
+});
+
 test('unauthenticated user cannot create review reply', async () => {
   const app = buildApp();
   const response = await request(app).post('/products/reviews/review-1/replies').send({ text: 'Без токена' });

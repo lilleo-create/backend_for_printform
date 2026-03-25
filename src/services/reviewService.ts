@@ -209,7 +209,7 @@ export const reviewService = {
     });
   },
 
-  async setReaction(productId: string, reviewId: string, userId: string, type: ReviewReactionType) {
+  async setReaction(reviewId: string, userId: string, type: ReviewReactionType, productId?: string) {
     return prisma.$transaction(async (tx) => {
       const review = await tx.review.findUnique({
         where: { id: reviewId },
@@ -219,7 +219,7 @@ export const reviewService = {
       if (!review) {
         throw new Error('NOT_FOUND');
       }
-      if (review.productId !== productId) {
+      if (productId && review.productId !== productId) {
         throw new Error('FORBIDDEN');
       }
 
@@ -263,13 +263,15 @@ export const reviewService = {
       return {
         reviewId,
         currentUserReaction: type,
+        likes: updated?.likesCount ?? 0,
+        dislikes: updated?.dislikesCount ?? 0,
         likesCount: updated?.likesCount ?? 0,
         dislikesCount: updated?.dislikesCount ?? 0
       };
     });
   },
 
-  async removeReaction(productId: string, reviewId: string, userId: string) {
+  async removeReaction(reviewId: string, userId: string, productId?: string) {
     return prisma.$transaction(async (tx) => {
       const review = await tx.review.findUnique({
         where: { id: reviewId },
@@ -278,7 +280,7 @@ export const reviewService = {
       if (!review) {
         throw new Error('NOT_FOUND');
       }
-      if (review.productId !== productId) {
+      if (productId && review.productId !== productId) {
         throw new Error('FORBIDDEN');
       }
 
@@ -300,6 +302,8 @@ export const reviewService = {
         return {
           reviewId,
           currentUserReaction: null,
+          likes: snapshot.likesCount,
+          dislikes: snapshot.dislikesCount,
           likesCount: snapshot.likesCount,
           dislikesCount: snapshot.dislikesCount
         };
@@ -322,6 +326,8 @@ export const reviewService = {
       return {
         reviewId,
         currentUserReaction: null,
+        likes: updated?.likesCount ?? 0,
+        dislikes: updated?.dislikesCount ?? 0,
         likesCount: updated?.likesCount ?? 0,
         dislikesCount: updated?.dislikesCount ?? 0
       };

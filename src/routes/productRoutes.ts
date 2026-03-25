@@ -234,34 +234,49 @@ productRoutes.get('/:id/reviews/summary', publicReadLimiter, async (req, res, ne
   }
 });
 
-productRoutes.put(
-  '/:id/reviews/:reviewId/reaction',
-  authenticate,
-  writeLimiter,
-  async (req: AuthRequest, res, next) => {
-    try {
-      const payload = reactionSchema.parse(req.body);
-      const reaction = await reviewService.setReaction(req.params.id, req.params.reviewId, req.user!.userId, payload.type);
-      res.json({ data: reaction });
-    } catch (error) {
-      next(error);
-    }
+const setReviewReactionByProductRoute = async (req: AuthRequest, res: any, next: any) => {
+  try {
+    const payload = reactionSchema.parse(req.body);
+    const reaction = await reviewService.setReaction(req.params.reviewId, req.user!.userId, payload.type, req.params.id);
+    res.json({ data: reaction });
+  } catch (error) {
+    next(error);
   }
-);
+};
 
-productRoutes.delete(
-  '/:id/reviews/:reviewId/reaction',
-  authenticate,
-  writeLimiter,
-  async (req: AuthRequest, res, next) => {
-    try {
-      const reaction = await reviewService.removeReaction(req.params.id, req.params.reviewId, req.user!.userId);
-      res.json({ data: reaction });
-    } catch (error) {
-      next(error);
-    }
+const setReviewReactionStandaloneRoute = async (req: AuthRequest, res: any, next: any) => {
+  try {
+    const payload = reactionSchema.parse(req.body);
+    const reaction = await reviewService.setReaction(req.params.reviewId, req.user!.userId, payload.type);
+    res.json({ data: reaction });
+  } catch (error) {
+    next(error);
   }
-);
+};
+
+const removeReviewReactionByProductRoute = async (req: AuthRequest, res: any, next: any) => {
+  try {
+    const reaction = await reviewService.removeReaction(req.params.reviewId, req.user!.userId, req.params.id);
+    res.json({ data: reaction });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const removeReviewReactionStandaloneRoute = async (req: AuthRequest, res: any, next: any) => {
+  try {
+    const reaction = await reviewService.removeReaction(req.params.reviewId, req.user!.userId);
+    res.json({ data: reaction });
+  } catch (error) {
+    next(error);
+  }
+};
+
+productRoutes.patch('/:id/reviews/:reviewId/reaction', authenticate, writeLimiter, setReviewReactionByProductRoute);
+productRoutes.put('/:id/reviews/:reviewId/reaction', authenticate, writeLimiter, setReviewReactionByProductRoute);
+productRoutes.patch('/reviews/:reviewId/reaction', authenticate, writeLimiter, setReviewReactionStandaloneRoute);
+productRoutes.delete('/:id/reviews/:reviewId/reaction', authenticate, writeLimiter, removeReviewReactionByProductRoute);
+productRoutes.delete('/reviews/:reviewId/reaction', authenticate, writeLimiter, removeReviewReactionStandaloneRoute);
 
 productRoutes.post('/:id/reviews/:reviewId/replies', authenticate, writeLimiter, async (req: AuthRequest, res, next) => {
   try {
