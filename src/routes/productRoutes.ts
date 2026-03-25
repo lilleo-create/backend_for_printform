@@ -266,7 +266,17 @@ productRoutes.delete(
 productRoutes.post('/:id/reviews/:reviewId/replies', authenticate, writeLimiter, async (req: AuthRequest, res, next) => {
   try {
     const payload = replySchema.parse(req.body);
-    const reply = await reviewService.addSellerReply(req.params.id, req.params.reviewId, req.user!.userId, payload.text);
+    const reply = await reviewService.addSellerReply(req.params.reviewId, req.user!.userId, payload.text, req.params.id);
+    res.status(201).json({ data: reply });
+  } catch (error) {
+    next(error);
+  }
+});
+
+productRoutes.post('/reviews/:reviewId/replies', authenticate, writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const payload = replySchema.parse(req.body);
+    const reply = await reviewService.addSellerReply(req.params.reviewId, req.user!.userId, payload.text);
     res.status(201).json({ data: reply });
   } catch (error) {
     next(error);

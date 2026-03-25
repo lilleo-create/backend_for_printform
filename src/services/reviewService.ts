@@ -1,5 +1,5 @@
 import { prisma } from '../lib/prisma';
-import { Prisma, ReviewReplyAuthorType, ReviewStatus, ReviewReactionType } from '@prisma/client';
+import { Prisma, ReviewStatus, ReviewReactionType } from '@prisma/client';
 
 type ReviewOrderBy = Prisma.ReviewOrderByWithRelationInput[];
 
@@ -328,7 +328,7 @@ export const reviewService = {
     });
   },
 
-  async addSellerReply(productId: string, reviewId: string, authorId: string, text: string) {
+  async addSellerReply(reviewId: string, authorId: string, text: string, productId?: string) {
     return prisma.$transaction(async (tx) => {
       const review = await tx.review.findUnique({
         where: { id: reviewId },
@@ -346,7 +346,7 @@ export const reviewService = {
       if (!review) {
         throw new Error('NOT_FOUND');
       }
-      if (review.productId !== productId) {
+      if (productId && review.productId !== productId) {
         throw new Error('FORBIDDEN');
       }
 
@@ -358,7 +358,7 @@ export const reviewService = {
         data: {
           reviewId,
           authorId,
-          authorType: ReviewReplyAuthorType.SELLER,
+          authorType: 'SELLER',
           text
         },
         include: {
