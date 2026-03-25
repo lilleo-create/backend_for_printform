@@ -28,6 +28,8 @@ const authCookieSameSite = ['strict', 'lax', 'none'].includes(authCookieSameSite
   ? (authCookieSameSiteRaw as 'strict' | 'lax' | 'none')
   : 'lax';
 const authCookieDomain = process.env.AUTH_COOKIE_DOMAIN ?? '';
+const authCookiePath = process.env.AUTH_COOKIE_PATH ?? '/';
+const authCookieSecure = (process.env.AUTH_COOKIE_SECURE ?? '').toLowerCase() === 'true' || isProduction;
 const authTrustedDeviceEnforced = (process.env.AUTH_TRUSTED_DEVICE_ENFORCED ?? '').toLowerCase() === 'true';
 
 if (
@@ -36,6 +38,10 @@ if (
   Number.isNaN(trustedDeviceTtlDays)
 ) {
   throw new Error('AUTH_ACCESS_TOKEN_TTL_MINUTES, AUTH_REFRESH_TOKEN_TTL_DAYS, TRUSTED_DEVICE_TTL_DAYS must be numbers');
+}
+
+if (authCookieSameSite === 'none' && !authCookieSecure) {
+  throw new Error('AUTH_COOKIE_SAME_SITE=none requires AUTH_COOKIE_SECURE=true');
 }
 
 const jwtSecret = requireEnv('JWT_SECRET');
@@ -107,6 +113,8 @@ export const env = {
   authRefreshCookieName,
   authCookieSameSite,
   authCookieDomain,
+  authCookiePath,
+  authCookieSecure,
   authTrustedDeviceEnforced,
   jwtSecret,
   jwtRefreshSecret,

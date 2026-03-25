@@ -707,3 +707,40 @@ test("POST /auth/password-reset/resend returns updated lifecycle metadata and 42
   assert.equal(typeof response.body.resendAvailableAt, "string");
   assert.equal(response.body.currentActiveRequestId, null);
 });
+
+test("POST /auth/refresh rotates refresh token and returns access token in both legacy and new fields", async () => {
+  const app = buildApp();
+  const refreshToken = "refresh-token-1";
+  (authService.refresh as unknown as (
+    token: string,
+  ) => Promise<{ accessToken: string; refreshToken: string }>) = async (
+    token,
+  ) => {
+    assert.equal(token, refreshToken);
+    return {
+      accessToken: "access-token-2",
+      refreshToken: "refresh-token-2",
+    };
+  };
+
+  const response = await request(app)
+    .post("/auth/refresh")
+    .set("Cookie", `${env.authRefreshCookieName}=${refreshToken}`)
+    .send({});
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.token, "access-token-2");
+  assert.equal(response.body.accessToken, "access-token-2");
+  assert.equal(response.body.refreshTokenRotated, true);
+  assert.equal(
+    response.body.accessTokenTtlMinutes,
+    env.authAccessTokenTtlMinutes,
+  );
+  assert.equal(response.body.refreshTokenTtlDays, env.authRefreshTokenTtlDays);
+  assert.equal(
+    response.headers["set-cookie"]?.some((value: string) =>
+      value.includes(`${env.authRefreshCookieName}=refresh-token-2`),
+    ),
+    true,
+  );
+});
