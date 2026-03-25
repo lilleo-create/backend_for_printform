@@ -112,6 +112,29 @@ const buildMediaRecords = (data: Pick<ProductInput, 'image' | 'imageUrls' | 'vid
   ];
 };
 
+const dedupeMediaRecords = <T extends { type: 'IMAGE' | 'VIDEO'; url: string; isPrimary?: boolean; sortOrder?: number }>(
+  media: T[]
+): T[] => {
+  const seen = new Set<string>();
+  const deduped: T[] = [];
+  for (const item of media) {
+    const key = `${item.type}:${item.url}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(item);
+  }
+
+  const hasPrimaryImage = deduped.some((item) => item.type === 'IMAGE' && item.isPrimary);
+  if (!hasPrimaryImage) {
+    const firstImageIndex = deduped.findIndex((item) => item.type === 'IMAGE');
+    if (firstImageIndex >= 0) {
+      deduped[firstImageIndex] = { ...deduped[firstImageIndex], isPrimary: true };
+    }
+  }
+
+  return deduped.map((item, index) => ({ ...item, sortOrder: item.sortOrder ?? index }));
+};
+
 const toProductView = <T extends {
   image: string;
   videoUrls?: string[];
@@ -120,19 +143,30 @@ const toProductView = <T extends {
   specs?: Array<{ key: string; value: string; sortOrder: number }>;
 }>(product: T) => {
   const media = product.media ?? [];
-  const imageMedia = media.filter((item) => item.type === 'IMAGE');
-  const videoMedia = media.filter((item) => item.type === 'VIDEO');
-  const primaryMedia = media.find((item) => item.isPrimary) ?? media[0] ?? null;
+  const normalizedMedia = dedupeMediaRecords(media);
+  const imageMedia = normalizedMedia.filter((item) => item.type === 'IMAGE');
+  const videoMedia = normalizedMedia.filter((item) => item.type === 'VIDEO');
+  const primaryMedia = normalizedMedia.find((item) => item.isPrimary) ?? normalizedMedia[0] ?? null;
+  const primaryImage = imageMedia.find((item) => item.isPrimary)?.url ?? imageMedia[0]?.url ?? product.image;
 
   return {
     ...product,
-    media,
+    media: normalizedMedia,
     characteristics: product.specs ?? [],
     specifications: product.specs ?? [],
+    specs: product.specs ?? [],
     primaryMedia,
-    image: primaryMedia?.type === 'IMAGE' ? primaryMedia.url : imageMedia[0]?.url ?? product.image,
+    primaryImage,
+    gallery: imageMedia.map((item) => item.url),
+    image: primaryMedia?.type === 'IMAGE' ? primaryMedia.url : primaryImage,
     imageUrls: imageMedia.map((item) => item.url),
     videoUrls: videoMedia.length ? videoMedia.map((item) => item.url) : (product.videoUrls ?? []),
+    dimensions: {
+      weightGrossG: (product as any).weightGrossG ?? null,
+      dxCm: (product as any).dxCm ?? null,
+      dyCm: (product as any).dyCm ?? null,
+      dzCm: (product as any).dzCm ?? null
+    },
     images:
       product.images && product.images.length > 0
         ? product.images

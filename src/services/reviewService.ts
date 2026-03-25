@@ -263,6 +263,10 @@ export const reviewService = {
       return {
         reviewId,
         currentUserReaction: type,
+        reactions: {
+          likes: updated?.likesCount ?? 0,
+          dislikes: updated?.dislikesCount ?? 0
+        },
         likes: updated?.likesCount ?? 0,
         dislikes: updated?.dislikesCount ?? 0,
         likesCount: updated?.likesCount ?? 0,
@@ -302,6 +306,10 @@ export const reviewService = {
         return {
           reviewId,
           currentUserReaction: null,
+          reactions: {
+            likes: snapshot.likesCount,
+            dislikes: snapshot.dislikesCount
+          },
           likes: snapshot.likesCount,
           dislikes: snapshot.dislikesCount,
           likesCount: snapshot.likesCount,
@@ -326,6 +334,10 @@ export const reviewService = {
       return {
         reviewId,
         currentUserReaction: null,
+        reactions: {
+          likes: updated?.likesCount ?? 0,
+          dislikes: updated?.dislikesCount ?? 0
+        },
         likes: updated?.likesCount ?? 0,
         dislikes: updated?.dislikesCount ?? 0,
         likesCount: updated?.likesCount ?? 0,
