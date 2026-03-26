@@ -17,6 +17,7 @@ import { shipmentService } from "../services/shipmentService";
 import { sellerOrderDocumentsService } from "../services/sellerOrderDocumentsService";
 import { resolveRoleAfterSellerEnablement } from '../utils/accessControl';
 import { cdekService } from "../services/cdekService";
+import { normalizeProductDto } from "../utils/productDto";
 export const sellerRoutes = Router();
 
 export type SellerKycSubmissionWithDocuments = Prisma.SellerKycSubmissionGetPayload<{ include: { documents: true } }>;
@@ -801,11 +802,12 @@ sellerRoutes.get('/products', async (req: AuthRequest, res, next) => {
       where: { sellerId: req.user!.userId, parentProductId: null },
       include: {
         images: { orderBy: { sortOrder: 'asc' } },
-        media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] }
+        media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
+        specs: { orderBy: { sortOrder: 'asc' } }
       }
     });
 
-    res.json({ data: sellerProducts });
+    res.json({ data: sellerProducts.map((product) => normalizeProductDto(product)) });
   } catch (error) {
     next(error);
   }
