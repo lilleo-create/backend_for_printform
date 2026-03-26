@@ -44,6 +44,11 @@ if (authCookieSameSite === 'none' && !authCookieSecure) {
   throw new Error('AUTH_COOKIE_SAME_SITE=none requires AUTH_COOKIE_SECURE=true');
 }
 
+
+if (authRefreshTokenTtlDays * 24 * 60 <= authAccessTokenTtlMinutes) {
+  throw new Error('AUTH_REFRESH_TOKEN_TTL_DAYS must be greater than AUTH_ACCESS_TOKEN_TTL_MINUTES');
+}
+
 const jwtSecret = requireEnv('JWT_SECRET');
 const jwtRefreshSecret = requireEnv('JWT_REFRESH_SECRET');
 const otpPepper = requireEnv('OTP_HASH_PEPPER');
