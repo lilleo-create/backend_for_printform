@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { TrustedDevice, User } from '@prisma/client';
 import { env } from '../config/env';
@@ -10,7 +11,7 @@ const createAccessToken = (payload: { userId: string; role: string }) => {
 };
 
 const createRefreshToken = (payload: { userId: string; role: string }) => {
-  return jwt.sign(payload, env.jwtRefreshSecret, { expiresIn: `${env.authRefreshTokenTtlDays}d` });
+  return jwt.sign({ ...payload, jti: crypto.randomUUID() }, env.jwtRefreshSecret, { expiresIn: `${env.authRefreshTokenTtlDays}d` });
 };
 
 const createOtpToken = (payload: { userId?: string; registrationSessionId?: string; scope: 'otp' | 'otp_register' | 'otp_login_device' | 'otp_password_reset' }) => {
@@ -113,8 +114,9 @@ export const authService = {
     return { user };
   },
   async refresh(token: string) {
+    const now = new Date();
     const stored = await prisma.refreshToken.findUnique({ where: { token } });
-    if (!stored || stored.revokedAt || stored.expiresAt <= new Date()) throw new Error('INVALID_REFRESH');
+    if (!stored || stored.revokedAt || stored.expiresAt <= now) throw new Error('INVALID_REFRESH');
 
     let decoded: { userId: string; role: string };
     try {
@@ -127,7 +129,12 @@ export const authService = {
     const user = await userRepository.findById(decoded.userId);
     if (!user) throw new Error('INVALID_REFRESH');
 
-    await prisma.refreshToken.update({ where: { token }, data: { revokedAt: new Date(), lastUsedAt: new Date() } });
+    const revoked = await prisma.refreshToken.updateMany({
+      where: { token, revokedAt: null, expiresAt: { gt: now } },
+      data: { revokedAt: now, lastUsedAt: now }
+    });
+    if (revoked.count !== 1) throw new Error('INVALID_REFRESH');
+
     const next = await this.issueTokens(user, stored.trustedDeviceId);
     return next;
   },
