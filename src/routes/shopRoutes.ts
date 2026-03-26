@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { publicReadLimiter } from '../middleware/rateLimiters';
 import { AuthRequest, requireAuth } from '../middleware/authMiddleware';
+import { normalizeProductDto } from '../utils/productDto';
 
 export const shopRoutes = Router();
 
@@ -155,12 +156,13 @@ shopRoutes.get('/me/products', requireAuth, async (req: AuthRequest, res, next) 
       where: { sellerId: req.user!.userId },
       include: {
         images: { orderBy: { sortOrder: 'asc' } },
-        media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] }
+        media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
+        specs: { orderBy: { sortOrder: 'asc' } }
       },
       orderBy: { createdAt: 'desc' }
     });
 
-    return res.json({ data: products });
+    return res.json({ data: products.map((product) => normalizeProductDto(product)) });
   } catch (error) {
     return next(error);
   }
@@ -207,12 +209,13 @@ shopRoutes.get('/:shopRef/products', publicReadLimiter, async (req, res, next) =
       where: { sellerId: user.id, moderationStatus: 'APPROVED' },
       include: {
         images: { orderBy: { sortOrder: 'asc' } },
-        media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] }
+        media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
+        specs: { orderBy: { sortOrder: 'asc' } }
       },
       orderBy: { createdAt: 'desc' }
     });
 
-    return res.json({ data: products });
+    return res.json({ data: products.map((product) => normalizeProductDto(product)) });
   } catch (error) {
     return next(error);
   }
