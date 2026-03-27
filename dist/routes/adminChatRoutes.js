@@ -6,6 +6,7 @@ const zod_1 = require("zod");
 const authMiddleware_1 = require("../middleware/authMiddleware");
 const prisma_1 = require("../lib/prisma");
 const rateLimiters_1 = require("../middleware/rateLimiters");
+const statusLabels_1 = require("../utils/statusLabels");
 exports.adminChatRoutes = (0, express_1.Router)();
 const DEFAULT_SUPPORT_TOPIC = 'GENERAL';
 const listSchema = zod_1.z.object({
@@ -17,6 +18,10 @@ const messageSchema = zod_1.z.object({
 });
 const statusSchema = zod_1.z.object({
     status: zod_1.z.enum(['ACTIVE', 'CLOSED'])
+});
+const mapThreadStatus = (thread) => ({
+    ...thread,
+    statusLabelRu: (0, statusLabels_1.getChatThreadStatusLabelRu)(thread.status)
 });
 exports.adminChatRoutes.use(authMiddleware_1.requireAuth, authMiddleware_1.requireAdmin);
 exports.adminChatRoutes.get('/', async (req, res, next) => {
@@ -56,7 +61,7 @@ exports.adminChatRoutes.get('/', async (req, res, next) => {
             ]
         });
         const shaped = threads.map((thread) => ({
-            ...thread,
+            ...mapThreadStatus(thread),
             supportTopic: thread.supportTopic ?? (thread.kind === 'SUPPORT' ? DEFAULT_SUPPORT_TOPIC : null),
             lastMessage: thread.messages[0] ?? null,
             messages: undefined
@@ -115,7 +120,15 @@ exports.adminChatRoutes.get('/:id', async (req, res, next) => {
             where: { threadId: thread.id },
             orderBy: { createdAt: 'asc' }
         });
-        res.json({ data: { thread: { ...thread, supportTopic: thread.supportTopic ?? (thread.kind === 'SUPPORT' ? DEFAULT_SUPPORT_TOPIC : null) }, messages } });
+        res.json({
+            data: {
+                thread: {
+                    ...mapThreadStatus(thread),
+                    supportTopic: thread.supportTopic ?? (thread.kind === 'SUPPORT' ? DEFAULT_SUPPORT_TOPIC : null)
+                },
+                messages
+            }
+        });
     }
     catch (error) {
         next(error);
@@ -156,7 +169,7 @@ exports.adminChatRoutes.patch('/:id', rateLimiters_1.writeLimiter, async (req, r
             where: { id: req.params.id },
             data: { status: payload.status }
         });
-        res.json({ data: updated });
+        res.json({ data: mapThreadStatus(updated) });
     }
     catch (error) {
         next(error);

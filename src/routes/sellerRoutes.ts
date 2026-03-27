@@ -19,6 +19,7 @@ import { resolveRoleAfterSellerEnablement } from '../utils/accessControl';
 import { cdekService } from "../services/cdekService";
 import { normalizeProductDto } from "../utils/productDto";
 import { computePaymentTiming, expirePendingPayments } from "../utils/orderPayment";
+import { getKycStatusLabelRu } from "../utils/statusLabels";
 export const sellerRoutes = Router();
 
 export type SellerKycSubmissionWithDocuments = Prisma.SellerKycSubmissionGetPayload<{ include: { documents: true } }>;
@@ -585,7 +586,12 @@ const loadSellerContext = async (userId: string): Promise<SellerContextResponse 
   return {
     isSeller: true,
     profile,
-    kyc: latestSubmission ?? null,
+    kyc: latestSubmission
+      ? {
+          ...latestSubmission,
+          statusLabelRu: getKycStatusLabelRu(latestSubmission.status)
+        } as any
+      : null,
     canSell: Boolean(approvedSubmission)
   };
 };
@@ -633,7 +639,14 @@ sellerRoutes.get('/kyc/me', async (req: AuthRequest, res, next) => {
       orderBy: { createdAt: 'desc' },
       include: { documents: true }
     });
-    res.json({ data: submission ?? null });
+    res.json({
+      data: submission
+        ? {
+            ...submission,
+            statusLabelRu: getKycStatusLabelRu(submission.status)
+          }
+        : null
+    });
   } catch (error) {
     next(error);
   }
@@ -776,7 +789,14 @@ sellerRoutes.post('/kyc/submit', writeLimiter, async (req: AuthRequest, res, nex
       });
     });
 
-    res.status(201).json({ data: submitted });
+    res.status(201).json({
+      data: submitted
+        ? {
+            ...submitted,
+            statusLabelRu: getKycStatusLabelRu(submitted.status)
+          }
+        : null
+    });
   } catch (error) {
     if (error instanceof z.ZodError) {
       return res.status(400).json({

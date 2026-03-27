@@ -9,6 +9,7 @@ import { writeLimiter } from '../middleware/rateLimiters';
 import { notFound } from '../utils/httpErrors';
 import { asyncHandler } from "../utils/asyncHandler";
 import { resolveRoleAfterSellerEnablement } from '../utils/accessControl';
+import { getKycStatusLabelRu, getReviewModerationStatusLabelRu } from '../utils/statusLabels';
 
 export const adminRoutes = Router();
 
@@ -92,6 +93,16 @@ const kycSubmissionInclude = {
   documents: true
 } as const;
 
+const mapKycSubmission = <T extends { status: string }>(submission: T) => ({
+  ...submission,
+  statusLabelRu: getKycStatusLabelRu(submission.status as any)
+});
+
+const mapReviewModeration = <T extends { moderationStatus: string }>(review: T) => ({
+  ...review,
+  moderationStatusLabelRu: getReviewModerationStatusLabelRu(review.moderationStatus as any)
+});
+
 const listKycSubmissions = async (status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'REVISION') => {
   return prisma.sellerKycSubmission.findMany({
     where: { status },
@@ -139,7 +150,7 @@ adminRoutes.get('/kyc', async (req, res, next) => {
   try {
     const query = kycListSchema.parse(req.query);
     const submissions = await listKycSubmissions(query.status);
-    res.json({ data: submissions });
+    res.json({ data: submissions.map(mapKycSubmission) });
   } catch (error) {
     next(error);
   }
@@ -149,7 +160,7 @@ adminRoutes.get('/kyc/submissions', async (req, res, next) => {
   try {
     const query = kycListSchema.parse(req.query);
     const submissions = await listKycSubmissions(query.status);
-    res.json({ data: submissions });
+    res.json({ data: submissions.map(mapKycSubmission) });
   } catch (error) {
     next(error);
   }
@@ -164,7 +175,7 @@ adminRoutes.get('/kyc/:id', async (req, res, next) => {
     if (!submission) {
       return notFound(res, 'KYC submission not found');
     }
-    res.json({ data: submission });
+    res.json({ data: mapKycSubmission(submission) });
   } catch (error) {
     next(error);
   }
@@ -177,7 +188,7 @@ adminRoutes.patch('/kyc/:id/status', writeLimiter, async (req: AuthRequest, res,
     if (!updated) {
       return notFound(res, 'KYC submission not found');
     }
-    res.json({ data: updated });
+    res.json({ data: mapKycSubmission(updated) });
   } catch (error) {
     next(error);
   }
@@ -190,7 +201,7 @@ adminRoutes.patch('/kyc/:id', writeLimiter, async (req: AuthRequest, res, next) 
     if (!updated) {
       return notFound(res, 'KYC submission not found');
     }
-    res.json({ data: updated });
+    res.json({ data: mapKycSubmission(updated) });
   } catch (error) {
     next(error);
   }
@@ -203,7 +214,7 @@ adminRoutes.post('/kyc/:id/approve', writeLimiter, async (req: AuthRequest, res,
     if (!updated) {
       return notFound(res, 'KYC submission not found');
     }
-    res.json({ data: updated });
+    res.json({ data: mapKycSubmission(updated) });
   } catch (error) {
     next(error);
   }
@@ -216,7 +227,7 @@ adminRoutes.post('/kyc/:id/reject', writeLimiter, async (req: AuthRequest, res, 
     if (!updated) {
       return notFound(res, 'KYC submission not found');
     }
-    res.json({ data: updated });
+    res.json({ data: mapKycSubmission(updated) });
   } catch (error) {
     next(error);
   }
@@ -374,7 +385,7 @@ adminRoutes.get('/reviews', async (req, res, next) => {
       },
       orderBy: { createdAt: 'desc' }
     });
-    res.json({ data: reviews });
+    res.json({ data: reviews.map(mapReviewModeration) });
   } catch (error) {
     next(error);
   }
@@ -393,7 +404,7 @@ adminRoutes.post('/reviews/:id/approve', writeLimiter, async (req: AuthRequest, 
       }
     });
     await updateProductRating(updated.productId);
-    res.json({ data: updated });
+    res.json({ data: mapReviewModeration(updated) });
   } catch (error) {
     next(error);
   }
@@ -412,7 +423,7 @@ adminRoutes.post('/reviews/:id/reject', writeLimiter, async (req: AuthRequest, r
         status: 'PENDING'
       }
     });
-    res.json({ data: updated });
+    res.json({ data: mapReviewModeration(updated) });
   } catch (error) {
     next(error);
   }
@@ -431,7 +442,7 @@ adminRoutes.post('/reviews/:id/needs-edit', writeLimiter, async (req: AuthReques
         status: 'PENDING'
       }
     });
-    res.json({ data: updated });
+    res.json({ data: mapReviewModeration(updated) });
   } catch (error) {
     next(error);
   }

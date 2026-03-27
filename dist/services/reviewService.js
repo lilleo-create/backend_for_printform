@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.reviewService = void 0;
 const prisma_1 = require("../lib/prisma");
 const client_1 = require("@prisma/client");
+const statusLabels_1 = require("../utils/statusLabels");
 const sortMap = (sort) => {
     switch (sort) {
         case 'helpful':
@@ -42,6 +43,8 @@ const reviewInclude = {
 const mapReview = (review, options = {}) => ({
     id: review.id,
     productId: review.productId,
+    authorId: review.userId,
+    text: review.comment,
     rating: review.rating,
     pros: review.pros,
     cons: review.cons,
@@ -52,8 +55,15 @@ const mapReview = (review, options = {}) => ({
     isPublic: review.isPublic,
     status: review.status,
     moderationStatus: review.moderationStatus,
+    moderationStatusLabelRu: (0, statusLabels_1.getReviewModerationStatusLabelRu)(review.moderationStatus),
     createdAt: review.createdAt,
     updatedAt: review.updatedAt,
+    author: review.user
+        ? {
+            id: review.user.id,
+            nickname: review.user.name ?? null
+        }
+        : null,
     user: review.user
         ? {
             id: review.user.id,
@@ -61,12 +71,14 @@ const mapReview = (review, options = {}) => ({
         }
         : null,
     currentUserReaction: review.currentUserReaction ?? null,
+    isOwn: Boolean(options.currentUserId && review.userId === options.currentUserId),
     canEdit: Boolean(options.currentUserId && (options.isAdmin || review.userId === options.currentUserId)),
     canDelete: Boolean(options.currentUserId && (options.isAdmin || review.userId === options.currentUserId)),
     repliesCount: review.replies.length,
     replies: review.replies.map((reply) => ({
         id: reply.id,
         reviewId: reply.reviewId,
+        authorId: reply.authorId,
         authorType: reply.authorType,
         text: reply.text,
         createdAt: reply.createdAt,
@@ -80,8 +92,31 @@ const mapReview = (review, options = {}) => ({
                 : (reply.author?.name ?? null)
         },
         canEdit: Boolean(options.currentUserId && (options.isAdmin || reply.authorId === options.currentUserId)),
-        canDelete: Boolean(options.currentUserId && (options.isAdmin || reply.authorId === options.currentUserId))
+        canDelete: Boolean(options.currentUserId && (options.isAdmin || reply.authorId === options.currentUserId)),
+        isOwn: Boolean(options.currentUserId && reply.authorId === options.currentUserId)
     }))
+});
+const mapReviewReply = (reply, options = {}) => ({
+    id: reply.id,
+    reviewId: reply.reviewId,
+    authorId: reply.authorId,
+    authorType: reply.authorType,
+    text: reply.text,
+    createdAt: reply.createdAt,
+    updatedAt: reply.updatedAt,
+    moderationStatus: reply.review.moderationStatus,
+    moderationStatusLabelRu: (0, statusLabels_1.getReviewModerationStatusLabelRu)(reply.review.moderationStatus),
+    author: {
+        id: reply.author?.id ?? null,
+        nickname: reply.author?.name ?? null,
+        storeName: reply.author?.sellerProfile?.storeName ?? null,
+        displayName: reply.authorType === 'SELLER'
+            ? (reply.author?.sellerProfile?.storeName ?? reply.author?.name ?? null)
+            : (reply.author?.name ?? null)
+    },
+    canEdit: Boolean(options.currentUserId && (options.isAdmin || reply.authorId === options.currentUserId)),
+    canDelete: Boolean(options.currentUserId && (options.isAdmin || reply.authorId === options.currentUserId)),
+    isOwn: Boolean(options.currentUserId && reply.authorId === options.currentUserId)
 });
 exports.reviewService = {
     async getSellerSummaryByProductId(productId) {
@@ -139,24 +174,43 @@ exports.reviewService = {
                     moderatedById: null
                 }
             });
-            return review;
+            const createdReview = await tx.review.findUnique({
+                where: { id: review.id },
+                include: reviewInclude
+            });
+            if (!createdReview)
+                throw new Error('NOT_FOUND');
+            return mapReview({ ...createdReview, currentUserReaction: null }, { currentUserId: data.userId });
         });
     },
     async listByProducts(productIds, page = 1, limit = 5, sort = 'new', options = {}) {
+        let authorPendingReview = null;
+        if (options.currentUserId && page === 1) {
+            authorPendingReview = await prisma_1.prisma.review.findFirst({
+                where: {
+                    productId: { in: productIds },
+                    userId: options.currentUserId,
+                    moderationStatus: 'PENDING'
+                },
+                include: reviewInclude,
+                orderBy: { createdAt: 'desc' }
+            });
+        }
         const reviews = await prisma_1.prisma.review.findMany({
             where: buildWhere(productIds),
             orderBy: sortMap(sort),
-            take: limit,
+            take: authorPendingReview ? Math.max(limit - 1, 0) : limit,
             skip: (page - 1) * limit,
             include: reviewInclude
         });
-        if (!options.currentUserId || reviews.length === 0) {
-            return reviews.map((review) => mapReview({ ...review, currentUserReaction: null }, options));
+        const orderedReviews = authorPendingReview ? [authorPendingReview, ...reviews] : reviews;
+        if (!options.currentUserId || orderedReviews.length === 0) {
+            return orderedReviews.map((review) => mapReview({ ...review, currentUserReaction: null }, options));
         }
         const reactions = await prisma_1.prisma.reviewReaction.findMany({
             where: {
                 userId: options.currentUserId,
-                reviewId: { in: reviews.map((review) => review.id) }
+                reviewId: { in: orderedReviews.map((review) => review.id) }
             },
             select: {
                 reviewId: true,
@@ -164,7 +218,7 @@ exports.reviewService = {
             }
         });
         const reactionByReviewId = new Map(reactions.map((reaction) => [reaction.reviewId, reaction.type]));
-        return reviews.map((review) => mapReview({
+        return orderedReviews.map((review) => mapReview({
             ...review,
             currentUserReaction: reactionByReviewId.get(review.id) ?? null
         }, options));
@@ -363,25 +417,11 @@ exports.reviewService = {
                                 select: { storeName: true }
                             }
                         }
-                    }
+                    },
+                    review: { select: { moderationStatus: true } }
                 }
             });
-            return {
-                id: reply.id,
-                reviewId: reply.reviewId,
-                authorType: reply.authorType,
-                text: reply.text,
-                createdAt: reply.createdAt,
-                updatedAt: reply.updatedAt,
-                author: {
-                    id: reply.author?.id ?? null,
-                    nickname: reply.author?.name ?? null,
-                    storeName: reply.author?.sellerProfile?.storeName ?? null,
-                    displayName: reply.authorType === 'SELLER'
-                        ? (reply.author?.sellerProfile?.storeName ?? reply.author?.name ?? null)
-                        : (reply.author?.name ?? null)
-                }
-            };
+            return mapReviewReply(reply, { currentUserId: authorId });
         });
     },
     async updateReview(reviewId, actorId, text, isAdmin = false) {
@@ -389,22 +429,24 @@ exports.reviewService = {
         if (!review)
             throw new Error('NOT_FOUND');
         if (!isAdmin && review.userId !== actorId)
-            throw new Error('FORBIDDEN');
-        return prisma_1.prisma.review.update({
+            throw new Error('FORBIDDEN_REVIEW_OBJECT');
+        const updated = await prisma_1.prisma.review.update({
             where: { id: reviewId },
             data: {
                 ...(text.pros !== undefined ? { pros: text.pros } : {}),
                 ...(text.cons !== undefined ? { cons: text.cons } : {}),
                 ...(text.comment !== undefined ? { comment: text.comment } : {})
-            }
+            },
+            include: reviewInclude
         });
+        return mapReview({ ...updated, currentUserReaction: null }, { currentUserId: actorId, isAdmin });
     },
     async deleteReview(reviewId, actorId, isAdmin = false) {
         const review = await prisma_1.prisma.review.findUnique({ where: { id: reviewId } });
         if (!review)
             throw new Error('NOT_FOUND');
         if (!isAdmin && review.userId !== actorId)
-            throw new Error('FORBIDDEN');
+            throw new Error('FORBIDDEN_REVIEW_OBJECT');
         await prisma_1.prisma.reviewReply.deleteMany({ where: { reviewId } });
         await prisma_1.prisma.reviewReaction.deleteMany({ where: { reviewId } });
         await prisma_1.prisma.review.delete({ where: { id: reviewId } });
@@ -415,15 +457,29 @@ exports.reviewService = {
         if (!reply)
             throw new Error('REVIEW_REPLY_NOT_FOUND');
         if (!isAdmin && reply.authorId !== actorId)
-            throw new Error('FORBIDDEN');
-        return prisma_1.prisma.reviewReply.update({ where: { id: replyId }, data: { text } });
+            throw new Error('FORBIDDEN_REVIEW_OBJECT');
+        const updated = await prisma_1.prisma.reviewReply.update({
+            where: { id: replyId },
+            data: { text },
+            include: {
+                author: {
+                    select: {
+                        id: true,
+                        name: true,
+                        sellerProfile: { select: { storeName: true } }
+                    }
+                },
+                review: { select: { moderationStatus: true } }
+            }
+        });
+        return mapReviewReply(updated, { currentUserId: actorId, isAdmin });
     },
     async deleteReply(replyId, actorId, isAdmin = false) {
         const reply = await prisma_1.prisma.reviewReply.findUnique({ where: { id: replyId } });
         if (!reply)
             throw new Error('REVIEW_REPLY_NOT_FOUND');
         if (!isAdmin && reply.authorId !== actorId)
-            throw new Error('FORBIDDEN');
+            throw new Error('FORBIDDEN_REVIEW_OBJECT');
         await prisma_1.prisma.reviewReply.delete({ where: { id: replyId } });
         return { id: replyId, deleted: true };
     }

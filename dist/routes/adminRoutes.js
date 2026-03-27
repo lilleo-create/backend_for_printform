@@ -13,6 +13,7 @@ const prisma_1 = require("../lib/prisma");
 const rateLimiters_1 = require("../middleware/rateLimiters");
 const httpErrors_1 = require("../utils/httpErrors");
 const accessControl_1 = require("../utils/accessControl");
+const statusLabels_1 = require("../utils/statusLabels");
 exports.adminRoutes = (0, express_1.Router)();
 const reasonSchema = zod_1.z.string().min(10).max(500);
 const reviewSchema = zod_1.z
@@ -85,6 +86,14 @@ const kycSubmissionInclude = {
     user: { select: { id: true, name: true, email: true, phone: true, role: true } },
     documents: true
 };
+const mapKycSubmission = (submission) => ({
+    ...submission,
+    statusLabelRu: (0, statusLabels_1.getKycStatusLabelRu)(submission.status)
+});
+const mapReviewModeration = (review) => ({
+    ...review,
+    moderationStatusLabelRu: (0, statusLabels_1.getReviewModerationStatusLabelRu)(review.moderationStatus)
+});
 const listKycSubmissions = async (status) => {
     return prisma_1.prisma.sellerKycSubmission.findMany({
         where: { status },
@@ -125,7 +134,7 @@ exports.adminRoutes.get('/kyc', async (req, res, next) => {
     try {
         const query = kycListSchema.parse(req.query);
         const submissions = await listKycSubmissions(query.status);
-        res.json({ data: submissions });
+        res.json({ data: submissions.map(mapKycSubmission) });
     }
     catch (error) {
         next(error);
@@ -135,7 +144,7 @@ exports.adminRoutes.get('/kyc/submissions', async (req, res, next) => {
     try {
         const query = kycListSchema.parse(req.query);
         const submissions = await listKycSubmissions(query.status);
-        res.json({ data: submissions });
+        res.json({ data: submissions.map(mapKycSubmission) });
     }
     catch (error) {
         next(error);
@@ -150,7 +159,7 @@ exports.adminRoutes.get('/kyc/:id', async (req, res, next) => {
         if (!submission) {
             return (0, httpErrors_1.notFound)(res, 'KYC submission not found');
         }
-        res.json({ data: submission });
+        res.json({ data: mapKycSubmission(submission) });
     }
     catch (error) {
         next(error);
@@ -163,7 +172,7 @@ exports.adminRoutes.patch('/kyc/:id/status', rateLimiters_1.writeLimiter, async 
         if (!updated) {
             return (0, httpErrors_1.notFound)(res, 'KYC submission not found');
         }
-        res.json({ data: updated });
+        res.json({ data: mapKycSubmission(updated) });
     }
     catch (error) {
         next(error);
@@ -176,7 +185,7 @@ exports.adminRoutes.patch('/kyc/:id', rateLimiters_1.writeLimiter, async (req, r
         if (!updated) {
             return (0, httpErrors_1.notFound)(res, 'KYC submission not found');
         }
-        res.json({ data: updated });
+        res.json({ data: mapKycSubmission(updated) });
     }
     catch (error) {
         next(error);
@@ -189,7 +198,7 @@ exports.adminRoutes.post('/kyc/:id/approve', rateLimiters_1.writeLimiter, async 
         if (!updated) {
             return (0, httpErrors_1.notFound)(res, 'KYC submission not found');
         }
-        res.json({ data: updated });
+        res.json({ data: mapKycSubmission(updated) });
     }
     catch (error) {
         next(error);
@@ -202,7 +211,7 @@ exports.adminRoutes.post('/kyc/:id/reject', rateLimiters_1.writeLimiter, async (
         if (!updated) {
             return (0, httpErrors_1.notFound)(res, 'KYC submission not found');
         }
-        res.json({ data: updated });
+        res.json({ data: mapKycSubmission(updated) });
     }
     catch (error) {
         next(error);
@@ -359,7 +368,7 @@ exports.adminRoutes.get('/reviews', async (req, res, next) => {
             },
             orderBy: { createdAt: 'desc' }
         });
-        res.json({ data: reviews });
+        res.json({ data: reviews.map(mapReviewModeration) });
     }
     catch (error) {
         next(error);
@@ -378,7 +387,7 @@ exports.adminRoutes.post('/reviews/:id/approve', rateLimiters_1.writeLimiter, as
             }
         });
         await updateProductRating(updated.productId);
-        res.json({ data: updated });
+        res.json({ data: mapReviewModeration(updated) });
     }
     catch (error) {
         next(error);
@@ -397,7 +406,7 @@ exports.adminRoutes.post('/reviews/:id/reject', rateLimiters_1.writeLimiter, asy
                 status: 'PENDING'
             }
         });
-        res.json({ data: updated });
+        res.json({ data: mapReviewModeration(updated) });
     }
     catch (error) {
         next(error);
@@ -416,7 +425,7 @@ exports.adminRoutes.post('/reviews/:id/needs-edit', rateLimiters_1.writeLimiter,
                 status: 'PENDING'
             }
         });
-        res.json({ data: updated });
+        res.json({ data: mapReviewModeration(updated) });
     }
     catch (error) {
         next(error);

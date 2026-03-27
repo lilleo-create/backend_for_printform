@@ -92,6 +92,14 @@ const errorHandler = (error, _req, res, _next) => {
     const message = isAppError(error) && typeof error.message === 'string' && error.message.length
         ? error.message
         : 'SERVER_ERROR';
+    if (message === 'FORBIDDEN_REVIEW_OBJECT') {
+        return res.status(403).json({
+            error: {
+                code: 'FORBIDDEN',
+                message: 'Недостаточно прав для изменения этого объекта.'
+            }
+        });
+    }
     const status = message === 'INVALID_CREDENTIALS' || message === 'UNAUTHORIZED'
         ? 401
         : message === 'OTP_TOKEN_REQUIRED' || message === 'PASSWORD_RESET_TOKEN_REQUIRED'

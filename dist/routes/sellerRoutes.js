@@ -24,6 +24,7 @@ const accessControl_1 = require("../utils/accessControl");
 const cdekService_1 = require("../services/cdekService");
 const productDto_1 = require("../utils/productDto");
 const orderPayment_1 = require("../utils/orderPayment");
+const statusLabels_1 = require("../utils/statusLabels");
 exports.sellerRoutes = (0, express_1.Router)();
 // ---------------------------------------------------------
 // Uploads
@@ -514,7 +515,12 @@ const loadSellerContext = async (userId) => {
     return {
         isSeller: true,
         profile,
-        kyc: latestSubmission ?? null,
+        kyc: latestSubmission
+            ? {
+                ...latestSubmission,
+                statusLabelRu: (0, statusLabels_1.getKycStatusLabelRu)(latestSubmission.status)
+            }
+            : null,
         canSell: Boolean(approvedSubmission)
     };
 };
@@ -566,7 +572,14 @@ exports.sellerRoutes.get('/kyc/me', async (req, res, next) => {
             orderBy: { createdAt: 'desc' },
             include: { documents: true }
         });
-        res.json({ data: submission ?? null });
+        res.json({
+            data: submission
+                ? {
+                    ...submission,
+                    statusLabelRu: (0, statusLabels_1.getKycStatusLabelRu)(submission.status)
+                }
+                : null
+        });
     }
     catch (error) {
         next(error);
@@ -695,7 +708,14 @@ exports.sellerRoutes.post('/kyc/submit', rateLimiters_1.writeLimiter, async (req
                 include: { documents: true }
             });
         });
-        res.status(201).json({ data: submitted });
+        res.status(201).json({
+            data: submitted
+                ? {
+                    ...submitted,
+                    statusLabelRu: (0, statusLabels_1.getKycStatusLabelRu)(submitted.status)
+                }
+                : null
+        });
     }
     catch (error) {
         if (error instanceof zod_1.z.ZodError) {

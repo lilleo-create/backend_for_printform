@@ -7,6 +7,7 @@ const zod_1 = require("zod");
 const authMiddleware_1 = require("../middleware/authMiddleware");
 const prisma_1 = require("../lib/prisma");
 const rateLimiters_1 = require("../middleware/rateLimiters");
+const statusLabels_1 = require("../utils/statusLabels");
 exports.chatRoutes = (0, express_1.Router)();
 const DEFAULT_SUPPORT_TOPIC = 'GENERAL';
 const paginationSchema = zod_1.z.object({
@@ -102,6 +103,10 @@ const dedupeCreateSupportThread = async (params) => {
         throw error;
     }
 };
+const mapThreadStatus = (thread) => ({
+    ...thread,
+    statusLabelRu: (0, statusLabels_1.getChatThreadStatusLabelRu)(thread.status)
+});
 exports.chatRoutes.post('/threads', authMiddleware_1.requireAuth, rateLimiters_1.writeLimiter, async (req, res, next) => {
     try {
         const payload = createThreadSchema.parse(req.body ?? {});
@@ -122,13 +127,13 @@ exports.chatRoutes.post('/threads', authMiddleware_1.requireAuth, rateLimiters_1
                 sellerId,
                 shopId: payload.shopId
             });
-            return res.status(result.created ? 201 : 200).json({ data: { thread: result.thread, created: result.created } });
+            return res.status(result.created ? 201 : 200).json({ data: { thread: mapThreadStatus(result.thread), created: result.created } });
         }
         const topic = normalizeSupportTopic(payload);
         const result = await dedupeCreateSupportThread({ userId: req.user.userId, topic });
         return res.status(201).json({
             data: {
-                thread: result.thread,
+                thread: mapThreadStatus(result.thread),
                 created: result.created,
                 topic: result.thread.supportTopic ?? DEFAULT_SUPPORT_TOPIC
             }
@@ -155,7 +160,7 @@ exports.chatRoutes.get('/my', authMiddleware_1.requireAuth, async (req, res, nex
             ]
         });
         const shaped = threads.map((thread) => ({
-            ...thread,
+            ...mapThreadStatus(thread),
             supportTopic: thread.supportTopic ?? (thread.kind === 'SUPPORT' ? DEFAULT_SUPPORT_TOPIC : null),
             lastMessage: thread.messages[0] ?? null,
             messages: undefined
@@ -192,7 +197,7 @@ exports.chatRoutes.get('/:id', authMiddleware_1.requireAuth, async (req, res, ne
         res.json({
             data: {
                 thread: {
-                    ...thread,
+                    ...mapThreadStatus(thread),
                     supportTopic: thread.supportTopic ?? (thread.kind === 'SUPPORT' ? DEFAULT_SUPPORT_TOPIC : null)
                 },
                 messages: [...messages].reverse()
