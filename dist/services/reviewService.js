@@ -201,45 +201,75 @@ exports.reviewService = {
         });
     },
     async listByProducts(productIds, page = 1, limit = 5, sort = 'new', options = {}) {
+        if (productIds.length === 0) {
+            return [];
+        }
         const reviewInclude = buildReviewInclude(options);
         let authorPendingReview = null;
-        if (options.currentUserId && page === 1) {
-            authorPendingReview = await prisma_1.prisma.review.findFirst({
-                where: {
-                    productId: { in: productIds },
-                    userId: options.currentUserId,
-                    moderationStatus: 'PENDING'
-                },
-                include: reviewInclude,
-                orderBy: { createdAt: 'desc' }
-            });
-        }
-        const reviews = await prisma_1.prisma.review.findMany({
-            where: buildWhere(productIds),
-            orderBy: sortMap(sort),
-            take: authorPendingReview ? Math.max(limit - 1, 0) : limit,
-            skip: (page - 1) * limit,
-            include: reviewInclude
-        });
-        const orderedReviews = authorPendingReview ? [authorPendingReview, ...reviews] : reviews;
-        if (!options.currentUserId || orderedReviews.length === 0) {
-            return orderedReviews.map((review) => mapReview({ ...review, currentUserReaction: null }, options));
-        }
-        const reactions = await prisma_1.prisma.reviewReaction.findMany({
-            where: {
-                userId: options.currentUserId,
-                reviewId: { in: orderedReviews.map((review) => review.id) }
-            },
-            select: {
-                reviewId: true,
-                type: true
+        try {
+            if (options.currentUserId && !options.isAdmin) {
+                authorPendingReview = await prisma_1.prisma.review.findFirst({
+                    where: {
+                        productId: { in: productIds },
+                        userId: options.currentUserId,
+                        moderationStatus: 'PENDING'
+                    },
+                    include: reviewInclude,
+                    orderBy: { createdAt: 'desc' }
+                });
             }
-        });
-        const reactionByReviewId = new Map(reactions.map((reaction) => [reaction.reviewId, reaction.type]));
-        return orderedReviews.map((review) => mapReview({
-            ...review,
-            currentUserReaction: reactionByReviewId.get(review.id) ?? null
-        }, options));
+            const hasAuthorPendingReview = Boolean(authorPendingReview);
+            const shouldPrependAuthorPendingReview = hasAuthorPendingReview && page === 1;
+            const approvedSkip = Math.max((page - 1) * limit - (hasAuthorPendingReview ? 1 : 0), 0);
+            const approvedTake = Math.max(limit - (shouldPrependAuthorPendingReview ? 1 : 0), 0);
+            const approvedWhere = hasAuthorPendingReview && options.currentUserId
+                ? {
+                    ...buildWhere(productIds),
+                    NOT: { userId: options.currentUserId }
+                }
+                : buildWhere(productIds);
+            const approvedReviews = approvedTake > 0
+                ? await prisma_1.prisma.review.findMany({
+                    where: approvedWhere,
+                    orderBy: sortMap(sort),
+                    take: approvedTake,
+                    skip: approvedSkip,
+                    include: reviewInclude
+                })
+                : [];
+            const orderedReviews = shouldPrependAuthorPendingReview ? [authorPendingReview, ...approvedReviews] : approvedReviews;
+            if (!options.currentUserId || orderedReviews.length === 0) {
+                return orderedReviews.map((review) => mapReview({ ...review, currentUserReaction: null }, options));
+            }
+            const reactions = await prisma_1.prisma.reviewReaction.findMany({
+                where: {
+                    userId: options.currentUserId,
+                    reviewId: { in: orderedReviews.map((review) => review.id) }
+                },
+                select: {
+                    reviewId: true,
+                    type: true
+                }
+            });
+            const reactionByReviewId = new Map(reactions.map((reaction) => [reaction.reviewId, reaction.type]));
+            return orderedReviews.map((review) => mapReview({
+                ...review,
+                currentUserReaction: reactionByReviewId.get(review.id) ?? null
+            }, options));
+        }
+        catch (error) {
+            console.error('[reviewService.listByProducts] failed to load reviews', {
+                productIds,
+                currentUserId: options.currentUserId ?? null,
+                isAdmin: options.isAdmin ?? false,
+                page,
+                limit,
+                sort,
+                message: error instanceof Error ? error.message : String(error),
+                stack: error instanceof Error ? error.stack : undefined
+            });
+            throw error;
+        }
     },
     async countByProducts(productIds, options = {}) {
         const approvedCount = await prisma_1.prisma.review.count({ where: buildWhere(productIds) });
