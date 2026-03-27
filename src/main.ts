@@ -28,7 +28,7 @@ import { shipmentsRoutes } from "./routes/shipmentsRoutes";
 import { reviewCrudRoutes, reviewReplyCrudRoutes } from "./routes/reviewCrudRoutes";
 
 import { errorHandler } from "./middleware/errorHandler";
-import { globalLimiter } from "./middleware/rateLimiters";
+import { authSensitiveLimiter, globalLimiter, orderSensitiveLimiter, reviewSensitiveLimiter } from "./middleware/rateLimiters";
 
 const app = express();
 
@@ -89,6 +89,15 @@ app.use((req, res, next) => {
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        defaultSrc: ["'self'"],
+        frameAncestors: ["'none'"],
+      },
+    },
+    noSniff: true,
+    xXssProtection: true,
   })
 );
 
@@ -152,11 +161,25 @@ app.get("/health", (_req, res) => {
 |--------------------------------------------------------------------------
 */
 
+app.use((req, res, next) => {
+  res.on('finish', () => {
+    if (res.statusCode === 403) {
+      console.warn('[security] forbidden request', {
+        method: req.method,
+        path: req.originalUrl,
+        ip: req.ip,
+        userId: req.user?.userId ?? null
+      });
+    }
+  });
+  next();
+});
+
 const mountRoutes = (prefix = "") => {
-  app.use(`${prefix}/auth`, authRoutes);
+  app.use(`${prefix}/auth`, authSensitiveLimiter, authRoutes);
   app.use(`${prefix}/products`, productRoutes);
   app.use(`${prefix}/shops`, shopRoutes);
-  app.use(`${prefix}/orders`, orderRoutes);
+  app.use(`${prefix}/orders`, orderSensitiveLimiter, orderRoutes);
   app.use(`${prefix}/custom-requests`, customRequestRoutes);
   app.use(`${prefix}/seller`, sellerRoutes);
   app.use(`${prefix}/filters`, filterRoutes);
@@ -166,7 +189,7 @@ const mountRoutes = (prefix = "") => {
   app.use(`${prefix}/admin`, adminRoutes);
   app.use(`${prefix}/admin/chats`, adminChatRoutes);
   app.use(`${prefix}/payments`, paymentRoutes);
-  app.use(`${prefix}/reviews`, reviewCrudRoutes);
+  app.use(`${prefix}/reviews`, reviewSensitiveLimiter, reviewCrudRoutes);
   app.use(`${prefix}/reviews/replies`, reviewReplyCrudRoutes);
   app.use(`${prefix}/review-replies`, reviewReplyCrudRoutes);
   app.use(`${prefix}/favorites`, favoritesRoutes);
