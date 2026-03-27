@@ -212,7 +212,10 @@ productRoutes.get('/:id/reviews', publicReadLimiter, authenticateOptional, async
       currentUserId: req.user?.userId,
       isAdmin: req.user?.role === 'ADMIN'
     });
-    const total = await reviewService.countByProducts(productIds);
+    const total = await reviewService.countByProducts(productIds, {
+      currentUserId: req.user?.userId,
+      isAdmin: req.user?.role === 'ADMIN'
+    });
     res.json({ data: reviews, meta: { total } });
   } catch (error) {
     next(error);

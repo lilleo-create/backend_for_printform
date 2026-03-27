@@ -21,9 +21,24 @@ const buildWhere = (productIds) => ({
     moderationStatus: 'APPROVED',
     isPublic: true
 });
-const reviewInclude = {
+const buildReplyVisibilityWhere = (options) => {
+    if (options.isAdmin) {
+        return {};
+    }
+    if (!options.currentUserId) {
+        return { moderationStatus: 'APPROVED' };
+    }
+    return {
+        OR: [
+            { moderationStatus: 'APPROVED' },
+            { authorId: options.currentUserId }
+        ]
+    };
+};
+const buildReviewInclude = (options = {}) => ({
     user: { select: { id: true, name: true } },
     replies: {
+        where: buildReplyVisibilityWhere(options),
         orderBy: { createdAt: 'asc' },
         include: {
             author: {
@@ -39,7 +54,7 @@ const reviewInclude = {
             }
         }
     }
-};
+});
 const mapReview = (review, options = {}) => ({
     id: review.id,
     productId: review.productId,
@@ -83,6 +98,8 @@ const mapReview = (review, options = {}) => ({
         text: reply.text,
         createdAt: reply.createdAt,
         updatedAt: reply.updatedAt,
+        moderationStatus: reply.moderationStatus,
+        moderationStatusLabelRu: (0, statusLabels_1.getReviewModerationStatusLabelRu)(reply.moderationStatus),
         author: {
             id: reply.author?.id ?? null,
             nickname: reply.author?.name ?? null,
@@ -104,8 +121,8 @@ const mapReviewReply = (reply, options = {}) => ({
     text: reply.text,
     createdAt: reply.createdAt,
     updatedAt: reply.updatedAt,
-    moderationStatus: reply.review.moderationStatus,
-    moderationStatusLabelRu: (0, statusLabels_1.getReviewModerationStatusLabelRu)(reply.review.moderationStatus),
+    moderationStatus: reply.moderationStatus,
+    moderationStatusLabelRu: (0, statusLabels_1.getReviewModerationStatusLabelRu)(reply.moderationStatus),
     author: {
         id: reply.author?.id ?? null,
         nickname: reply.author?.name ?? null,
@@ -176,7 +193,7 @@ exports.reviewService = {
             });
             const createdReview = await tx.review.findUnique({
                 where: { id: review.id },
-                include: reviewInclude
+                include: buildReviewInclude({ currentUserId: data.userId })
             });
             if (!createdReview)
                 throw new Error('NOT_FOUND');
@@ -184,6 +201,7 @@ exports.reviewService = {
         });
     },
     async listByProducts(productIds, page = 1, limit = 5, sort = 'new', options = {}) {
+        const reviewInclude = buildReviewInclude(options);
         let authorPendingReview = null;
         if (options.currentUserId && page === 1) {
             authorPendingReview = await prisma_1.prisma.review.findFirst({
@@ -223,7 +241,20 @@ exports.reviewService = {
             currentUserReaction: reactionByReviewId.get(review.id) ?? null
         }, options));
     },
-    countByProducts: (productIds) => prisma_1.prisma.review.count({ where: buildWhere(productIds) }),
+    async countByProducts(productIds, options = {}) {
+        const approvedCount = await prisma_1.prisma.review.count({ where: buildWhere(productIds) });
+        if (!options.currentUserId || options.isAdmin) {
+            return approvedCount;
+        }
+        const pendingCount = await prisma_1.prisma.review.count({
+            where: {
+                productId: { in: productIds },
+                userId: options.currentUserId,
+                moderationStatus: 'PENDING'
+            }
+        });
+        return approvedCount + pendingCount;
+    },
     async summaryByProducts(productIds) {
         const grouped = await prisma_1.prisma.review.groupBy({
             by: ['rating'],
@@ -406,7 +437,8 @@ exports.reviewService = {
                     reviewId,
                     authorId,
                     authorType,
-                    text
+                    text,
+                    moderationStatus: 'PENDING'
                 },
                 include: {
                     author: {
@@ -417,8 +449,7 @@ exports.reviewService = {
                                 select: { storeName: true }
                             }
                         }
-                    },
-                    review: { select: { moderationStatus: true } }
+                    }
                 }
             });
             return mapReviewReply(reply, { currentUserId: authorId });
@@ -435,9 +466,14 @@ exports.reviewService = {
             data: {
                 ...(text.pros !== undefined ? { pros: text.pros } : {}),
                 ...(text.cons !== undefined ? { cons: text.cons } : {}),
-                ...(text.comment !== undefined ? { comment: text.comment } : {})
+                ...(text.comment !== undefined ? { comment: text.comment } : {}),
+                moderationStatus: 'PENDING',
+                moderationNotes: null,
+                moderatedAt: null,
+                moderatedById: null,
+                status: client_1.ReviewStatus.PENDING
             },
-            include: reviewInclude
+            include: buildReviewInclude({ currentUserId: actorId, isAdmin })
         });
         return mapReview({ ...updated, currentUserReaction: null }, { currentUserId: actorId, isAdmin });
     },
@@ -460,7 +496,10 @@ exports.reviewService = {
             throw new Error('FORBIDDEN_REVIEW_OBJECT');
         const updated = await prisma_1.prisma.reviewReply.update({
             where: { id: replyId },
-            data: { text },
+            data: {
+                text,
+                moderationStatus: 'PENDING'
+            },
             include: {
                 author: {
                     select: {
@@ -468,8 +507,7 @@ exports.reviewService = {
                         name: true,
                         sellerProfile: { select: { storeName: true } }
                     }
-                },
-                review: { select: { moderationStatus: true } }
+                }
             }
         });
         return mapReviewReply(updated, { currentUserId: actorId, isAdmin });

@@ -48,8 +48,10 @@ test('authorized seller can create review reply as SELLER with storeName', async
         create: async ({ data }: any) => ({
           id: 'reply-1',
           reviewId: data.reviewId,
+          authorId: 'seller-1',
           authorType: data.authorType,
           text: data.text,
+          moderationStatus: data.moderationStatus,
           createdAt: new Date('2026-03-25T12:00:00.000Z'),
           updatedAt: new Date('2026-03-25T12:00:00.000Z'),
           author: { id: 'seller-1', name: 'Owner', sellerProfile: { storeName: 'Owner Shop' } }
@@ -69,6 +71,11 @@ test('authorized seller can create review reply as SELLER with storeName', async
   assert.equal(response.body.data.author.storeName, 'Owner Shop');
   assert.equal(response.body.data.author.nickname, 'Owner');
   assert.equal(response.body.data.author.displayName, 'Owner Shop');
+  assert.equal(response.body.data.moderationStatus, 'PENDING');
+  assert.equal(response.body.data.moderationStatusLabelRu, 'На модерации');
+  assert.equal(response.body.data.isOwn, true);
+  assert.equal(response.body.data.canEdit, true);
+  assert.equal(response.body.data.canDelete, true);
 });
 
 test('authorized user can create review reply as BUYER with nickname', async () => {
@@ -92,8 +99,10 @@ test('authorized user can create review reply as BUYER with nickname', async () 
         create: async ({ data }: any) => ({
           id: 'reply-2',
           reviewId: data.reviewId,
+          authorId: 'buyer-1',
           authorType: data.authorType,
           text: data.text,
+          moderationStatus: data.moderationStatus,
           createdAt: new Date('2026-03-25T12:00:00.000Z'),
           updatedAt: new Date('2026-03-25T12:00:00.000Z'),
           author: { id: 'buyer-1', name: 'Customer Nick', sellerProfile: null }
@@ -112,6 +121,7 @@ test('authorized user can create review reply as BUYER with nickname', async () 
   assert.equal(response.body.data.author.nickname, 'Customer Nick');
   assert.equal(response.body.data.author.storeName, null);
   assert.equal(response.body.data.author.displayName, 'Customer Nick');
+  assert.equal(response.body.data.moderationStatus, 'PENDING');
 });
 
 test('unauthenticated user cannot create review reply', async () => {
