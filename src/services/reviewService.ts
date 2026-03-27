@@ -122,7 +122,8 @@ export const reviewService = {
     });
     return {
       id: product.seller.id,
-      title: product.seller.sellerProfile?.storeName ?? product.seller.name,
+      storeTitle: product.seller.sellerProfile?.storeName ?? product.seller.name,
+      sellerName: product.seller.name,
       rating: stats._avg.ratingAvg ?? null,
       productsCount: stats._count.id,
       storeAvailable: product.seller.sellerProfile?.status === 'APPROVED'
@@ -471,13 +472,13 @@ export const reviewService = {
   },
   async updateReply(replyId: string, actorId: string, text: string, isAdmin = false) {
     const reply = await prisma.reviewReply.findUnique({ where: { id: replyId } });
-    if (!reply) throw new Error('NOT_FOUND');
+    if (!reply) throw new Error('REVIEW_REPLY_NOT_FOUND');
     if (!isAdmin && reply.authorId !== actorId) throw new Error('FORBIDDEN');
     return prisma.reviewReply.update({ where: { id: replyId }, data: { text } });
   },
   async deleteReply(replyId: string, actorId: string, isAdmin = false) {
     const reply = await prisma.reviewReply.findUnique({ where: { id: replyId } });
-    if (!reply) throw new Error('NOT_FOUND');
+    if (!reply) throw new Error('REVIEW_REPLY_NOT_FOUND');
     if (!isAdmin && reply.authorId !== actorId) throw new Error('FORBIDDEN');
     await prisma.reviewReply.delete({ where: { id: replyId } });
     return { id: replyId, deleted: true };

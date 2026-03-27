@@ -133,6 +133,7 @@ const mountRoutes = (prefix = "") => {
     app.use(`${prefix}/admin/chats`, adminChatRoutes_1.adminChatRoutes);
     app.use(`${prefix}/payments`, paymentRoutes_1.paymentRoutes);
     app.use(`${prefix}/reviews`, reviewCrudRoutes_1.reviewCrudRoutes);
+    app.use(`${prefix}/reviews/replies`, reviewCrudRoutes_1.reviewReplyCrudRoutes);
     app.use(`${prefix}/review-replies`, reviewCrudRoutes_1.reviewReplyCrudRoutes);
     app.use(`${prefix}/favorites`, favoritesRoutes_1.favoritesRoutes);
     app.use(`${prefix}/checkout`, checkoutRoutes_1.checkoutRoutes);

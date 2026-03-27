@@ -171,16 +171,21 @@ shopRoutes.get('/me/products', requireAuth, async (req: AuthRequest, res, next) 
 shopRoutes.get('/:shopRef', publicReadLimiter, async (req, res, next) => {
   try {
     const { shopRef } = paramsSchema.parse(req.params);
-    const user = await resolveUserByShopRef(shopRef, { onlyPublic: true });
+    const user = await resolveUserByShopRef(shopRef);
     if (!user?.sellerProfile) {
       return res.status(404).json({
         error: { code: 'STORE_NOT_FOUND', message: 'Публичный магазин не найден по указанному id/slug.' }
       });
     }
     if (user.sellerProfile.status !== 'APPROVED') {
-      return res.status(403).json({
-        error: { code: 'STORE_NOT_PUBLIC', message: 'Магазин найден, но ещё не опубликован.' }
+      const approvedProductsCount = await prisma.product.count({
+        where: { sellerId: user.id, moderationStatus: 'APPROVED', deletedAt: null }
       });
+      if (approvedProductsCount === 0) {
+        return res.status(403).json({
+          error: { code: 'STORE_NOT_PUBLIC', message: 'Магазин найден, но ещё не опубликован.' }
+        });
+      }
     }
 
     const ratingSummary = await prisma.product.aggregate({
