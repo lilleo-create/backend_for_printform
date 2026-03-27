@@ -117,6 +117,15 @@ export const errorHandler = (
       ? error.message
       : 'SERVER_ERROR';
 
+  if (message === 'FORBIDDEN_REVIEW_OBJECT') {
+    return res.status(403).json({
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Недостаточно прав для изменения этого объекта.'
+      }
+    });
+  }
+
   const status =
     message === 'INVALID_CREDENTIALS' || message === 'UNAUTHORIZED'
       ? 401

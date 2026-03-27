@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { requireAuth, AuthRequest } from '../middleware/authMiddleware';
 import { prisma } from '../lib/prisma';
 import { writeLimiter } from '../middleware/rateLimiters';
+import { getChatThreadStatusLabelRu } from '../utils/statusLabels';
 
 export const chatRoutes = Router();
 
@@ -114,6 +115,11 @@ const dedupeCreateSupportThread = async (params: { userId: string; topic: string
   }
 };
 
+const mapThreadStatus = <T extends { status: string }>(thread: T) => ({
+  ...thread,
+  statusLabelRu: getChatThreadStatusLabelRu(thread.status as any)
+});
+
 chatRoutes.post('/threads', requireAuth, writeLimiter, async (req: AuthRequest, res, next) => {
   try {
     const payload = createThreadSchema.parse(req.body ?? {});
@@ -138,14 +144,14 @@ chatRoutes.post('/threads', requireAuth, writeLimiter, async (req: AuthRequest, 
         shopId: payload.shopId
       });
 
-      return res.status(result.created ? 201 : 200).json({ data: { thread: result.thread, created: result.created } });
+      return res.status(result.created ? 201 : 200).json({ data: { thread: mapThreadStatus(result.thread), created: result.created } });
     }
 
     const topic = normalizeSupportTopic(payload);
     const result = await dedupeCreateSupportThread({ userId: req.user!.userId, topic });
     return res.status(201).json({
       data: {
-        thread: result.thread,
+        thread: mapThreadStatus(result.thread),
         created: result.created,
         topic: result.thread.supportTopic ?? DEFAULT_SUPPORT_TOPIC
       }
@@ -173,7 +179,7 @@ chatRoutes.get('/my', requireAuth, async (req: AuthRequest, res, next) => {
     });
 
     const shaped = threads.map((thread) => ({
-      ...thread,
+      ...mapThreadStatus(thread),
       supportTopic: thread.supportTopic ?? (thread.kind === 'SUPPORT' ? DEFAULT_SUPPORT_TOPIC : null),
       lastMessage: thread.messages[0] ?? null,
       messages: undefined
@@ -213,7 +219,7 @@ chatRoutes.get('/:id', requireAuth, async (req: AuthRequest, res, next) => {
     res.json({
       data: {
         thread: {
-          ...thread,
+          ...mapThreadStatus(thread),
           supportTopic: thread.supportTopic ?? (thread.kind === 'SUPPORT' ? DEFAULT_SUPPORT_TOPIC : null)
         },
         messages: [...messages].reverse()

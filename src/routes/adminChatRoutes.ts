@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { requireAuth, requireAdmin, AuthRequest } from '../middleware/authMiddleware';
 import { prisma } from '../lib/prisma';
 import { writeLimiter } from '../middleware/rateLimiters';
+import { getChatThreadStatusLabelRu } from '../utils/statusLabels';
 
 export const adminChatRoutes = Router();
 
@@ -20,6 +21,11 @@ const messageSchema = z.object({
 
 const statusSchema = z.object({
   status: z.enum(['ACTIVE', 'CLOSED'])
+});
+
+const mapThreadStatus = <T extends { status: string }>(thread: T) => ({
+  ...thread,
+  statusLabelRu: getChatThreadStatusLabelRu(thread.status as any)
 });
 
 adminChatRoutes.use(requireAuth, requireAdmin);
@@ -61,7 +67,7 @@ adminChatRoutes.get('/', async (req, res, next) => {
       ]
     });
     const shaped = threads.map((thread) => ({
-      ...thread,
+      ...mapThreadStatus(thread),
       supportTopic: thread.supportTopic ?? (thread.kind === 'SUPPORT' ? DEFAULT_SUPPORT_TOPIC : null),
       lastMessage: thread.messages[0] ?? null,
       messages: undefined
@@ -120,7 +126,15 @@ adminChatRoutes.get('/:id', async (req, res, next) => {
       where: { threadId: thread.id },
       orderBy: { createdAt: 'asc' }
     });
-    res.json({ data: { thread: { ...thread, supportTopic: thread.supportTopic ?? (thread.kind === 'SUPPORT' ? DEFAULT_SUPPORT_TOPIC : null) }, messages } });
+    res.json({
+      data: {
+        thread: {
+          ...mapThreadStatus(thread),
+          supportTopic: thread.supportTopic ?? (thread.kind === 'SUPPORT' ? DEFAULT_SUPPORT_TOPIC : null)
+        },
+        messages
+      }
+    });
   } catch (error) {
     next(error);
   }
@@ -161,7 +175,7 @@ adminChatRoutes.patch('/:id', writeLimiter, async (req, res, next) => {
       where: { id: req.params.id },
       data: { status: payload.status }
     });
-    res.json({ data: updated });
+    res.json({ data: mapThreadStatus(updated) });
   } catch (error) {
     next(error);
   }
