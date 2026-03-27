@@ -7,8 +7,10 @@ import { prisma } from '../lib/prisma';
 test('createVariant maps client payload to Prisma contract without imageUrls/videoUrls/media fields', async () => {
   const originalFindFirst = prisma.product.findFirst;
   const originalCreate = prisma.product.create;
+  const originalUpdate = prisma.product.update;
 
   let prismaCreateData: any = null;
+  let prismaUpdateData: any = null;
 
   (prisma.product.findFirst as any) = async ({ where }: any) => {
     if (where?.id === 'master-1' && where?.sellerId === 'seller-1') {
@@ -27,6 +29,11 @@ test('createVariant maps client payload to Prisma contract without imageUrls/vid
       variants: [],
       specs: []
     };
+  };
+
+  (prisma.product.update as any) = async (args: any) => {
+    prismaUpdateData = args;
+    return { id: 'master-1', variantGroupId: 'master-1' };
   };
 
   try {
@@ -57,8 +64,13 @@ test('createVariant maps client payload to Prisma contract without imageUrls/vid
     assert.equal('media' in prismaCreateData, true);
     assert.equal(prismaCreateData.parentProductId, 'master-1');
     assert.equal(prismaCreateData.variantGroupId, 'master-1');
+    assert.deepEqual(prismaUpdateData, {
+      where: { id: 'master-1' },
+      data: { variantGroupId: 'master-1' }
+    });
   } finally {
     (prisma.product.findFirst as any) = originalFindFirst;
     (prisma.product.create as any) = originalCreate;
+    (prisma.product.update as any) = originalUpdate;
   }
 });
