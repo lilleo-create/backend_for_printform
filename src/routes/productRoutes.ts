@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { Prisma } from '@prisma/client';
 import { productUseCases } from '../usecases/productUseCases';
 import { reviewService } from '../services/reviewService';
 import { authenticate, authenticateOptional, AuthRequest } from '../middleware/authMiddleware';
@@ -8,6 +9,16 @@ import { checkOwnership } from '../middleware/ownership';
 import { sanitizeText } from '../utils/sanitize';
 
 export const productRoutes = Router();
+
+const prismaErrorMeta = (error: unknown) => {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    return { prismaCode: error.code, prismaMessage: error.message };
+  }
+  if (error instanceof Prisma.PrismaClientValidationError) {
+    return { prismaCode: 'PRISMA_VALIDATION', prismaMessage: error.message };
+  }
+  return { prismaCode: null, prismaMessage: null };
+};
 
 
 const idParamsSchema = z.object({
@@ -241,11 +252,14 @@ productRoutes.get('/:id/reviews', publicReadLimiter, authenticateOptional, async
     });
     res.json({ data: reviews, meta: { total } });
   } catch (error) {
+    const { prismaCode, prismaMessage } = prismaErrorMeta(error);
     console.error('[productRoutes.GET /:id/reviews] failed', {
       endpoint: 'GET /products/:id/reviews',
       productId: req.params.id,
       productIds: typeof req.query.productIds === 'string' ? req.query.productIds : null,
       userId: req.user?.userId ?? null,
+      prismaCode,
+      prismaMessage,
       message: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined
     });
@@ -300,6 +314,16 @@ productRoutes.get('/:id/reviews/summary', publicReadLimiter, async (req, res, ne
     const summary = await reviewService.summaryByProducts(productIds);
     res.json({ data: summary });
   } catch (error) {
+    const { prismaCode, prismaMessage } = prismaErrorMeta(error);
+    console.error('[productRoutes.GET /:id/reviews/summary] failed', {
+      endpoint: 'GET /products/:id/reviews/summary',
+      productId: req.params.id,
+      productIds: typeof req.query.productIds === 'string' ? req.query.productIds : null,
+      prismaCode,
+      prismaMessage,
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined
+    });
     next(error);
   }
 });
