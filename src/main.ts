@@ -167,6 +167,7 @@ const mountRoutes = (prefix = "") => {
   app.use(`${prefix}/admin/chats`, adminChatRoutes);
   app.use(`${prefix}/payments`, paymentRoutes);
   app.use(`${prefix}/reviews`, reviewCrudRoutes);
+  app.use(`${prefix}/reviews/replies`, reviewReplyCrudRoutes);
   app.use(`${prefix}/review-replies`, reviewReplyCrudRoutes);
   app.use(`${prefix}/favorites`, favoritesRoutes);
   app.use(`${prefix}/checkout`, checkoutRoutes);

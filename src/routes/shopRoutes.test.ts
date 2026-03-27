@@ -17,6 +17,20 @@ const buildApp = () => {
   return app;
 };
 
+const originalUserFindUnique = prisma.user.findUnique;
+const originalUserFindMany = prisma.user.findMany;
+const originalProductFindMany = prisma.product.findMany;
+const originalProductAggregate = prisma.product.aggregate;
+const originalProductCount = prisma.product.count;
+
+test.afterEach(() => {
+  (prisma.user.findUnique as any) = originalUserFindUnique;
+  (prisma.user.findMany as any) = originalUserFindMany;
+  (prisma.product.findMany as any) = originalProductFindMany;
+  (prisma.product.aggregate as any) = originalProductAggregate;
+  (prisma.product.count as any) = originalProductCount;
+});
+
 test('GET /shops/me returns explicit STORE_NOT_CREATED when seller profile is missing', async () => {
   (prisma.user.findUnique as any) = async ({ where }: any) => {
     if (where.id === 'seller-1') {
@@ -117,12 +131,44 @@ test('GET /shops/:shopRef returns STORE_NOT_PUBLIC for unpublished store in publ
       }
     }
   ]);
+  (prisma.product.count as any) = async () => 0;
 
   const app = buildApp();
   const response = await request(app).get('/shops/hidden-store');
 
   assert.equal(response.status, 403);
   assert.equal(response.body.error.code, 'STORE_NOT_PUBLIC');
+});
+
+test('GET /shops/:shopRef returns safe shop payload for unpublished store with approved products', async () => {
+  (prisma.user.findUnique as any) = async () => null;
+  (prisma.user.findMany as any) = async () => ([
+    {
+      id: 'seller-81',
+      name: 'Visible seller',
+      sellerProfile: {
+        status: 'ONBOARDING',
+        storeName: 'Visible store',
+        sellerType: 'IP',
+        legalType: null,
+        phone: '+70000000002',
+        city: 'Kazan',
+        referenceCategory: null
+      }
+    }
+  ]);
+  (prisma.product.count as any) = async () => 3;
+  (prisma.product.aggregate as any) = async () => ({
+    _avg: { ratingAvg: 4.8 },
+    _sum: { ratingCount: 12 }
+  });
+
+  const app = buildApp();
+  const response = await request(app).get('/shops/visible-store');
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.data.id, 'seller-81');
+  assert.equal(response.body.data.isPublished, false);
 });
 
 test('GET /shops/me returns owner shop even when store is not published', async () => {
