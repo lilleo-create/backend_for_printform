@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.errorHandler = void 0;
+const client_1 = require("@prisma/client");
 const multer_1 = require("multer");
 const zod_1 = require("zod");
 const mapMulterErrorCode = (code) => {
@@ -21,6 +22,7 @@ const errorHandler = (error, _req, res, _next) => {
         return res.status(400).json({
             error: {
                 code: 'VALIDATION_ERROR',
+                message: 'VALIDATION_ERROR',
                 issues: error.issues.map((issue) => ({
                     path: issue.path.map(String),
                     message: issue.message
@@ -33,12 +35,43 @@ const errorHandler = (error, _req, res, _next) => {
             ? error.code
             : 'LIMIT_UNEXPECTED_FILE';
         return res.status(400).json({
-            error: { code: mapMulterErrorCode(multerCode) }
+            error: { code: mapMulterErrorCode(multerCode), message: mapMulterErrorCode(multerCode) }
         });
     }
     if (isAppError(error) && error.message === 'RETURN_UPLOAD_FILE_TYPE_INVALID') {
         return res.status(400).json({
-            error: { code: 'RETURN_UPLOAD_FILE_TYPE_INVALID' }
+            error: { code: 'RETURN_UPLOAD_FILE_TYPE_INVALID', message: 'RETURN_UPLOAD_FILE_TYPE_INVALID' }
+        });
+    }
+    if (isAppError(error) && error.message === 'PRODUCT_UPLOAD_FILE_TYPE_INVALID') {
+        return res.status(400).json({
+            error: { code: 'PRODUCT_UPLOAD_FILE_TYPE_INVALID', message: 'PRODUCT_UPLOAD_FILE_TYPE_INVALID' }
+        });
+    }
+    if (error instanceof client_1.Prisma.PrismaClientValidationError) {
+        console.error('[errorHandler] prisma validation error', { message: error.message });
+        return res.status(400).json({
+            error: {
+                code: 'DATABASE_VALIDATION_ERROR',
+                message: 'Некорректные данные запроса.'
+            }
+        });
+    }
+    if (error instanceof client_1.Prisma.PrismaClientKnownRequestError) {
+        if (error.code === 'P2002') {
+            return res.status(409).json({
+                error: {
+                    code: 'CONFLICT',
+                    message: 'Запись с такими данными уже существует.'
+                }
+            });
+        }
+        console.error('[errorHandler] prisma known request error', { code: error.code, message: error.message });
+        return res.status(400).json({
+            error: {
+                code: 'DATABASE_ERROR',
+                message: 'Ошибка обработки запроса.'
+            }
         });
     }
     if (isAppError(error)) {
@@ -47,6 +80,7 @@ const errorHandler = (error, _req, res, _next) => {
             return res.status(error.status ?? 502).json({
                 error: {
                     code: errorCode,
+                    message: error.message || errorCode,
                     details: error.details ?? null,
                     ...(Array.isArray(error.issues) && error.issues.length
                         ? { issues: error.issues }
@@ -60,7 +94,7 @@ const errorHandler = (error, _req, res, _next) => {
         : 'SERVER_ERROR';
     const status = message === 'INVALID_CREDENTIALS' || message === 'UNAUTHORIZED'
         ? 401
-        : message === 'OTP_TOKEN_REQUIRED'
+        : message === 'OTP_TOKEN_REQUIRED' || message === 'PASSWORD_RESET_TOKEN_REQUIRED'
             ? 401
             : message === 'FORBIDDEN' || message === 'PHONE_NOT_VERIFIED'
                 ? 403
@@ -83,6 +117,9 @@ const errorHandler = (error, _req, res, _next) => {
                                 message === 'KYC_FILE_TYPE_INVALID' ||
                                 message === 'AMOUNT_MISMATCH' ||
                                 message === 'PAYMENT_REQUIRED' ||
+                                message === 'PRODUCT_UPLOAD_FILE_TYPE_INVALID' ||
+                                message === 'PRODUCT_UPLOAD_IMAGE_TOO_LARGE' ||
+                                message === 'PRODUCT_UPLOAD_VIDEO_TOO_LARGE' ||
                                 message === 'SELLER_DROPOFF_REQUIRED' ||
                                 message === 'SELLER_DROPOFF_PVZ_REQUIRED' ||
                                 message === 'BUYER_PICKUP_REQUIRED' ||
@@ -108,7 +145,7 @@ const errorHandler = (error, _req, res, _next) => {
         });
     }
     return res.status(status).json({
-        error: { code: message }
+        error: { code: message, message }
     });
 };
 exports.errorHandler = errorHandler;

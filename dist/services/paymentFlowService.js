@@ -4,6 +4,7 @@ exports.paymentFlowService = void 0;
 const client_1 = require("@prisma/client");
 const prisma_1 = require("../lib/prisma");
 const orderUseCases_1 = require("../usecases/orderUseCases");
+const orderPayment_1 = require("../utils/orderPayment");
 const buildPaymentUrl = (paymentId) => `https://payment.local/checkout/${paymentId}`;
 const asRecord = (value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -60,6 +61,7 @@ const buildOrderLabels = (orderId, packagesCount) => {
 };
 exports.paymentFlowService = {
     async startPayment(input) {
+        await (0, orderPayment_1.expirePendingPayments)();
         const existingOrder = await prisma_1.prisma.order.findFirst({
             where: { buyerId: input.buyerId, paymentAttemptKey: input.paymentAttemptKey }
         });
@@ -70,7 +72,7 @@ exports.paymentFlowService = {
             const productIds = input.items.map((item) => item.productId);
             const uniqueProductIds = Array.from(new Set(productIds));
             const products = await prisma_1.prisma.product.findMany({
-                where: { id: { in: uniqueProductIds } },
+                where: { id: { in: uniqueProductIds }, deletedAt: null, moderationStatus: 'APPROVED' },
                 select: { id: true, sellerId: true }
             });
             if (products.length !== uniqueProductIds.length) {
@@ -151,7 +153,15 @@ exports.paymentFlowService = {
         const existingPayment = await prisma_1.prisma.payment.findFirst({ where: { orderId: order.id }, orderBy: { createdAt: 'desc' } });
         if (existingPayment) {
             const paymentUrl = String(existingPayment.payloadJson?.paymentUrl ?? buildPaymentUrl(existingPayment.id));
-            return { orderId: order.id, paymentId: existingPayment.id, paymentUrl, deliveryConfigMissing, blockingReason };
+            return {
+                orderId: order.id,
+                paymentId: existingPayment.id,
+                paymentUrl,
+                paymentStatus: order.paymentStatus,
+                paymentExpiresAt: order.paymentExpiresAt,
+                deliveryConfigMissing,
+                blockingReason
+            };
         }
         return prisma_1.prisma.$transaction(async (tx) => {
             const lockedOrder = await tx.order.findUnique({ where: { id: order.id } });
@@ -161,7 +171,15 @@ exports.paymentFlowService = {
                 const lockedPayment = await tx.payment.findUnique({ where: { id: lockedOrder.paymentId } });
                 if (lockedPayment) {
                     const paymentUrl = String(lockedPayment.payloadJson?.paymentUrl ?? buildPaymentUrl(lockedPayment.id));
-                    return { orderId: lockedOrder.id, paymentId: lockedPayment.id, paymentUrl, deliveryConfigMissing, blockingReason };
+                    return {
+                        orderId: lockedOrder.id,
+                        paymentId: lockedPayment.id,
+                        paymentUrl,
+                        paymentStatus: lockedOrder.paymentStatus,
+                        paymentExpiresAt: lockedOrder.paymentExpiresAt,
+                        deliveryConfigMissing,
+                        blockingReason
+                    };
                 }
             }
             const payment = await tx.payment.create({
@@ -178,7 +196,13 @@ exports.paymentFlowService = {
             await tx.payment.update({ where: { id: payment.id }, data: { payloadJson: { paymentUrl } } });
             const claimed = await tx.order.updateMany({
                 where: { id: lockedOrder.id, paymentId: null },
-                data: { paymentId: payment.id, paymentProvider: payment.provider }
+                data: {
+                    paymentId: payment.id,
+                    paymentProvider: payment.provider,
+                    paymentStatus: 'PENDING_PAYMENT',
+                    paymentExpiresAt: (0, orderPayment_1.nextPaymentExpiryDate)(),
+                    expiredAt: null
+                }
             });
             if (claimed.count === 0) {
                 await tx.payment.delete({ where: { id: payment.id } });
@@ -187,11 +211,64 @@ exports.paymentFlowService = {
                     const existingPayment2 = await tx.payment.findUnique({ where: { id: existing.paymentId } });
                     if (existingPayment2) {
                         const url = String(existingPayment2.payloadJson?.paymentUrl ?? buildPaymentUrl(existingPayment2.id));
-                        return { orderId: existing.id, paymentId: existingPayment2.id, paymentUrl: url, deliveryConfigMissing, blockingReason };
+                        return {
+                            orderId: existing.id,
+                            paymentId: existingPayment2.id,
+                            paymentUrl: url,
+                            paymentStatus: existing.paymentStatus,
+                            paymentExpiresAt: existing.paymentExpiresAt,
+                            deliveryConfigMissing,
+                            blockingReason
+                        };
                     }
                 }
             }
-            return { orderId: lockedOrder.id, paymentId: payment.id, paymentUrl, deliveryConfigMissing, blockingReason };
+            return {
+                orderId: lockedOrder.id,
+                paymentId: payment.id,
+                paymentUrl,
+                paymentStatus: 'PENDING_PAYMENT',
+                paymentExpiresAt: (0, orderPayment_1.nextPaymentExpiryDate)(),
+                deliveryConfigMissing,
+                blockingReason
+            };
+        });
+    },
+    async retryPayment(orderId, buyerId) {
+        await (0, orderPayment_1.expirePendingPayments)();
+        return prisma_1.prisma.$transaction(async (tx) => {
+            const order = await tx.order.findFirst({ where: { id: orderId, buyerId } });
+            if (!order)
+                throw new Error('ORDER_NOT_FOUND');
+            if (order.paidAt || order.paymentStatus === 'PAID')
+                throw new Error('ORDER_ALREADY_PAID');
+            if (order.paymentStatus !== 'PAYMENT_EXPIRED')
+                throw new Error('PAYMENT_RETRY_FORBIDDEN');
+            const payment = await tx.payment.create({
+                data: {
+                    orderId: order.id,
+                    provider: order.paymentProvider ?? 'manual',
+                    status: 'PENDING',
+                    amount: order.total,
+                    currency: order.currency,
+                    payloadJson: { paymentUrl: '' }
+                }
+            });
+            const paymentUrl = buildPaymentUrl(payment.id);
+            const paymentExpiresAt = (0, orderPayment_1.nextPaymentExpiryDate)();
+            await tx.payment.update({ where: { id: payment.id }, data: { payloadJson: { paymentUrl } } });
+            await tx.order.update({
+                where: { id: order.id },
+                data: {
+                    paymentStatus: 'PENDING_PAYMENT',
+                    paymentExpiresAt,
+                    expiredAt: null,
+                    paymentId: payment.id,
+                    status: 'CREATED',
+                    statusUpdatedAt: new Date()
+                }
+            });
+            return { orderId: order.id, paymentStatus: 'PENDING_PAYMENT', paymentExpiresAt, paymentUrl };
         });
     },
     async mockSuccess(paymentId, buyerId) {
@@ -223,6 +300,8 @@ exports.paymentFlowService = {
                     where: { id: order.id },
                     data: {
                         status: 'PAID',
+                        paymentStatus: 'PAID',
+                        paymentExpiresAt: null,
                         paidAt: new Date(),
                         paymentProvider: input.provider ?? payment.provider,
                         paymentId: payment.id,
@@ -240,7 +319,14 @@ exports.paymentFlowService = {
             await tx.payment.update({ where: { id: payment.id }, data: { status: paymentStatus } });
             if (order.status === 'PAID')
                 return;
-            await tx.order.update({ where: { id: order.id }, data: { status: 'CREATED' } });
+            await tx.order.update({
+                where: { id: order.id },
+                data: {
+                    status: input.status === 'expired' ? 'EXPIRED' : 'CREATED',
+                    paymentStatus: input.status === 'expired' ? 'PAYMENT_EXPIRED' : 'CANCELLED',
+                    expiredAt: input.status === 'expired' ? new Date() : order.expiredAt
+                }
+            });
         });
         return { ok: true };
     }

@@ -1,5 +1,6 @@
 import { OrderStatus } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { nextPaymentExpiryDate } from '../utils/orderPayment';
 
 export const orderRepository = {
   create: (data: {
@@ -19,7 +20,7 @@ export const orderRepository = {
       const variantIds = data.items.map((item) => item.variantId).filter(Boolean) as string[];
 
       const products = await tx.product.findMany({
-        where: { id: { in: productIds } }
+        where: { id: { in: productIds }, deletedAt: null, moderationStatus: 'APPROVED' }
       });
       const variants = variantIds.length
         ? await tx.productVariant.findMany({ where: { id: { in: variantIds } } })
@@ -83,6 +84,9 @@ export const orderRepository = {
           packagesCount: data.packagesCount ?? 1,
           orderLabels: (data.orderLabels as unknown as object | undefined) ?? undefined,
           total,
+          paymentStatus: 'PENDING_PAYMENT',
+          paymentExpiresAt: nextPaymentExpiryDate(),
+          expiredAt: null,
           items: {
             create: itemsWithPrice
           }
@@ -116,6 +120,7 @@ export const orderRepository = {
     prisma.order.findMany({
       where: {
         items: { some: { product: { sellerId } } },
+        NOT: [{ paymentStatus: 'PAYMENT_EXPIRED' }],
         ...(options?.status ? { status: options.status } : {})
       },
       include: {

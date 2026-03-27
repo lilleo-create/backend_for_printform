@@ -131,6 +131,7 @@ model Product {
   publishedAt           DateTime?
   moderatedAt           DateTime?
   moderatedById         String?
+  deletedAt             DateTime?
   createdAt             DateTime                @default(now())
   updatedAt             DateTime                @updatedAt
   orderItems            OrderItem[]
@@ -298,7 +299,10 @@ model Order {
   paymentAttemptKey        String?
   paymentProvider          String?
   paymentId                String?
+  paymentStatus            OrderPaymentStatus   @default(PENDING_PAYMENT)
+  paymentExpiresAt         DateTime?
   paidAt                   DateTime?
+  expiredAt                DateTime?
   recipientName            String?
   recipientPhone           String?
   recipientEmail           String?
@@ -468,6 +472,7 @@ model ChatThread {
   supportTopic    String?
   status          ChatThreadStatus @default(ACTIVE)
   returnRequestId String?          @unique
+  deletedAt       DateTime?
   lastMessageAt   DateTime?
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
@@ -854,6 +859,13 @@ enum PaymentStatus {
   REQUIRES_ACTION
   SUCCEEDED
   FAILED
+}
+
+enum OrderPaymentStatus {
+  PENDING_PAYMENT
+  PAID
+  PAYMENT_EXPIRED
+  CANCELLED
 }
 
 enum ReturnStatus {

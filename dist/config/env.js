@@ -29,10 +29,19 @@ const authCookieSameSite = ['strict', 'lax', 'none'].includes(authCookieSameSite
     ? authCookieSameSiteRaw
     : 'lax';
 const authCookieDomain = process.env.AUTH_COOKIE_DOMAIN ?? '';
+const authCookiePath = process.env.AUTH_COOKIE_PATH ?? '/';
+const authCookieSecure = (process.env.AUTH_COOKIE_SECURE ?? '').toLowerCase() === 'true' || isProduction;
+const authTrustedDeviceEnforced = (process.env.AUTH_TRUSTED_DEVICE_ENFORCED ?? '').toLowerCase() === 'true';
 if (Number.isNaN(authAccessTokenTtlMinutes) ||
     Number.isNaN(authRefreshTokenTtlDays) ||
     Number.isNaN(trustedDeviceTtlDays)) {
     throw new Error('AUTH_ACCESS_TOKEN_TTL_MINUTES, AUTH_REFRESH_TOKEN_TTL_DAYS, TRUSTED_DEVICE_TTL_DAYS must be numbers');
+}
+if (authCookieSameSite === 'none' && !authCookieSecure) {
+    throw new Error('AUTH_COOKIE_SAME_SITE=none requires AUTH_COOKIE_SECURE=true');
+}
+if (authRefreshTokenTtlDays * 24 * 60 <= authAccessTokenTtlMinutes) {
+    throw new Error('AUTH_REFRESH_TOKEN_TTL_DAYS must be greater than AUTH_ACCESS_TOKEN_TTL_MINUTES');
 }
 const jwtSecret = requireEnv('JWT_SECRET');
 const jwtRefreshSecret = requireEnv('JWT_REFRESH_SECRET');
@@ -91,6 +100,9 @@ exports.env = {
     authRefreshCookieName,
     authCookieSameSite,
     authCookieDomain,
+    authCookiePath,
+    authCookieSecure,
+    authTrustedDeviceEnforced,
     jwtSecret,
     jwtRefreshSecret,
     frontendUrl: requireEnv('FRONTEND_URL'),

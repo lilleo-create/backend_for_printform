@@ -18,6 +18,7 @@ import { sellerOrderDocumentsService } from "../services/sellerOrderDocumentsSer
 import { resolveRoleAfterSellerEnablement } from '../utils/accessControl';
 import { cdekService } from "../services/cdekService";
 import { normalizeProductDto } from "../utils/productDto";
+import { computePaymentTiming, expirePendingPayments } from "../utils/orderPayment";
 export const sellerRoutes = Router();
 
 export type SellerKycSubmissionWithDocuments = Prisma.SellerKycSubmissionGetPayload<{ include: { documents: true } }>;
@@ -799,7 +800,7 @@ sellerRoutes.get('/products', async (req: AuthRequest, res, next) => {
     }
 
     const sellerProducts = await prisma.product.findMany({
-      where: { sellerId: req.user!.userId, parentProductId: null },
+      where: { sellerId: req.user!.userId, parentProductId: null, deletedAt: null },
       include: {
         images: { orderBy: { sortOrder: 'asc' } },
         media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
@@ -962,15 +963,37 @@ sellerRoutes.delete('/products/:id', writeLimiter, async (req: AuthRequest, res,
     }
     const productAccessResult = await productUseCases.getForSellerEdit(req.params.id, req.user!.userId);
     if (productAccessResult.code === 'NOT_FOUND') {
-      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Товар не найден.' } });
+      return res.status(404).json({ error: { code: 'PRODUCT_NOT_FOUND', message: 'Товар не найден.' } });
     }
     if (productAccessResult.code === 'FORBIDDEN') {
       return res.status(403).json({
-        error: { code: 'SELLER_PRODUCT_FORBIDDEN', message: 'У вас нет доступа к этому товару.' }
+        error: { code: 'FORBIDDEN', message: 'У вас нет доступа к этому товару.' }
       });
     }
-    await productUseCases.remove(req.params.id);
-    res.json({ success: true });
+    const hasPaidOrders = await prisma.orderItem.findFirst({
+      where: {
+        productId: req.params.id,
+        order: {
+          OR: [
+            { status: 'PAID' },
+            { paymentStatus: 'PAID' }
+          ]
+        }
+      },
+      select: { id: true }
+    });
+    if (!hasPaidOrders) {
+      await prisma.product.updateMany({
+        where: { id: req.params.id, sellerId: req.user!.userId },
+        data: { deletedAt: new Date(), moderationStatus: 'ARCHIVED' }
+      });
+    } else {
+      await prisma.product.updateMany({
+        where: { OR: [{ id: req.params.id }, { parentProductId: req.params.id }], sellerId: req.user!.userId },
+        data: { deletedAt: new Date(), moderationStatus: 'ARCHIVED' }
+      });
+    }
+    res.json({ ok: true, data: { id: req.params.id, deleted: true } });
   } catch (error) {
     next(error);
   }
@@ -1222,6 +1245,7 @@ sellerRoutes.put('/settings/dropoff-pvz', writeLimiter, async (req: AuthRequest,
 // ------------------- Orders -------------------
 sellerRoutes.get('/orders', async (req: AuthRequest, res, next) => {
   try {
+    await expirePendingPayments();
     const query = sellerOrdersQuerySchema.parse(req.query);
     const orders = await orderUseCases.listBySeller(req.user!.userId, {
       status: query.status as OrderStatus | undefined,
@@ -1229,7 +1253,14 @@ sellerRoutes.get('/orders', async (req: AuthRequest, res, next) => {
       limit: query.limit
     });
     const shipments = await shipmentService.getByOrderIds(orders.map((o) => o.id));
-    res.json({ data: orders.map((o) => ({ ...o, shipment: toShipmentView(shipments.get(o.id) ?? null) })) });
+    res.json({
+      data: orders.map((o) => ({
+        ...o,
+        ...computePaymentTiming(o),
+        paymentExpiresAt: o.paymentExpiresAt,
+        shipment: toShipmentView(shipments.get(o.id) ?? null)
+      }))
+    });
   } catch (error) {
     next(error);
   }

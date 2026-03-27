@@ -153,7 +153,7 @@ shopRoutes.get('/me/products', requireAuth, async (req: AuthRequest, res, next) 
     }
 
     const products = await prisma.product.findMany({
-      where: { sellerId: req.user!.userId },
+      where: { sellerId: req.user!.userId, deletedAt: null },
       include: {
         images: { orderBy: { sortOrder: 'asc' } },
         media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
@@ -206,7 +206,7 @@ shopRoutes.get('/:shopRef/products', publicReadLimiter, async (req, res, next) =
     }
 
     const products = await prisma.product.findMany({
-      where: { sellerId: user.id, moderationStatus: 'APPROVED' },
+      where: { sellerId: user.id, moderationStatus: 'APPROVED', deletedAt: null },
       include: {
         images: { orderBy: { sortOrder: 'asc' } },
         media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
@@ -231,7 +231,7 @@ shopRoutes.get('/:shopRef/filters', publicReadLimiter, async (req, res, next) =>
       });
     }
 
-    const productWhere = { sellerId: user.id, moderationStatus: 'APPROVED' } as const;
+    const productWhere = { sellerId: user.id, moderationStatus: 'APPROVED', deletedAt: null } as const;
     const [categories, materials] = await Promise.all([
       prisma.product.findMany({
         where: productWhere,

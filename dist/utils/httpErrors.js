@@ -5,7 +5,7 @@ const respondWithError = (res, code, message) => {
     return res.status(code === 'UNAUTHORIZED' ? 401 : code === 'FORBIDDEN' ? 403 : 404).json({
         error: {
             code,
-            ...(message ? { message } : {})
+            message: message ?? code
         }
     });
 };

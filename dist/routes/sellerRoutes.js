@@ -22,6 +22,8 @@ const shipmentService_1 = require("../services/shipmentService");
 const sellerOrderDocumentsService_1 = require("../services/sellerOrderDocumentsService");
 const accessControl_1 = require("../utils/accessControl");
 const cdekService_1 = require("../services/cdekService");
+const productDto_1 = require("../utils/productDto");
+const orderPayment_1 = require("../utils/orderPayment");
 exports.sellerRoutes = (0, express_1.Router)();
 // ---------------------------------------------------------
 // Uploads
@@ -281,6 +283,42 @@ const sellerFulfillmentStepsSchema = zod_1.z.object({
     isLabelPrinted: zod_1.z.boolean().optional(),
     isActPrinted: zod_1.z.boolean().optional()
 });
+const sellerMediaUrlSchema = zod_1.z.string().refine((value) => {
+    if (value.startsWith('/uploads/')) {
+        return true;
+    }
+    try {
+        const url = new URL(value);
+        return url.protocol === 'http:' || url.protocol === 'https:';
+    }
+    catch {
+        return false;
+    }
+});
+const sellerVariantMutationSchema = zod_1.z.object({
+    sku: zod_1.z.string().min(3).optional(),
+    price: zod_1.z.number().int().positive().optional(),
+    color: zod_1.z.string().min(2).optional(),
+    variantLabel: zod_1.z.string().min(1).max(120).optional(),
+    variantSize: zod_1.z.string().min(1).max(64).optional(),
+    variantAttributes: zod_1.z.record(zod_1.z.string(), zod_1.z.union([zod_1.z.string(), zod_1.z.number(), zod_1.z.boolean()])).optional(),
+    image: sellerMediaUrlSchema.optional(),
+    imageUrls: zod_1.z.array(sellerMediaUrlSchema).optional(),
+    videoUrls: zod_1.z.array(sellerMediaUrlSchema).optional(),
+    media: zod_1.z
+        .array(zod_1.z.object({
+        type: zod_1.z.enum(['IMAGE', 'VIDEO']),
+        url: sellerMediaUrlSchema,
+        isPrimary: zod_1.z.boolean().optional(),
+        sortOrder: zod_1.z.number().int().min(0).optional()
+    }))
+        .optional()
+});
+const generateSkuFallback = (suffix) => {
+    const randomPart = Math.random().toString(36).slice(2, 8).toUpperCase();
+    const normalizedSuffix = suffix ? `-${suffix}` : '';
+    return `SKU-${Date.now()}-${randomPart}${normalizedSuffix}`;
+};
 const normalizeProductMediaInput = (payload) => {
     if (payload.media !== undefined) {
         return payload.media.map((item, index) => ({
@@ -318,7 +356,7 @@ const normalizeVariantPayload = (basePayload, variantPayload) => {
     const imageMedia = media.filter((item) => item.type === 'IMAGE');
     const videoMedia = media.filter((item) => item.type === 'VIDEO');
     return {
-        sku: variantPayload.sku,
+        sku: variantPayload.sku ?? generateSkuFallback(),
         title: basePayload.title,
         category: basePayload.category,
         price: variantPayload.price ?? basePayload.price,
@@ -680,13 +718,14 @@ exports.sellerRoutes.get('/products', async (req, res, next) => {
             return res.status(403).json({ error: { code: 'KYC_NOT_APPROVED', message: 'KYC not approved' } });
         }
         const sellerProducts = await prisma_1.prisma.product.findMany({
-            where: { sellerId: req.user.userId },
+            where: { sellerId: req.user.userId, parentProductId: null, deletedAt: null },
             include: {
                 images: { orderBy: { sortOrder: 'asc' } },
-                media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] }
+                media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
+                specs: { orderBy: { sortOrder: 'asc' } }
             }
         });
-        res.json({ data: sellerProducts });
+        res.json({ data: sellerProducts.map((product) => (0, productDto_1.normalizeProductDto)(product)) });
     }
     catch (error) {
         next(error);
@@ -709,6 +748,24 @@ exports.sellerRoutes.get('/products/:id', async (req, res, next) => {
         next(error);
     }
 });
+exports.sellerRoutes.get('/products/:id/variants', async (req, res, next) => {
+    try {
+        const product = await productUseCases_1.productUseCases.getSellerProductWithVariants(req.params.id, req.user.userId);
+        if (!product) {
+            return res.status(404).json({ error: { code: 'NOT_FOUND' } });
+        }
+        return res.json({
+            data: {
+                productId: product.id,
+                variantGroup: product.variantGroup ?? null,
+                variants: product.variants ?? []
+            }
+        });
+    }
+    catch (error) {
+        return next(error);
+    }
+});
 exports.sellerRoutes.post('/products', rateLimiters_1.writeLimiter, async (req, res, next) => {
     try {
         const approved = await ensureKycApproved(req.user.userId);
@@ -717,7 +774,7 @@ exports.sellerRoutes.post('/products', rateLimiters_1.writeLimiter, async (req, 
         }
         const payload = productRoutes_1.sellerProductCreateSchema.parse(req.body);
         const normalizedCategory = await ensureReferenceCategory(payload.category);
-        const skuFallback = payload.sku ?? `SKU-${Date.now()}`;
+        const skuFallback = payload.sku ?? generateSkuFallback();
         const media = normalizeProductMediaInput(payload);
         const imageMedia = media.filter((item) => item.type === 'IMAGE');
         const videoMedia = media.filter((item) => item.type === 'VIDEO');
@@ -806,18 +863,128 @@ exports.sellerRoutes.delete('/products/:id', rateLimiters_1.writeLimiter, async 
         }
         const productAccessResult = await productUseCases_1.productUseCases.getForSellerEdit(req.params.id, req.user.userId);
         if (productAccessResult.code === 'NOT_FOUND') {
-            return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Товар не найден.' } });
+            return res.status(404).json({ error: { code: 'PRODUCT_NOT_FOUND', message: 'Товар не найден.' } });
         }
         if (productAccessResult.code === 'FORBIDDEN') {
             return res.status(403).json({
-                error: { code: 'SELLER_PRODUCT_FORBIDDEN', message: 'У вас нет доступа к этому товару.' }
+                error: { code: 'FORBIDDEN', message: 'У вас нет доступа к этому товару.' }
             });
         }
-        await productUseCases_1.productUseCases.remove(req.params.id);
-        res.json({ success: true });
+        const hasPaidOrders = await prisma_1.prisma.orderItem.findFirst({
+            where: {
+                productId: req.params.id,
+                order: {
+                    OR: [
+                        { status: 'PAID' },
+                        { paymentStatus: 'PAID' }
+                    ]
+                }
+            },
+            select: { id: true }
+        });
+        if (!hasPaidOrders) {
+            await prisma_1.prisma.product.updateMany({
+                where: { id: req.params.id, sellerId: req.user.userId },
+                data: { deletedAt: new Date(), moderationStatus: 'ARCHIVED' }
+            });
+        }
+        else {
+            await prisma_1.prisma.product.updateMany({
+                where: { OR: [{ id: req.params.id }, { parentProductId: req.params.id }], sellerId: req.user.userId },
+                data: { deletedAt: new Date(), moderationStatus: 'ARCHIVED' }
+            });
+        }
+        res.json({ ok: true, data: { id: req.params.id, deleted: true } });
     }
     catch (error) {
         next(error);
+    }
+});
+exports.sellerRoutes.post('/products/:id/variants', rateLimiters_1.writeLimiter, async (req, res, next) => {
+    try {
+        const approved = await ensureKycApproved(req.user.userId);
+        if (!approved && req.user.role !== 'ADMIN') {
+            return res.status(403).json({ error: { code: 'KYC_NOT_APPROVED', message: 'KYC not approved' } });
+        }
+        const baseProduct = await productUseCases_1.productUseCases.getSellerProductWithVariants(req.params.id, req.user.userId);
+        if (!baseProduct) {
+            return res.status(404).json({ error: { code: 'NOT_FOUND' } });
+        }
+        const payload = sellerVariantMutationSchema.parse(req.body);
+        const media = normalizeProductMediaInput({
+            image: payload.image ?? baseProduct.image,
+            imageUrls: payload.imageUrls ?? baseProduct.imageUrls,
+            videoUrls: payload.videoUrls ?? baseProduct.videoUrls,
+            media: payload.media
+        });
+        const imageMedia = media.filter((item) => item.type === 'IMAGE');
+        const videoMedia = media.filter((item) => item.type === 'VIDEO');
+        const variantInput = {
+            sku: payload.sku ?? generateSkuFallback(),
+            title: baseProduct.title,
+            category: baseProduct.category,
+            price: payload.price ?? baseProduct.price,
+            currency: baseProduct.currency,
+            description: baseProduct.description,
+            descriptionShort: baseProduct.descriptionShort,
+            descriptionFull: baseProduct.descriptionFull,
+            material: baseProduct.material,
+            technology: baseProduct.technology,
+            productionTimeHours: baseProduct.productionTimeHours ?? undefined,
+            color: payload.color ?? baseProduct.color,
+            variantLabel: payload.variantLabel,
+            variantSize: payload.variantSize,
+            variantAttributes: payload.variantAttributes,
+            weightGrossG: baseProduct.weightGrossG ?? undefined,
+            dxCm: baseProduct.dxCm ?? undefined,
+            dyCm: baseProduct.dyCm ?? undefined,
+            dzCm: baseProduct.dzCm ?? undefined,
+            image: imageMedia[0]?.url ?? baseProduct.image,
+            imageUrls: imageMedia.map((item) => item.url),
+            videoUrls: videoMedia.map((item) => item.url),
+            media
+        };
+        const created = await productUseCases_1.productUseCases.createVariant(req.params.id, req.user.userId, variantInput);
+        if (!created) {
+            return res.status(404).json({ error: { code: 'NOT_FOUND' } });
+        }
+        return res.status(201).json({ data: created });
+    }
+    catch (error) {
+        return next(error);
+    }
+});
+exports.sellerRoutes.put('/products/:id/variants/:variantId', rateLimiters_1.writeLimiter, async (req, res, next) => {
+    try {
+        const approved = await ensureKycApproved(req.user.userId);
+        if (!approved && req.user.role !== 'ADMIN') {
+            return res.status(403).json({ error: { code: 'KYC_NOT_APPROVED', message: 'KYC not approved' } });
+        }
+        const payload = sellerVariantMutationSchema.partial().parse(req.body);
+        const updated = await productUseCases_1.productUseCases.updateVariant(req.params.id, req.params.variantId, req.user.userId, payload);
+        if (!updated) {
+            return res.status(404).json({ error: { code: 'NOT_FOUND' } });
+        }
+        return res.json({ data: updated });
+    }
+    catch (error) {
+        return next(error);
+    }
+});
+exports.sellerRoutes.delete('/products/:id/variants/:variantId', rateLimiters_1.writeLimiter, async (req, res, next) => {
+    try {
+        const approved = await ensureKycApproved(req.user.userId);
+        if (!approved && req.user.role !== 'ADMIN') {
+            return res.status(403).json({ error: { code: 'KYC_NOT_APPROVED', message: 'KYC not approved' } });
+        }
+        const removed = await productUseCases_1.productUseCases.removeVariant(req.params.id, req.params.variantId, req.user.userId);
+        if (!removed) {
+            return res.status(404).json({ error: { code: 'NOT_FOUND' } });
+        }
+        return res.json({ success: true });
+    }
+    catch (error) {
+        return next(error);
     }
 });
 exports.sellerRoutes.post('/uploads', rateLimiters_1.writeLimiter, upload.array('files', 10), async (req, res) => {
@@ -938,6 +1105,7 @@ exports.sellerRoutes.put('/settings/dropoff-pvz', rateLimiters_1.writeLimiter, a
 // ------------------- Orders -------------------
 exports.sellerRoutes.get('/orders', async (req, res, next) => {
     try {
+        await (0, orderPayment_1.expirePendingPayments)();
         const query = sellerOrdersQuerySchema.parse(req.query);
         const orders = await orderUseCases_1.orderUseCases.listBySeller(req.user.userId, {
             status: query.status,
@@ -945,7 +1113,14 @@ exports.sellerRoutes.get('/orders', async (req, res, next) => {
             limit: query.limit
         });
         const shipments = await shipmentService_1.shipmentService.getByOrderIds(orders.map((o) => o.id));
-        res.json({ data: orders.map((o) => ({ ...o, shipment: toShipmentView(shipments.get(o.id) ?? null) })) });
+        res.json({
+            data: orders.map((o) => ({
+                ...o,
+                ...(0, orderPayment_1.computePaymentTiming)(o),
+                paymentExpiresAt: o.paymentExpiresAt,
+                shipment: toShipmentView(shipments.get(o.id) ?? null)
+            }))
+        });
     }
     catch (error) {
         next(error);
