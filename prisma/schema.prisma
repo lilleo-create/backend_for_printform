@@ -31,6 +31,7 @@ model User {
   trustedDevices         TrustedDevice[]
   returnRequests         ReturnRequest[]
   moderatedReviews       Review[]               @relation("ReviewModerator")
+  moderatedReviewReplies ReviewReply[]          @relation("ReviewReplyModerator")
   reviewReactions        ReviewReaction[]
   reviewReplies          ReviewReply[]
   reviews                Review[]
@@ -247,13 +248,19 @@ model ReviewReply {
   authorId   String?
   authorType ReviewReplyAuthorType
   text       String
+  moderationStatus ReviewModerationStatus @default(PENDING)
+  moderationNotes  String?
+  moderatedAt      DateTime?
+  moderatedById    String?
   createdAt  DateTime              @default(now())
   updatedAt  DateTime              @updatedAt
   review     Review                @relation(fields: [reviewId], references: [id], onDelete: Cascade)
   author     User?                 @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  moderatedBy User?                @relation("ReviewReplyModerator", fields: [moderatedById], references: [id])
 
   @@index([reviewId, createdAt])
   @@index([authorId])
+  @@index([reviewId, moderationStatus, createdAt])
 }
 
 model Order {

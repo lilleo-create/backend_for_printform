@@ -28,9 +28,25 @@ const buildWhere = (productIds: string[]): Prisma.ReviewWhereInput => ({
   isPublic: true
 });
 
-const reviewInclude = {
+const buildReplyVisibilityWhere = (options: ListReviewOptions): Prisma.ReviewReplyWhereInput => {
+  if (options.isAdmin) {
+    return {};
+  }
+  if (!options.currentUserId) {
+    return { moderationStatus: 'APPROVED' };
+  }
+  return {
+    OR: [
+      { moderationStatus: 'APPROVED' },
+      { authorId: options.currentUserId }
+    ]
+  };
+};
+
+const buildReviewInclude = (options: ListReviewOptions = {}) => ({
   user: { select: { id: true, name: true } },
   replies: {
+    where: buildReplyVisibilityWhere(options),
     orderBy: { createdAt: 'asc' as const },
     include: {
       author: {
@@ -46,10 +62,10 @@ const reviewInclude = {
       }
     }
   }
-};
+});
 
 const mapReview = (
-  review: Prisma.ReviewGetPayload<{ include: typeof reviewInclude }> & {
+  review: Prisma.ReviewGetPayload<{ include: ReturnType<typeof buildReviewInclude> }> & {
     currentUserReaction?: ReviewReactionType | null;
   },
   options: ListReviewOptions = {}
@@ -96,6 +112,8 @@ const mapReview = (
     text: reply.text,
     createdAt: reply.createdAt,
     updatedAt: reply.updatedAt,
+    moderationStatus: reply.moderationStatus,
+    moderationStatusLabelRu: getReviewModerationStatusLabelRu(reply.moderationStatus),
     author: {
       id: reply.author?.id ?? null,
       nickname: reply.author?.name ?? null,
@@ -125,11 +143,6 @@ const mapReviewReply = (
           };
         };
       };
-      review: {
-        select: {
-          moderationStatus: true;
-        };
-      };
     };
   }>,
   options: ListReviewOptions = {}
@@ -141,8 +154,8 @@ const mapReviewReply = (
   text: reply.text,
   createdAt: reply.createdAt,
   updatedAt: reply.updatedAt,
-  moderationStatus: reply.review.moderationStatus,
-  moderationStatusLabelRu: getReviewModerationStatusLabelRu(reply.review.moderationStatus),
+  moderationStatus: reply.moderationStatus,
+  moderationStatusLabelRu: getReviewModerationStatusLabelRu(reply.moderationStatus),
   author: {
     id: reply.author?.id ?? null,
     nickname: reply.author?.name ?? null,
@@ -224,7 +237,7 @@ export const reviewService = {
 
       const createdReview = await tx.review.findUnique({
         where: { id: review.id },
-        include: reviewInclude
+        include: buildReviewInclude({ currentUserId: data.userId })
       });
 
       if (!createdReview) throw new Error('NOT_FOUND');
@@ -234,7 +247,8 @@ export const reviewService = {
   },
 
   async listByProducts(productIds: string[], page = 1, limit = 5, sort = 'new', options: ListReviewOptions = {}) {
-    let authorPendingReview: Prisma.ReviewGetPayload<{ include: typeof reviewInclude }> | null = null;
+    const reviewInclude = buildReviewInclude(options);
+    let authorPendingReview: Prisma.ReviewGetPayload<{ include: ReturnType<typeof buildReviewInclude> }> | null = null;
     if (options.currentUserId && page === 1) {
       authorPendingReview = await prisma.review.findFirst({
         where: {
@@ -282,7 +296,20 @@ export const reviewService = {
     );
   },
 
-  countByProducts: (productIds: string[]) => prisma.review.count({ where: buildWhere(productIds) }),
+  async countByProducts(productIds: string[], options: ListReviewOptions = {}) {
+    const approvedCount = await prisma.review.count({ where: buildWhere(productIds) });
+    if (!options.currentUserId || options.isAdmin) {
+      return approvedCount;
+    }
+    const pendingCount = await prisma.review.count({
+      where: {
+        productId: { in: productIds },
+        userId: options.currentUserId,
+        moderationStatus: 'PENDING'
+      }
+    });
+    return approvedCount + pendingCount;
+  },
 
   async summaryByProducts(productIds: string[]) {
     const grouped = await prisma.review.groupBy({
@@ -494,7 +521,8 @@ export const reviewService = {
           reviewId,
           authorId,
           authorType,
-          text
+          text,
+          moderationStatus: 'PENDING'
         },
         include: {
           author: {
@@ -505,8 +533,7 @@ export const reviewService = {
                 select: { storeName: true }
               }
             }
-          },
-          review: { select: { moderationStatus: true } }
+          }
         }
       });
 
@@ -523,9 +550,14 @@ export const reviewService = {
       data: {
         ...(text.pros !== undefined ? { pros: text.pros } : {}),
         ...(text.cons !== undefined ? { cons: text.cons } : {}),
-        ...(text.comment !== undefined ? { comment: text.comment } : {})
+        ...(text.comment !== undefined ? { comment: text.comment } : {}),
+        moderationStatus: 'PENDING',
+        moderationNotes: null,
+        moderatedAt: null,
+        moderatedById: null,
+        status: ReviewStatus.PENDING
       },
-      include: reviewInclude
+      include: buildReviewInclude({ currentUserId: actorId, isAdmin })
     });
     return mapReview({ ...updated, currentUserReaction: null }, { currentUserId: actorId, isAdmin });
   },
@@ -544,7 +576,10 @@ export const reviewService = {
     if (!isAdmin && reply.authorId !== actorId) throw new Error('FORBIDDEN_REVIEW_OBJECT');
     const updated = await prisma.reviewReply.update({
       where: { id: replyId },
-      data: { text },
+      data: {
+        text,
+        moderationStatus: 'PENDING'
+      },
       include: {
         author: {
           select: {
@@ -552,8 +587,7 @@ export const reviewService = {
             name: true,
             sellerProfile: { select: { storeName: true } }
           }
-        },
-        review: { select: { moderationStatus: true } }
+        }
       }
     });
     return mapReviewReply(updated, { currentUserId: actorId, isAdmin });
