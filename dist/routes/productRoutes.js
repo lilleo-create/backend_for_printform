@@ -219,6 +219,14 @@ exports.productRoutes.get('/:id/reviews', rateLimiters_1.publicReadLimiter, auth
         res.json({ data: reviews, meta: { total } });
     }
     catch (error) {
+        console.error('[productRoutes.GET /:id/reviews] failed', {
+            endpoint: 'GET /products/:id/reviews',
+            productId: req.params.id,
+            productIds: typeof req.query.productIds === 'string' ? req.query.productIds : null,
+            userId: req.user?.userId ?? null,
+            message: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined
+        });
         next(error);
     }
 });

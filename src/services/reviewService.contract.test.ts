@@ -143,3 +143,70 @@ test('countByProducts includes own pending reviews for author', async () => {
     (prisma.review.count as any) = originalReviewCount;
   }
 });
+
+test('listByProducts paginates approved reviews correctly when own pending review exists', async () => {
+  const originalReviewFindFirst = prisma.review.findFirst;
+  const originalReviewFindMany = prisma.review.findMany;
+  const originalReviewReactionFindMany = prisma.reviewReaction.findMany;
+
+  const findManyCalls: any[] = [];
+
+  (prisma.review.findFirst as any) = async () => ({
+    id: 'pending-own',
+    productId: 'product-1',
+    userId: 'buyer-1',
+    rating: 5,
+    pros: 'Pending pros',
+    cons: 'Pending cons',
+    comment: 'Pending comment',
+    photos: [],
+    likesCount: 0,
+    dislikesCount: 0,
+    isPublic: true,
+    status: 'PENDING',
+    moderationStatus: 'PENDING',
+    createdAt: new Date('2026-03-26T10:00:00.000Z'),
+    updatedAt: new Date('2026-03-26T10:00:00.000Z'),
+    user: { id: 'buyer-1', name: 'BuyerNick' },
+    replies: []
+  });
+  (prisma.review.findMany as any) = async (args: any) => {
+    findManyCalls.push(args);
+    return [
+      {
+        id: 'approved-1',
+        productId: 'product-1',
+        userId: 'buyer-2',
+        rating: 4,
+        pros: 'Approved pros',
+        cons: 'Approved cons',
+        comment: 'Approved comment',
+        photos: [],
+        likesCount: 1,
+        dislikesCount: 0,
+        isPublic: true,
+        status: 'APPROVED',
+        moderationStatus: 'APPROVED',
+        createdAt: new Date('2026-03-25T10:00:00.000Z'),
+        updatedAt: new Date('2026-03-25T10:00:00.000Z'),
+        user: { id: 'buyer-2', name: 'OtherUser' },
+        replies: []
+      }
+    ];
+  };
+  (prisma.reviewReaction.findMany as any) = async () => [];
+
+  try {
+    const reviews = await reviewService.listByProducts(['product-1'], 2, 5, 'new', { currentUserId: 'buyer-1' });
+    assert.equal(reviews.length, 1);
+    assert.equal(reviews[0].id, 'approved-1');
+    assert.equal(findManyCalls.length, 1);
+    assert.equal(findManyCalls[0].skip, 4);
+    assert.equal(findManyCalls[0].take, 5);
+    assert.equal(findManyCalls[0].where.NOT.userId, 'buyer-1');
+  } finally {
+    (prisma.review.findFirst as any) = originalReviewFindFirst;
+    (prisma.review.findMany as any) = originalReviewFindMany;
+    (prisma.reviewReaction.findMany as any) = originalReviewReactionFindMany;
+  }
+});
