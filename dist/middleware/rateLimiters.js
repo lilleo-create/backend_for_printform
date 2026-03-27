@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.publicReadLimiter = exports.writeLimiter = exports.otpVerifyLimiter = exports.otpRequestLimiter = exports.authLimiter = exports.globalLimiter = void 0;
+exports.publicReadLimiter = exports.orderSensitiveLimiter = exports.reviewSensitiveLimiter = exports.authSensitiveLimiter = exports.writeLimiter = exports.otpVerifyLimiter = exports.otpRequestLimiter = exports.authLimiter = exports.globalLimiter = void 0;
 const express_rate_limit_1 = __importDefault(require("express-rate-limit"));
 const env_1 = require("../config/env");
 const isPublicProductRead = (req) => req.method === "GET" && req.path.startsWith("/products");
@@ -45,6 +45,9 @@ exports.otpVerifyLimiter = createLimiter({
     max: 10,
 });
 exports.writeLimiter = createLimiter({ windowMs: 5 * 60 * 1000, max: 60 });
+exports.authSensitiveLimiter = createLimiter({ windowMs: 60 * 1000, max: 15 });
+exports.reviewSensitiveLimiter = createLimiter({ windowMs: 60 * 1000, max: 15 });
+exports.orderSensitiveLimiter = createLimiter({ windowMs: 60 * 1000, max: 15 });
 exports.publicReadLimiter = createLimiter({
     windowMs: 60 * 1000,
     max: 120,

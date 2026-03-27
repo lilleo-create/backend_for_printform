@@ -51,6 +51,9 @@ export const otpVerifyLimiter = createLimiter({
   max: 10,
 });
 export const writeLimiter = createLimiter({ windowMs: 5 * 60 * 1000, max: 60 });
+export const authSensitiveLimiter = createLimiter({ windowMs: 60 * 1000, max: 15 });
+export const reviewSensitiveLimiter = createLimiter({ windowMs: 60 * 1000, max: 15 });
+export const orderSensitiveLimiter = createLimiter({ windowMs: 60 * 1000, max: 15 });
 export const publicReadLimiter = createLimiter({
   windowMs: 60 * 1000,
   max: 120,

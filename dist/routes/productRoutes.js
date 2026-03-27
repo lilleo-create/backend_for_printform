@@ -7,7 +7,25 @@ const productUseCases_1 = require("../usecases/productUseCases");
 const reviewService_1 = require("../services/reviewService");
 const authMiddleware_1 = require("../middleware/authMiddleware");
 const rateLimiters_1 = require("../middleware/rateLimiters");
+const ownership_1 = require("../middleware/ownership");
+const sanitize_1 = require("../utils/sanitize");
 exports.productRoutes = (0, express_1.Router)();
+const idParamsSchema = zod_1.z.object({
+    id: zod_1.z.string().trim().min(1).max(128)
+});
+const reviewParamsSchema = zod_1.z.object({
+    reviewId: zod_1.z.string().trim().min(1).max(128)
+});
+const replyParamsSchema = zod_1.z.object({
+    replyId: zod_1.z.string().trim().min(1).max(128)
+});
+const sanitizedString = (min, max) => zod_1.z
+    .string()
+    .trim()
+    .min(1)
+    .max(max)
+    .transform((value) => (0, sanitize_1.sanitizeText)(value))
+    .refine((value) => value.length >= min, { message: `Must be at least ${min} characters` });
 const mediaUrlSchema = zod_1.z.string().refine((value) => {
     if (value.startsWith('/uploads/')) {
         return true;
@@ -142,10 +160,9 @@ exports.sellerProductUpdateSchema = exports.sellerProductCreateSchema.partial();
 exports.sellerProductSchema = exports.sellerProductCreateSchema;
 const reviewSchema = zod_1.z.object({
     rating: zod_1.z.number().int().min(1).max(5),
-    pros: zod_1.z.string().min(3).max(500),
-    cons: zod_1.z.string().min(3).max(500),
-    comment: zod_1.z.string().min(10).max(1000),
-    // ✅ разрешаем и /uploads/..., и абсолютные http(s)
+    pros: sanitizedString(3, 500),
+    cons: sanitizedString(3, 500),
+    comment: sanitizedString(10, 1000),
     photos: zod_1.z.array(mediaUrlSchema).max(5).optional()
 });
 const reviewListSchema = zod_1.z.object({
@@ -175,12 +192,12 @@ const reactionSchema = zod_1.z
     type: payload.type ?? payload.reaction
 }));
 const replySchema = zod_1.z.object({
-    text: zod_1.z.string().trim().min(1).max(2000)
+    text: sanitizedString(1, 2000)
 });
 const reviewUpdateSchema = zod_1.z.object({
-    pros: zod_1.z.string().min(3).max(500).optional(),
-    cons: zod_1.z.string().min(3).max(500).optional(),
-    comment: zod_1.z.string().min(10).max(1000).optional()
+    pros: sanitizedString(3, 500).optional(),
+    cons: sanitizedString(3, 500).optional(),
+    comment: sanitizedString(10, 1000).optional()
 });
 exports.productRoutes.get('/:id/reviews', rateLimiters_1.publicReadLimiter, authMiddleware_1.authenticateOptional, async (req, res, next) => {
     try {
@@ -224,8 +241,9 @@ exports.productRoutes.get('/:id/seller-summary', rateLimiters_1.publicReadLimite
 exports.productRoutes.post('/:id/reviews', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
     try {
         const payload = reviewSchema.parse(req.body);
+        const params = idParamsSchema.parse(req.params);
         const review = await reviewService_1.reviewService.addReview({
-            productId: req.params.id,
+            productId: params.id,
             userId: req.user.userId,
             rating: payload.rating,
             pros: payload.pros,
@@ -258,7 +276,8 @@ exports.productRoutes.get('/:id/reviews/summary', rateLimiters_1.publicReadLimit
 const setReviewReactionByProductRoute = async (req, res, next) => {
     try {
         const payload = reactionSchema.parse(req.body);
-        const reaction = await reviewService_1.reviewService.setReaction(req.params.reviewId, req.user.userId, payload.type, req.params.id);
+        const { id, reviewId } = zod_1.z.object({ ...idParamsSchema.shape, ...reviewParamsSchema.shape }).parse(req.params);
+        const reaction = await reviewService_1.reviewService.setReaction(reviewId, req.user.userId, payload.type, id);
         res.json({ data: reaction });
     }
     catch (error) {
@@ -268,7 +287,8 @@ const setReviewReactionByProductRoute = async (req, res, next) => {
 const setReviewReactionStandaloneRoute = async (req, res, next) => {
     try {
         const payload = reactionSchema.parse(req.body);
-        const reaction = await reviewService_1.reviewService.setReaction(req.params.reviewId, req.user.userId, payload.type);
+        const { reviewId } = reviewParamsSchema.parse(req.params);
+        const reaction = await reviewService_1.reviewService.setReaction(reviewId, req.user.userId, payload.type);
         res.json({ data: reaction });
     }
     catch (error) {
@@ -277,7 +297,8 @@ const setReviewReactionStandaloneRoute = async (req, res, next) => {
 };
 const removeReviewReactionByProductRoute = async (req, res, next) => {
     try {
-        const reaction = await reviewService_1.reviewService.removeReaction(req.params.reviewId, req.user.userId, req.params.id);
+        const { id, reviewId } = zod_1.z.object({ ...idParamsSchema.shape, ...reviewParamsSchema.shape }).parse(req.params);
+        const reaction = await reviewService_1.reviewService.removeReaction(reviewId, req.user.userId, id);
         res.json({ data: reaction });
     }
     catch (error) {
@@ -286,7 +307,8 @@ const removeReviewReactionByProductRoute = async (req, res, next) => {
 };
 const removeReviewReactionStandaloneRoute = async (req, res, next) => {
     try {
-        const reaction = await reviewService_1.reviewService.removeReaction(req.params.reviewId, req.user.userId);
+        const { reviewId } = reviewParamsSchema.parse(req.params);
+        const reaction = await reviewService_1.reviewService.removeReaction(reviewId, req.user.userId);
         res.json({ data: reaction });
     }
     catch (error) {
@@ -302,7 +324,8 @@ exports.productRoutes.delete('/reviews/:reviewId/reaction', authMiddleware_1.aut
 exports.productRoutes.post('/:id/reviews/:reviewId/replies', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
     try {
         const payload = replySchema.parse(req.body);
-        const reply = await reviewService_1.reviewService.addReply(req.params.reviewId, req.user.userId, payload.text, req.params.id);
+        const { id, reviewId } = zod_1.z.object({ ...idParamsSchema.shape, ...reviewParamsSchema.shape }).parse(req.params);
+        const reply = await reviewService_1.reviewService.addReply(reviewId, req.user.userId, payload.text, id);
         res.status(201).json({ data: reply });
     }
     catch (error) {
@@ -312,45 +335,50 @@ exports.productRoutes.post('/:id/reviews/:reviewId/replies', authMiddleware_1.au
 exports.productRoutes.post('/reviews/:reviewId/replies', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
     try {
         const payload = replySchema.parse(req.body);
-        const reply = await reviewService_1.reviewService.addReply(req.params.reviewId, req.user.userId, payload.text);
+        const { reviewId } = reviewParamsSchema.parse(req.params);
+        const reply = await reviewService_1.reviewService.addReply(reviewId, req.user.userId, payload.text);
         res.status(201).json({ data: reply });
     }
     catch (error) {
         next(error);
     }
 });
-exports.productRoutes.patch('/reviews/:reviewId', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
+exports.productRoutes.patch('/reviews/:reviewId', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, (0, ownership_1.checkOwnership)('review'), async (req, res, next) => {
     try {
         const payload = reviewUpdateSchema.parse(req.body);
-        const updated = await reviewService_1.reviewService.updateReview(req.params.reviewId, req.user.userId, payload, req.user.role === 'ADMIN');
+        const { reviewId } = reviewParamsSchema.parse(req.params);
+        const updated = await reviewService_1.reviewService.updateReview(reviewId, req.user.userId, payload, req.user.role === 'ADMIN');
         return res.json({ ok: true, data: updated });
     }
     catch (error) {
         return next(error);
     }
 });
-exports.productRoutes.delete('/reviews/:reviewId', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
+exports.productRoutes.delete('/reviews/:reviewId', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, (0, ownership_1.checkOwnership)('review'), async (req, res, next) => {
     try {
-        const result = await reviewService_1.reviewService.deleteReview(req.params.reviewId, req.user.userId, req.user.role === 'ADMIN');
+        const { reviewId } = reviewParamsSchema.parse(req.params);
+        const result = await reviewService_1.reviewService.deleteReview(reviewId, req.user.userId, req.user.role === 'ADMIN');
         return res.json({ ok: true, data: result });
     }
     catch (error) {
         return next(error);
     }
 });
-exports.productRoutes.patch('/review-replies/:replyId', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
+exports.productRoutes.patch('/review-replies/:replyId', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, (0, ownership_1.checkOwnership)('reply'), async (req, res, next) => {
     try {
         const payload = replySchema.parse(req.body);
-        const updated = await reviewService_1.reviewService.updateReply(req.params.replyId, req.user.userId, payload.text, req.user.role === 'ADMIN');
+        const { replyId } = replyParamsSchema.parse(req.params);
+        const updated = await reviewService_1.reviewService.updateReply(replyId, req.user.userId, payload.text, req.user.role === 'ADMIN');
         return res.json({ ok: true, data: updated });
     }
     catch (error) {
         return next(error);
     }
 });
-exports.productRoutes.delete('/review-replies/:replyId', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
+exports.productRoutes.delete('/review-replies/:replyId', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, (0, ownership_1.checkOwnership)('reply'), async (req, res, next) => {
     try {
-        const result = await reviewService_1.reviewService.deleteReply(req.params.replyId, req.user.userId, req.user.role === 'ADMIN');
+        const { replyId } = replyParamsSchema.parse(req.params);
+        const result = await reviewService_1.reviewService.deleteReply(replyId, req.user.userId, req.user.role === 'ADMIN');
         return res.json({ ok: true, data: result });
     }
     catch (error) {
