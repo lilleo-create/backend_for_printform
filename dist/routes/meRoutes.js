@@ -44,6 +44,15 @@ exports.meRoutes.get('/', authMiddleware_1.requireAuth, async (req, res, next) =
                 name: user.name,
                 fullName: user.fullName,
                 role: user.role,
+                roles: {
+                    isAdmin: req.user.isAdmin,
+                    isSeller: req.user.isSeller,
+                    isBuyer: true
+                },
+                capabilities: {
+                    canAccessAdmin: req.user.isAdmin,
+                    canAccessSeller: req.user.isSeller
+                },
                 email: user.email
             }
         });

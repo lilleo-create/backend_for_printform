@@ -12,6 +12,7 @@ const authMiddleware_1 = require("../middleware/authMiddleware");
 const prisma_1 = require("../lib/prisma");
 const rateLimiters_1 = require("../middleware/rateLimiters");
 const httpErrors_1 = require("../utils/httpErrors");
+const accessControl_1 = require("../utils/accessControl");
 exports.adminRoutes = (0, express_1.Router)();
 const reasonSchema = zod_1.z.string().min(10).max(500);
 const reviewSchema = zod_1.z
@@ -81,7 +82,7 @@ exports.adminRoutes.get('/seller-documents/:id/download', async (req, res, next)
     }
 });
 const kycSubmissionInclude = {
-    user: { select: { id: true, name: true, email: true, phone: true } },
+    user: { select: { id: true, name: true, email: true, phone: true, role: true } },
     documents: true
 };
 const listKycSubmissions = async (status) => {
@@ -115,7 +116,7 @@ const reviewSubmission = async (id, status, comment, reviewerId) => {
     if (status === 'APPROVED') {
         await prisma_1.prisma.user.update({
             where: { id: updated.userId },
-            data: { role: 'SELLER' }
+            data: { role: (0, accessControl_1.resolveRoleAfterSellerEnablement)(updated.user.role) }
         });
     }
     return updated;
@@ -211,7 +212,7 @@ exports.adminRoutes.get('/products', async (req, res, next) => {
     try {
         const status = productStatusSchema.parse(req.query.status ?? 'PENDING');
         const products = await prisma_1.prisma.product.findMany({
-            where: { moderationStatus: status },
+            where: { moderationStatus: status, deletedAt: null },
             include: {
                 seller: { select: { id: true, name: true, email: true } },
                 images: { orderBy: { sortOrder: 'asc' } }
@@ -219,6 +220,22 @@ exports.adminRoutes.get('/products', async (req, res, next) => {
             orderBy: { updatedAt: 'desc' }
         });
         res.json({ data: products });
+    }
+    catch (error) {
+        next(error);
+    }
+});
+exports.adminRoutes.delete('/products/:productId', rateLimiters_1.writeLimiter, async (req, res, next) => {
+    try {
+        const product = await prisma_1.prisma.product.findUnique({ where: { id: req.params.productId }, select: { id: true } });
+        if (!product) {
+            return res.status(404).json({ error: { code: 'PRODUCT_NOT_FOUND', message: 'Товар не найден.' } });
+        }
+        await prisma_1.prisma.product.updateMany({
+            where: { OR: [{ id: req.params.productId }, { parentProductId: req.params.productId }] },
+            data: { deletedAt: new Date(), moderationStatus: 'ARCHIVED' }
+        });
+        return res.json({ ok: true, data: { id: req.params.productId, deleted: true } });
     }
     catch (error) {
         next(error);

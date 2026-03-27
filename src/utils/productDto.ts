@@ -18,6 +18,16 @@ type ProductLike = {
   dxCm?: number | null;
   dyCm?: number | null;
   dzCm?: number | null;
+  moderationStatus?: 'DRAFT' | 'PENDING' | 'APPROVED' | 'REJECTED' | 'NEEDS_EDIT' | 'ARCHIVED' | null;
+};
+
+const moderationStatusLabelRuMap: Record<string, string> = {
+  DRAFT: 'Черновик',
+  PENDING: 'На проверке',
+  APPROVED: 'Одобрен',
+  REJECTED: 'Отклонён',
+  NEEDS_EDIT: 'Нужна доработка',
+  ARCHIVED: 'В архиве'
 };
 
 const withLeadingSlash = (value: string) => (value.startsWith('/') ? value : `/${value}`);
@@ -116,6 +126,7 @@ export const normalizeProductDto = <T extends ProductLike>(product: T) => {
 
   return {
     ...product,
+    moderationStatusLabelRu: product.moderationStatus ? (moderationStatusLabelRuMap[product.moderationStatus] ?? product.moderationStatus) : null,
     media: dedupedMedia,
     images: normalizedImages,
     image: primaryMedia?.type === 'IMAGE' ? primaryMedia.url : primaryImage,

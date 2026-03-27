@@ -118,7 +118,7 @@ exports.sellerProductCreateSchema = zod_1.z.object({
     dzCm: zod_1.z.number().int().positive().optional(),
     variants: zod_1.z
         .array(zod_1.z.object({
-        sku: zod_1.z.string().min(3),
+        sku: zod_1.z.string().min(3).optional(),
         price: zod_1.z.number().int().positive().optional(),
         color: zod_1.z.string().min(2).optional(),
         variantLabel: zod_1.z.string().min(1).max(120).optional(),
@@ -157,7 +157,32 @@ const reviewListSchema = zod_1.z.object({
 const summaryQuerySchema = zod_1.z.object({
     productIds: zod_1.z.string().optional()
 });
-exports.productRoutes.get('/:id/reviews', rateLimiters_1.publicReadLimiter, async (req, res, next) => {
+const reactionSchema = zod_1.z
+    .object({
+    type: zod_1.z.enum(['LIKE', 'DISLIKE']).optional(),
+    reaction: zod_1.z.enum(['LIKE', 'DISLIKE']).optional()
+})
+    .superRefine((payload, ctx) => {
+    if (!payload.type && !payload.reaction) {
+        ctx.addIssue({
+            code: zod_1.z.ZodIssueCode.custom,
+            path: ['reaction'],
+            message: 'REACTION_REQUIRED'
+        });
+    }
+})
+    .transform((payload) => ({
+    type: payload.type ?? payload.reaction
+}));
+const replySchema = zod_1.z.object({
+    text: zod_1.z.string().trim().min(1).max(2000)
+});
+const reviewUpdateSchema = zod_1.z.object({
+    pros: zod_1.z.string().min(3).max(500).optional(),
+    cons: zod_1.z.string().min(3).max(500).optional(),
+    comment: zod_1.z.string().min(10).max(1000).optional()
+});
+exports.productRoutes.get('/:id/reviews', rateLimiters_1.publicReadLimiter, authMiddleware_1.authenticateOptional, async (req, res, next) => {
     try {
         const params = reviewListSchema.parse(req.query);
         const productIds = params.productIds
@@ -166,12 +191,31 @@ exports.productRoutes.get('/:id/reviews', rateLimiters_1.publicReadLimiter, asyn
                 .map((value) => value.trim())
                 .filter(Boolean)
             : [req.params.id];
-        const reviews = await reviewService_1.reviewService.listByProducts(productIds, params.page, params.limit, params.sort);
+        const reviews = await reviewService_1.reviewService.listByProducts(productIds, params.page, params.limit, params.sort, {
+            currentUserId: req.user?.userId,
+            isAdmin: req.user?.role === 'ADMIN'
+        });
         const total = await reviewService_1.reviewService.countByProducts(productIds);
         res.json({ data: reviews, meta: { total } });
     }
     catch (error) {
         next(error);
+    }
+});
+exports.productRoutes.get('/:id/seller-summary', rateLimiters_1.publicReadLimiter, async (req, res, next) => {
+    try {
+        const product = await productUseCases_1.productUseCases.get(req.params.id);
+        if (!product) {
+            return res.status(404).json({ error: { code: 'PRODUCT_NOT_FOUND', message: 'Товар не найден.' } });
+        }
+        const seller = await reviewService_1.reviewService.getSellerSummaryByProductId(req.params.id);
+        if (!seller) {
+            return res.json({ data: { productId: req.params.id, seller: null } });
+        }
+        return res.json({ data: { productId: req.params.id, seller } });
+    }
+    catch (error) {
+        return next(error);
     }
 });
 exports.productRoutes.post('/:id/reviews', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
@@ -207,4 +251,122 @@ exports.productRoutes.get('/:id/reviews/summary', rateLimiters_1.publicReadLimit
     catch (error) {
         next(error);
     }
+});
+const setReviewReactionByProductRoute = async (req, res, next) => {
+    try {
+        const payload = reactionSchema.parse(req.body);
+        const reaction = await reviewService_1.reviewService.setReaction(req.params.reviewId, req.user.userId, payload.type, req.params.id);
+        res.json({ data: reaction });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+const setReviewReactionStandaloneRoute = async (req, res, next) => {
+    try {
+        const payload = reactionSchema.parse(req.body);
+        const reaction = await reviewService_1.reviewService.setReaction(req.params.reviewId, req.user.userId, payload.type);
+        res.json({ data: reaction });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+const removeReviewReactionByProductRoute = async (req, res, next) => {
+    try {
+        const reaction = await reviewService_1.reviewService.removeReaction(req.params.reviewId, req.user.userId, req.params.id);
+        res.json({ data: reaction });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+const removeReviewReactionStandaloneRoute = async (req, res, next) => {
+    try {
+        const reaction = await reviewService_1.reviewService.removeReaction(req.params.reviewId, req.user.userId);
+        res.json({ data: reaction });
+    }
+    catch (error) {
+        next(error);
+    }
+};
+exports.productRoutes.patch('/:id/reviews/:reviewId/reaction', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, setReviewReactionByProductRoute);
+exports.productRoutes.put('/:id/reviews/:reviewId/reaction', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, setReviewReactionByProductRoute);
+exports.productRoutes.patch('/reviews/:reviewId/reaction', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, setReviewReactionStandaloneRoute);
+exports.productRoutes.put('/reviews/:reviewId/reaction', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, setReviewReactionStandaloneRoute);
+exports.productRoutes.delete('/:id/reviews/:reviewId/reaction', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, removeReviewReactionByProductRoute);
+exports.productRoutes.delete('/reviews/:reviewId/reaction', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, removeReviewReactionStandaloneRoute);
+exports.productRoutes.post('/:id/reviews/:reviewId/replies', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
+    try {
+        const payload = replySchema.parse(req.body);
+        const reply = await reviewService_1.reviewService.addReply(req.params.reviewId, req.user.userId, payload.text, req.params.id);
+        res.status(201).json({ data: reply });
+    }
+    catch (error) {
+        next(error);
+    }
+});
+exports.productRoutes.post('/reviews/:reviewId/replies', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
+    try {
+        const payload = replySchema.parse(req.body);
+        const reply = await reviewService_1.reviewService.addReply(req.params.reviewId, req.user.userId, payload.text);
+        res.status(201).json({ data: reply });
+    }
+    catch (error) {
+        next(error);
+    }
+});
+exports.productRoutes.patch('/reviews/:reviewId', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
+    try {
+        const payload = reviewUpdateSchema.parse(req.body);
+        const updated = await reviewService_1.reviewService.updateReview(req.params.reviewId, req.user.userId, payload, req.user.role === 'ADMIN');
+        return res.json({ ok: true, data: updated });
+    }
+    catch (error) {
+        return next(error);
+    }
+});
+exports.productRoutes.delete('/reviews/:reviewId', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
+    try {
+        const result = await reviewService_1.reviewService.deleteReview(req.params.reviewId, req.user.userId, req.user.role === 'ADMIN');
+        return res.json({ ok: true, data: result });
+    }
+    catch (error) {
+        return next(error);
+    }
+});
+exports.productRoutes.patch('/review-replies/:replyId', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
+    try {
+        const payload = replySchema.parse(req.body);
+        const updated = await reviewService_1.reviewService.updateReply(req.params.replyId, req.user.userId, payload.text, req.user.role === 'ADMIN');
+        return res.json({ ok: true, data: updated });
+    }
+    catch (error) {
+        return next(error);
+    }
+});
+exports.productRoutes.delete('/review-replies/:replyId', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
+    try {
+        const result = await reviewService_1.reviewService.deleteReply(req.params.replyId, req.user.userId, req.user.role === 'ADMIN');
+        return res.json({ ok: true, data: result });
+    }
+    catch (error) {
+        return next(error);
+    }
+});
+exports.productRoutes.all('/:id/reviews*', (_req, res) => {
+    return res.status(404).json({
+        error: {
+            code: 'ROUTE_NOT_FOUND',
+            message: 'ROUTE_NOT_FOUND'
+        }
+    });
+});
+exports.productRoutes.all('/reviews*', (_req, res) => {
+    return res.status(404).json({
+        error: {
+            code: 'ROUTE_NOT_FOUND',
+            message: 'ROUTE_NOT_FOUND'
+        }
+    });
 });

@@ -2,12 +2,13 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.orderRepository = void 0;
 const prisma_1 = require("../lib/prisma");
+const orderPayment_1 = require("../utils/orderPayment");
 exports.orderRepository = {
     create: (data) => prisma_1.prisma.$transaction(async (tx) => {
         const productIds = data.items.map((item) => item.productId);
         const variantIds = data.items.map((item) => item.variantId).filter(Boolean);
         const products = await tx.product.findMany({
-            where: { id: { in: productIds } }
+            where: { id: { in: productIds }, deletedAt: null, moderationStatus: 'APPROVED' }
         });
         const variants = variantIds.length
             ? await tx.productVariant.findMany({ where: { id: { in: variantIds } } })
@@ -66,6 +67,9 @@ exports.orderRepository = {
                 packagesCount: data.packagesCount ?? 1,
                 orderLabels: data.orderLabels ?? undefined,
                 total,
+                paymentStatus: 'PENDING_PAYMENT',
+                paymentExpiresAt: (0, orderPayment_1.nextPaymentExpiryDate)(),
+                expiredAt: null,
                 items: {
                     create: itemsWithPrice
                 }
@@ -89,6 +93,7 @@ exports.orderRepository = {
     findSellerOrders: (sellerId, options) => prisma_1.prisma.order.findMany({
         where: {
             items: { some: { product: { sellerId } } },
+            NOT: [{ paymentStatus: 'PAYMENT_EXPIRED' }],
             ...(options?.status ? { status: options.status } : {})
         },
         include: {

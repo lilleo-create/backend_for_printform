@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.productRepository = void 0;
 const prisma_1 = require("../lib/prisma");
+const productDto_1 = require("../utils/productDto");
 const productInclude = {
     images: { orderBy: { sortOrder: 'asc' } },
     media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
@@ -56,23 +57,7 @@ const buildMediaRecords = (data) => {
     ];
 };
 const toProductView = (product) => {
-    const media = product.media ?? [];
-    const imageMedia = media.filter((item) => item.type === 'IMAGE');
-    const videoMedia = media.filter((item) => item.type === 'VIDEO');
-    const primaryMedia = media.find((item) => item.isPrimary) ?? media[0] ?? null;
-    return {
-        ...product,
-        media,
-        characteristics: product.specs ?? [],
-        specifications: product.specs ?? [],
-        primaryMedia,
-        image: primaryMedia?.type === 'IMAGE' ? primaryMedia.url : imageMedia[0]?.url ?? product.image,
-        imageUrls: imageMedia.map((item) => item.url),
-        videoUrls: videoMedia.length ? videoMedia.map((item) => item.url) : (product.videoUrls ?? []),
-        images: product.images && product.images.length > 0
-            ? product.images
-            : imageMedia.map((item) => ({ url: item.url, sortOrder: item.sortOrder }))
-    };
+    return (0, productDto_1.normalizeProductDto)(product);
 };
 const resolveSpecificationsInput = (data) => {
     if (data.specifications !== undefined)
@@ -134,38 +119,55 @@ const toVariantCardView = (product) => {
         videoUrls: productView.videoUrls
     };
 };
-const attachVariantGroup = async (product) => {
-    if (!product.variantGroupId) {
+const variantSwitcherSelect = {
+    id: true,
+    sku: true,
+    price: true,
+    currency: true,
+    color: true,
+    variantLabel: true,
+    variantSize: true,
+    variantAttributes: true,
+    image: true,
+    media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] }
+};
+const resolveVariantGroupIdForProduct = async (product) => {
+    if (product.variantGroupId) {
+        return product.variantGroupId;
+    }
+    if (!product.parentProductId) {
+        return null;
+    }
+    const parent = await prisma_1.prisma.product.findUnique({
+        where: { id: product.parentProductId },
+        select: { id: true, variantGroupId: true }
+    });
+    return parent?.variantGroupId ?? parent?.id ?? null;
+};
+const getVariantSwitcherItems = async (product, moderationStatus = 'APPROVED') => {
+    const variantGroupId = await resolveVariantGroupIdForProduct(product);
+    if (!variantGroupId) {
         return {
-            ...toProductView(product),
             variantGroup: null,
             variants: []
         };
     }
     const variants = await prisma_1.prisma.product.findMany({
-        where: { variantGroupId: product.variantGroupId, moderationStatus: 'APPROVED' },
+        where: {
+            variantGroupId,
+            deletedAt: null,
+            ...(moderationStatus ? { moderationStatus } : {})
+        },
         orderBy: [{ createdAt: 'asc' }],
-        select: {
-            id: true,
-            sku: true,
-            price: true,
-            currency: true,
-            color: true,
-            variantLabel: true,
-            variantSize: true,
-            variantAttributes: true,
-            image: true,
-            media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] }
-        }
+        select: variantSwitcherSelect
     });
     return {
-        ...toProductView(product),
         variantGroup: {
-            id: product.variantGroupId,
+            id: variantGroupId,
             total: variants.length,
             activeVariantId: product.id
         },
-        variants: variants.map(toVariantCardView)
+        variants: variants.map((item) => toVariantCardView(item))
     };
 };
 const ensureUniqueSkus = (baseSku, variants = []) => {
@@ -178,6 +180,11 @@ const ensureUniqueSkus = (baseSku, variants = []) => {
         skuSet.add(sku);
     }
 };
+const buildSkuFallback = () => `SKU-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+const stripClientOnlyProductFields = (data) => {
+    const { imageUrls: _imageUrls, videoUrls: _videoUrls, media: _media, characteristics: _characteristics, specifications: _specifications, ...productData } = data;
+    return productData;
+};
 exports.productRepository = {
     findMany: async (filters) => {
         const sortField = filters.sort === 'rating' ? 'ratingAvg' : filters.sort === 'price' ? 'price' : 'createdAt';
@@ -188,6 +195,8 @@ exports.productRepository = {
         const products = await prisma_1.prisma.product.findMany({
             where: {
                 sellerId: filters.shopId,
+                parentProductId: null,
+                deletedAt: null,
                 title: filters.query
                     ? {
                         contains: filters.query,
@@ -204,60 +213,69 @@ exports.productRepository = {
             },
             include: {
                 images: { orderBy: { sortOrder: 'asc' } },
-                media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] }
+                media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
+                specs: { orderBy: { sortOrder: 'asc' } }
             },
             orderBy,
             take: limit,
             skip
         });
-        return products.map(toProductView);
+        const productViews = products.map(toProductView);
+        const productIds = productViews.map((item) => item.id);
+        const groupIds = productViews
+            .map((item) => item.variantGroupId)
+            .filter((groupId) => Boolean(groupId));
+        const variantStatsRows = groupIds.length
+            ? await prisma_1.prisma.product.groupBy({
+                by: ['variantGroupId'],
+                where: {
+                    variantGroupId: { in: groupIds },
+                    moderationStatus: 'APPROVED',
+                    deletedAt: null
+                },
+                _count: { id: true },
+                _min: { price: true },
+                _max: { price: true }
+            })
+            : [];
+        const variantStats = new Map(variantStatsRows.map((row) => [
+            row.variantGroupId,
+            {
+                total: row._count.id,
+                minPrice: row._min.price,
+                maxPrice: row._max.price
+            }
+        ]));
+        return productViews.map((product) => {
+            if (!product.variantGroupId) {
+                return { ...product, variantSummary: null };
+            }
+            const summary = variantStats.get(product.variantGroupId);
+            return {
+                ...product,
+                variantSummary: summary
+                    ? {
+                        groupId: product.variantGroupId,
+                        total: summary.total,
+                        minPrice: summary.minPrice,
+                        maxPrice: summary.maxPrice
+                    }
+                    : null
+            };
+        });
     },
     findById: async (id) => {
         const product = await prisma_1.prisma.product.findFirst({
-            where: { id, moderationStatus: 'APPROVED' },
+            where: { id, moderationStatus: 'APPROVED', deletedAt: null },
             include: productInclude
         });
         if (!product) {
             return null;
         }
-        const parentProduct = product.parentProductId
-            ? await prisma_1.prisma.product.findFirst({
-                where: { id: product.parentProductId, moderationStatus: 'APPROVED' },
-                select: { id: true, variantGroupId: true }
-            })
-            : null;
-        const hasVariantRelation = Boolean(product.variantGroupId || product.parentProductId || parentProduct?.id);
-        if (!hasVariantRelation) {
-            return toProductView(product);
-        }
-        const effectiveVariantGroupId = product.variantGroupId ?? parentProduct?.variantGroupId ?? parentProduct?.id ?? null;
-        const parentId = product.parentProductId ?? parentProduct?.id ?? null;
-        const relatedProducts = await prisma_1.prisma.product.findMany({
-            where: {
-                moderationStatus: 'APPROVED',
-                OR: [
-                    { id: product.id },
-                    ...(effectiveVariantGroupId ? [{ variantGroupId: effectiveVariantGroupId }] : []),
-                    ...(parentId ? [{ parentProductId: parentId }, { id: parentId }] : [])
-                ]
-            },
-            select: {
-                id: true,
-                title: true,
-                descriptionShort: true,
-                color: true,
-                image: true,
-                sku: true
-            }
-        });
-        const uniqueVariants = Array.from(new Map(relatedProducts.map((item) => [item.id, item])).values());
+        const variantData = await getVariantSwitcherItems(product);
         return {
             ...toProductView(product),
-            variantRelation: {
-                variantGroupId: effectiveVariantGroupId,
-                parentProductId: parentId
-            },
-            availableVariants: uniqueVariants.map(toVariantCard)
+            ...variantData
         };
     },
     create: async (data) => {
@@ -322,11 +340,13 @@ exports.productRepository = {
                     const variantPrimaryImage = variantMedia.find((item) => item.isPrimary && item.type === 'IMAGE')?.url ??
                         variantImageUrls[0] ??
                         variant.image;
+                    const variantData = stripClientOnlyProductFields(variant);
                     await tx.product.create({
                         data: {
-                            ...variant,
+                            ...variantData,
                             sellerId: data.sellerId,
                             variantGroupId: mainProduct.id,
+                            parentProductId: mainProduct.id,
                             image: variantPrimaryImage,
                             videoUrls: variantMedia.filter((item) => item.type === 'VIDEO').map((item) => item.url),
                             moderationStatus: 'PENDING',
@@ -359,7 +379,8 @@ exports.productRepository = {
                     where: { id: mainProduct.id },
                     include: {
                         images: { orderBy: { sortOrder: 'asc' } },
-                        media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] }
+                        media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
+                        specs: { orderBy: { sortOrder: 'asc' } }
                     }
                 });
             });
@@ -415,7 +436,8 @@ exports.productRepository = {
             },
             include: {
                 images: { orderBy: { sortOrder: 'asc' } },
-                media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] }
+                media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
+                specs: { orderBy: { sortOrder: 'asc' } }
             }
         });
         return toProductView(product);
@@ -483,7 +505,7 @@ exports.productRepository = {
             where: { id },
             include: sellerProductEditInclude
         });
-        if (!product) {
+        if (!product || product.deletedAt) {
             return { code: 'NOT_FOUND', data: null };
         }
         if (product.sellerId !== sellerId) {
@@ -493,7 +515,8 @@ exports.productRepository = {
         const variantProducts = await prisma_1.prisma.product.findMany({
             where: {
                 variantGroupId,
-                sellerId
+                sellerId,
+                deletedAt: null
             },
             include: {
                 media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
@@ -525,33 +548,116 @@ exports.productRepository = {
     listVariants: async (id) => {
         const baseProduct = await prisma_1.prisma.product.findUnique({
             where: { id },
-            select: { id: true, variantGroupId: true, moderationStatus: true }
+            select: { id: true, variantGroupId: true, parentProductId: true, moderationStatus: true, deletedAt: true }
         });
-        if (!baseProduct || baseProduct.moderationStatus !== 'APPROVED') {
+        if (!baseProduct || baseProduct.moderationStatus !== 'APPROVED' || baseProduct.deletedAt) {
             return null;
         }
-        if (!baseProduct.variantGroupId) {
-            return [];
-        }
-        const variants = await prisma_1.prisma.product.findMany({
-            where: {
-                variantGroupId: baseProduct.variantGroupId,
-                moderationStatus: 'APPROVED'
-            },
-            orderBy: [{ createdAt: 'asc' }],
-            select: {
-                id: true,
-                sku: true,
-                price: true,
-                currency: true,
-                color: true,
-                variantLabel: true,
-                variantSize: true,
-                variantAttributes: true,
-                image: true,
-                media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] }
-            }
+        const variantData = await getVariantSwitcherItems(baseProduct);
+        return variantData.variants;
+    },
+    findSellerProductWithVariants: async (id, sellerId) => {
+        const product = await prisma_1.prisma.product.findFirst({
+            where: { id, sellerId, deletedAt: null },
+            include: productInclude
         });
-        return variants.map(toVariantCardView);
+        if (!product) {
+            return null;
+        }
+        const variantData = await getVariantSwitcherItems(product, null);
+        return {
+            ...toProductView(product),
+            ...variantData
+        };
+    },
+    createVariant: async (masterProductId, sellerId, data) => {
+        const masterProduct = await prisma_1.prisma.product.findFirst({
+            where: { id: masterProductId, sellerId },
+            select: { id: true, sellerId: true, variantGroupId: true }
+        });
+        if (!masterProduct) {
+            return null;
+        }
+        const groupId = masterProduct.variantGroupId ?? masterProduct.id;
+        if (!masterProduct.variantGroupId) {
+            await prisma_1.prisma.product.update({
+                where: { id: masterProduct.id },
+                data: { variantGroupId: groupId }
+            });
+        }
+        const mediaRecords = buildMediaRecords(data);
+        const imageUrls = mediaRecords.filter((item) => item.type === 'IMAGE').map((item) => item.url);
+        const primaryImage = mediaRecords.find((item) => item.isPrimary && item.type === 'IMAGE')?.url ?? imageUrls[0] ?? data.image;
+        const productData = stripClientOnlyProductFields(data);
+        const created = await prisma_1.prisma.product.create({
+            data: {
+                ...productData,
+                sku: data.sku ?? buildSkuFallback(),
+                sellerId,
+                variantGroupId: groupId,
+                parentProductId: masterProduct.id,
+                image: primaryImage,
+                videoUrls: mediaRecords.filter((item) => item.type === 'VIDEO').map((item) => item.url),
+                moderationStatus: 'PENDING',
+                moderationNotes: null,
+                moderatedAt: null,
+                moderatedById: null,
+                publishedAt: null,
+                images: imageUrls.length
+                    ? {
+                        create: imageUrls.map((url, index) => ({
+                            url,
+                            sortOrder: index
+                        }))
+                    }
+                    : undefined,
+                media: mediaRecords.length
+                    ? {
+                        create: mediaRecords.map((item, index) => ({
+                            type: item.type,
+                            url: item.url,
+                            isPrimary: item.isPrimary ?? index === 0,
+                            sortOrder: item.sortOrder ?? index
+                        }))
+                    }
+                    : undefined
+            },
+            include: productInclude
+        });
+        return toProductView(created);
+    },
+    updateVariant: async (masterProductId, variantId, sellerId, data) => {
+        const masterProduct = await prisma_1.prisma.product.findFirst({
+            where: { id: masterProductId, sellerId },
+            select: { id: true, variantGroupId: true }
+        });
+        if (!masterProduct) {
+            return null;
+        }
+        const variant = await prisma_1.prisma.product.findFirst({
+            where: { id: variantId, sellerId, variantGroupId: masterProduct.variantGroupId ?? masterProduct.id }
+        });
+        if (!variant || variant.id === masterProduct.id) {
+            return null;
+        }
+        return exports.productRepository.update(variantId, data);
+    },
+    removeVariant: async (masterProductId, variantId, sellerId) => {
+        const masterProduct = await prisma_1.prisma.product.findFirst({
+            where: { id: masterProductId, sellerId },
+            select: { id: true, variantGroupId: true }
+        });
+        if (!masterProduct) {
+            return null;
+        }
+        const variant = await prisma_1.prisma.product.findFirst({
+            where: { id: variantId, sellerId, variantGroupId: masterProduct.variantGroupId ?? masterProduct.id },
+            select: { id: true }
+        });
+        if (!variant || variant.id === masterProduct.id) {
+            return null;
+        }
+        await prisma_1.prisma.product.delete({ where: { id: variant.id } });
+        return { id: variant.id };
     }
 };

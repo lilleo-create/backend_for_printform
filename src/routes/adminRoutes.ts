@@ -226,7 +226,7 @@ adminRoutes.get('/products', async (req, res, next) => {
   try {
     const status = productStatusSchema.parse(req.query.status ?? 'PENDING') as ProductModerationStatus;
     const products = await prisma.product.findMany({
-      where: { moderationStatus: status },
+      where: { moderationStatus: status, deletedAt: null },
       include: {
         seller: { select: { id: true, name: true, email: true } },
         images: { orderBy: { sortOrder: 'asc' } }
@@ -234,6 +234,22 @@ adminRoutes.get('/products', async (req, res, next) => {
       orderBy: { updatedAt: 'desc' }
     });
     res.json({ data: products });
+  } catch (error) {
+    next(error);
+  }
+});
+
+adminRoutes.delete('/products/:productId', writeLimiter, async (req, res, next) => {
+  try {
+    const product = await prisma.product.findUnique({ where: { id: req.params.productId }, select: { id: true } });
+    if (!product) {
+      return res.status(404).json({ error: { code: 'PRODUCT_NOT_FOUND', message: 'Товар не найден.' } });
+    }
+    await prisma.product.updateMany({
+      where: { OR: [{ id: req.params.productId }, { parentProductId: req.params.productId }] },
+      data: { deletedAt: new Date(), moderationStatus: 'ARCHIVED' }
+    });
+    return res.json({ ok: true, data: { id: req.params.productId, deleted: true } });
   } catch (error) {
     next(error);
   }

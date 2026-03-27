@@ -25,6 +25,7 @@ import { internalRoutes } from "./routes/internalRoutes";
 import { debugRoutes } from "./routes/debugRoutes";
 import { cdekRoutes } from "./routes/cdekRoutes";
 import { shipmentsRoutes } from "./routes/shipmentsRoutes";
+import { reviewCrudRoutes, reviewReplyCrudRoutes } from "./routes/reviewCrudRoutes";
 
 import { errorHandler } from "./middleware/errorHandler";
 import { globalLimiter } from "./middleware/rateLimiters";
@@ -165,6 +166,8 @@ const mountRoutes = (prefix = "") => {
   app.use(`${prefix}/admin`, adminRoutes);
   app.use(`${prefix}/admin/chats`, adminChatRoutes);
   app.use(`${prefix}/payments`, paymentRoutes);
+  app.use(`${prefix}/reviews`, reviewCrudRoutes);
+  app.use(`${prefix}/review-replies`, reviewReplyCrudRoutes);
   app.use(`${prefix}/favorites`, favoritesRoutes);
   app.use(`${prefix}/checkout`, checkoutRoutes);
   app.use(`${prefix}/internal`, internalRoutes);

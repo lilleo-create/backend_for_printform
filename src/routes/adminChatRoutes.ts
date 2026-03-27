@@ -38,7 +38,7 @@ adminChatRoutes.get('/', async (req, res, next) => {
       ];
     }
     const threads = await prisma.chatThread.findMany({
-      where,
+      where: { ...where, deletedAt: null },
       include: {
         user: { select: { id: true, name: true, email: true } },
         messages: { orderBy: { createdAt: 'desc' }, take: 1 },
@@ -77,6 +77,22 @@ adminChatRoutes.get('/', async (req, res, next) => {
   }
 });
 
+adminChatRoutes.delete('/:chatId', writeLimiter, async (req, res, next) => {
+  try {
+    const existing = await prisma.chatThread.findUnique({ where: { id: req.params.chatId }, select: { id: true } });
+    if (!existing) {
+      return res.status(404).json({ error: { code: 'CHAT_NOT_FOUND', message: 'Чат не найден.' } });
+    }
+    await prisma.chatThread.update({
+      where: { id: req.params.chatId },
+      data: { deletedAt: new Date(), status: 'CLOSED' }
+    });
+    return res.json({ ok: true, data: { id: req.params.chatId, deleted: true } });
+  } catch (error) {
+    next(error);
+  }
+});
+
 adminChatRoutes.get('/:id', async (req, res, next) => {
   try {
     const thread = await prisma.chatThread.findUnique({
@@ -97,7 +113,7 @@ adminChatRoutes.get('/:id', async (req, res, next) => {
         }
       }
     });
-    if (!thread) {
+    if (!thread || thread.deletedAt) {
       return res.status(404).json({ error: { code: 'CHAT_NOT_FOUND' } });
     }
     const messages = await prisma.chatMessage.findMany({

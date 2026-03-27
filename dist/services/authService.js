@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.authService = void 0;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
+const crypto_1 = __importDefault(require("crypto"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const env_1 = require("../config/env");
 const prisma_1 = require("../lib/prisma");
@@ -13,7 +14,7 @@ const createAccessToken = (payload) => {
     return jsonwebtoken_1.default.sign({ ...payload, scope: 'access' }, env_1.env.jwtSecret, { expiresIn: `${env_1.env.authAccessTokenTtlMinutes}m` });
 };
 const createRefreshToken = (payload) => {
-    return jsonwebtoken_1.default.sign(payload, env_1.env.jwtRefreshSecret, { expiresIn: `${env_1.env.authRefreshTokenTtlDays}d` });
+    return jsonwebtoken_1.default.sign({ ...payload, jti: crypto_1.default.randomUUID() }, env_1.env.jwtRefreshSecret, { expiresIn: `${env_1.env.authRefreshTokenTtlDays}d` });
 };
 const createOtpToken = (payload) => {
     return jsonwebtoken_1.default.sign(payload, env_1.env.jwtSecret, { expiresIn: '10m' });
@@ -23,7 +24,8 @@ exports.authService = {
         return {
             httpOnly: true,
             sameSite: env_1.env.authCookieSameSite,
-            secure: env_1.env.isProduction,
+            secure: env_1.env.authCookieSecure,
+            path: env_1.env.authCookiePath,
             maxAge: env_1.env.authRefreshTokenTtlDays * 24 * 60 * 60 * 1000,
             ...(env_1.env.authCookieDomain ? { domain: env_1.env.authCookieDomain } : {})
         };
@@ -51,6 +53,9 @@ exports.authService = {
     },
     issueLoginDeviceOtpToken(user) {
         return createOtpToken({ userId: user.id, scope: 'otp_login_device' });
+    },
+    issuePasswordResetOtpToken(user) {
+        return createOtpToken({ userId: user.id, scope: 'otp_password_reset' });
     },
     async startRegistration(nickname, fullName, email, password, role, phone, address) {
         const existingEmail = await userRepository_1.userRepository.findByEmail(email);
@@ -93,7 +98,7 @@ exports.authService = {
         return { user };
     },
     async login(login, password) {
-        const user = login.phone ? await userRepository_1.userRepository.findByPhone(login.phone) : login.email ? await userRepository_1.userRepository.findByEmail(login.email) : null;
+        const user = await userRepository_1.userRepository.findByPhone(login.phone);
         if (!user)
             throw new Error('INVALID_CREDENTIALS');
         const valid = await bcryptjs_1.default.compare(password, user.passwordHash);
@@ -102,8 +107,9 @@ exports.authService = {
         return { user };
     },
     async refresh(token) {
+        const now = new Date();
         const stored = await prisma_1.prisma.refreshToken.findUnique({ where: { token } });
-        if (!stored || stored.revokedAt || stored.expiresAt <= new Date())
+        if (!stored || stored.revokedAt || stored.expiresAt <= now)
             throw new Error('INVALID_REFRESH');
         let decoded;
         try {
@@ -116,7 +122,12 @@ exports.authService = {
         const user = await userRepository_1.userRepository.findById(decoded.userId);
         if (!user)
             throw new Error('INVALID_REFRESH');
-        await prisma_1.prisma.refreshToken.update({ where: { token }, data: { revokedAt: new Date(), lastUsedAt: new Date() } });
+        const revoked = await prisma_1.prisma.refreshToken.updateMany({
+            where: { token, revokedAt: null, expiresAt: { gt: now } },
+            data: { revokedAt: now, lastUsedAt: now }
+        });
+        if (revoked.count !== 1)
+            throw new Error('INVALID_REFRESH');
         const next = await this.issueTokens(user, stored.trustedDeviceId);
         return next;
     },

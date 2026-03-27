@@ -7,6 +7,8 @@ const authMiddleware_1 = require("../middleware/authMiddleware");
 const rateLimiters_1 = require("../middleware/rateLimiters");
 const prisma_1 = require("../lib/prisma");
 const orderUseCases_1 = require("../usecases/orderUseCases");
+const orderPayment_1 = require("../utils/orderPayment");
+const paymentFlowService_1 = require("../services/paymentFlowService");
 exports.orderRoutes = (0, express_1.Router)();
 const buyerPvzSelectionSchema = zod_1.z.object({
     provider: zod_1.z.string().optional(),
@@ -46,6 +48,7 @@ const createOrderSchema = zod_1.z.object({
 });
 exports.orderRoutes.post('/', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
     try {
+        await (0, orderPayment_1.expirePendingPayments)();
         const payload = createOrderSchema.parse(req.body);
         const { cdekPvzCode, cdekPvzAddress, deliveryMethod, cdekPvzRaw, cdekPvzCityCode } = payload;
         if (deliveryMethod === 'cdek_pvz' && !cdekPvzCode) {
@@ -58,7 +61,7 @@ exports.orderRoutes.post('/', authMiddleware_1.authenticate, rateLimiters_1.writ
         const productIds = payload.items.map((item) => item.productId);
         const uniqueProductIds = Array.from(new Set(productIds));
         const products = await prisma_1.prisma.product.findMany({
-            where: { id: { in: uniqueProductIds } },
+            where: { id: { in: uniqueProductIds }, deletedAt: null, moderationStatus: 'APPROVED' },
             select: { id: true, sellerId: true }
         });
         if (products.length !== uniqueProductIds.length) {
@@ -145,6 +148,15 @@ exports.orderRoutes.post('/:id/pay', authMiddleware_1.authenticate, rateLimiters
         return next(error);
     }
 });
+exports.orderRoutes.post('/:orderId/retry-payment', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
+    try {
+        const retried = await paymentFlowService_1.paymentFlowService.retryPayment(req.params.orderId, req.user.userId);
+        return res.json({ ok: true, data: retried });
+    }
+    catch (error) {
+        return next(error);
+    }
+});
 exports.orderRoutes.post('/:id/ready-for-shipment', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
     try {
         const order = await prisma_1.prisma.order.findFirst({
@@ -204,12 +216,23 @@ exports.orderRoutes.post('/:id/cancel', authMiddleware_1.authenticate, rateLimit
 });
 exports.orderRoutes.get('/me', authMiddleware_1.authenticate, async (req, res, next) => {
     try {
+        await (0, orderPayment_1.expirePendingPayments)();
         const orders = await prisma_1.prisma.order.findMany({
             where: { buyerId: req.user.userId },
             include: { items: { include: { product: true, variant: true } }, shipment: true, deliveryEvents: { orderBy: { createdAt: 'desc' } } },
             orderBy: { createdAt: 'desc' }
         });
-        res.json({ data: orders });
+        res.json({
+            data: orders.map((order) => {
+                const timing = (0, orderPayment_1.computePaymentTiming)(order);
+                return {
+                    ...order,
+                    ...timing,
+                    canRetryPayment: (0, orderPayment_1.canRetryPayment)(order),
+                    retryPaymentAvailable: (0, orderPayment_1.canRetryPayment)(order)
+                };
+            })
+        });
     }
     catch (error) {
         next(error);

@@ -193,6 +193,11 @@ const reactionSchema = z
 const replySchema = z.object({
   text: z.string().trim().min(1).max(2000)
 });
+const reviewUpdateSchema = z.object({
+  pros: z.string().min(3).max(500).optional(),
+  cons: z.string().min(3).max(500).optional(),
+  comment: z.string().min(10).max(1000).optional()
+});
 
 productRoutes.get('/:id/reviews', publicReadLimiter, authenticateOptional, async (req: AuthRequest, res, next) => {
   try {
@@ -204,12 +209,29 @@ productRoutes.get('/:id/reviews', publicReadLimiter, authenticateOptional, async
           .filter(Boolean)
       : [req.params.id];
     const reviews = await reviewService.listByProducts(productIds, params.page, params.limit, params.sort, {
-      currentUserId: req.user?.userId
+      currentUserId: req.user?.userId,
+      isAdmin: req.user?.role === 'ADMIN'
     });
     const total = await reviewService.countByProducts(productIds);
     res.json({ data: reviews, meta: { total } });
   } catch (error) {
     next(error);
+  }
+});
+
+productRoutes.get('/:id/seller-summary', publicReadLimiter, async (req, res, next) => {
+  try {
+    const product = await productUseCases.get(req.params.id);
+    if (!product) {
+      return res.status(404).json({ error: { code: 'PRODUCT_NOT_FOUND', message: 'Товар не найден.' } });
+    }
+    const seller = await reviewService.getSellerSummaryByProductId(req.params.id);
+    if (!seller) {
+      return res.json({ data: { productId: req.params.id, seller: null } });
+    }
+    return res.json({ data: { productId: req.params.id, seller } });
+  } catch (error) {
+    return next(error);
   }
 });
 
@@ -309,6 +331,44 @@ productRoutes.post('/reviews/:reviewId/replies', authenticate, writeLimiter, asy
     res.status(201).json({ data: reply });
   } catch (error) {
     next(error);
+  }
+});
+
+productRoutes.patch('/reviews/:reviewId', authenticate, writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const payload = reviewUpdateSchema.parse(req.body);
+    const updated = await reviewService.updateReview(req.params.reviewId, req.user!.userId, payload, req.user!.role === 'ADMIN');
+    return res.json({ ok: true, data: updated });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+productRoutes.delete('/reviews/:reviewId', authenticate, writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const result = await reviewService.deleteReview(req.params.reviewId, req.user!.userId, req.user!.role === 'ADMIN');
+    return res.json({ ok: true, data: result });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+productRoutes.patch('/review-replies/:replyId', authenticate, writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const payload = replySchema.parse(req.body);
+    const updated = await reviewService.updateReply(req.params.replyId, req.user!.userId, payload.text, req.user!.role === 'ADMIN');
+    return res.json({ ok: true, data: updated });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+productRoutes.delete('/review-replies/:replyId', authenticate, writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const result = await reviewService.deleteReply(req.params.replyId, req.user!.userId, req.user!.role === 'ADMIN');
+    return res.json({ ok: true, data: result });
+  } catch (error) {
+    return next(error);
   }
 });
 

@@ -4,6 +4,8 @@ import { authenticate, AuthRequest } from '../middleware/authMiddleware';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { prisma } from '../lib/prisma';
 import { orderUseCases } from '../usecases/orderUseCases';
+import { canRetryPayment, computePaymentTiming, expirePendingPayments } from '../utils/orderPayment';
+import { paymentFlowService } from '../services/paymentFlowService';
 
 export const orderRoutes = Router();
 
@@ -50,6 +52,7 @@ const createOrderSchema = z.object({
 
 orderRoutes.post('/', authenticate, writeLimiter, async (req: AuthRequest, res, next) => {
   try {
+    await expirePendingPayments();
     const payload = createOrderSchema.parse(req.body);
     const { cdekPvzCode, cdekPvzAddress, deliveryMethod, cdekPvzRaw, cdekPvzCityCode } = payload as {
       cdekPvzCode?: string;
@@ -71,7 +74,7 @@ orderRoutes.post('/', authenticate, writeLimiter, async (req: AuthRequest, res, 
     const productIds = payload.items.map((item) => item.productId);
     const uniqueProductIds = Array.from(new Set(productIds));
     const products = await prisma.product.findMany({
-      where: { id: { in: uniqueProductIds } },
+      where: { id: { in: uniqueProductIds }, deletedAt: null, moderationStatus: 'APPROVED' },
       select: { id: true, sellerId: true }
     });
 
@@ -165,6 +168,15 @@ orderRoutes.post('/:id/pay', authenticate, writeLimiter, async (req: AuthRequest
   }
 });
 
+orderRoutes.post('/:orderId/retry-payment', authenticate, writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const retried = await paymentFlowService.retryPayment(req.params.orderId, req.user!.userId);
+    return res.json({ ok: true, data: retried });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 orderRoutes.post('/:id/ready-for-shipment', authenticate, writeLimiter, async (req: AuthRequest, res, next) => {
   try {
     const order = await prisma.order.findFirst({
@@ -230,12 +242,23 @@ orderRoutes.post('/:id/cancel', authenticate, writeLimiter, async (req: AuthRequ
 
 orderRoutes.get('/me', authenticate, async (req: AuthRequest, res, next) => {
   try {
+    await expirePendingPayments();
     const orders = await prisma.order.findMany({
       where: { buyerId: req.user!.userId },
       include: { items: { include: { product: true, variant: true } }, shipment: true, deliveryEvents: { orderBy: { createdAt: 'desc' } } },
       orderBy: { createdAt: 'desc' }
     });
-    res.json({ data: orders });
+    res.json({
+      data: orders.map((order) => {
+        const timing = computePaymentTiming(order);
+        return {
+          ...order,
+          ...timing,
+          canRetryPayment: canRetryPayment(order),
+          retryPaymentAvailable: canRetryPayment(order)
+        };
+      })
+    });
   } catch (error) {
     next(error);
   }

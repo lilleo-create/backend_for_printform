@@ -29,6 +29,7 @@ const internalRoutes_1 = require("./routes/internalRoutes");
 const debugRoutes_1 = require("./routes/debugRoutes");
 const cdekRoutes_1 = require("./routes/cdekRoutes");
 const shipmentsRoutes_1 = require("./routes/shipmentsRoutes");
+const reviewCrudRoutes_1 = require("./routes/reviewCrudRoutes");
 const errorHandler_1 = require("./middleware/errorHandler");
 const rateLimiters_1 = require("./middleware/rateLimiters");
 const app = (0, express_1.default)();
@@ -131,6 +132,8 @@ const mountRoutes = (prefix = "") => {
     app.use(`${prefix}/admin`, adminRoutes_1.adminRoutes);
     app.use(`${prefix}/admin/chats`, adminChatRoutes_1.adminChatRoutes);
     app.use(`${prefix}/payments`, paymentRoutes_1.paymentRoutes);
+    app.use(`${prefix}/reviews`, reviewCrudRoutes_1.reviewCrudRoutes);
+    app.use(`${prefix}/review-replies`, reviewCrudRoutes_1.reviewReplyCrudRoutes);
     app.use(`${prefix}/favorites`, favoritesRoutes_1.favoritesRoutes);
     app.use(`${prefix}/checkout`, checkoutRoutes_1.checkoutRoutes);
     app.use(`${prefix}/internal`, internalRoutes_1.internalRoutes);
@@ -143,6 +146,14 @@ mountRoutes("/api");
 Legacy routes (старые без /api)
 */
 mountRoutes();
+app.use((req, res) => {
+    res.status(404).json({
+        error: {
+            code: 'ROUTE_NOT_FOUND',
+            message: `Route ${req.method} ${req.originalUrl} not found`
+        }
+    });
+});
 /*
 |--------------------------------------------------------------------------
 | ERRORS

@@ -268,6 +268,7 @@ const getVariantSwitcherItems = async (product: {
   const variants = await prisma.product.findMany({
     where: {
       variantGroupId,
+      deletedAt: null,
       ...(moderationStatus ? { moderationStatus } : {})
     },
     orderBy: [{ createdAt: 'asc' }],
@@ -331,6 +332,7 @@ export const productRepository = {
       where: {
         sellerId: filters.shopId,
         parentProductId: null,
+        deletedAt: null,
         title: filters.query
           ? {
               contains: filters.query,
@@ -366,7 +368,8 @@ export const productRepository = {
           by: ['variantGroupId'],
           where: {
             variantGroupId: { in: groupIds },
-            moderationStatus: 'APPROVED'
+            moderationStatus: 'APPROVED',
+            deletedAt: null
           },
           _count: { id: true },
           _min: { price: true },
@@ -405,7 +408,7 @@ export const productRepository = {
   },
   findById: async (id: string) => {
     const product = await prisma.product.findFirst({
-      where: { id, moderationStatus: 'APPROVED' },
+      where: { id, moderationStatus: 'APPROVED', deletedAt: null },
       include: productInclude
     });
 
@@ -683,7 +686,7 @@ export const productRepository = {
       include: sellerProductEditInclude
     });
 
-    if (!product) {
+    if (!product || product.deletedAt) {
       return { code: 'NOT_FOUND' as const, data: null };
     }
 
@@ -695,7 +698,8 @@ export const productRepository = {
     const variantProducts = await prisma.product.findMany({
       where: {
         variantGroupId,
-        sellerId
+        sellerId,
+        deletedAt: null
       },
       include: {
         media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
@@ -729,10 +733,10 @@ export const productRepository = {
   listVariants: async (id: string) => {
     const baseProduct = await prisma.product.findUnique({
       where: { id },
-      select: { id: true, variantGroupId: true, parentProductId: true, moderationStatus: true }
+      select: { id: true, variantGroupId: true, parentProductId: true, moderationStatus: true, deletedAt: true }
     });
 
-    if (!baseProduct || baseProduct.moderationStatus !== 'APPROVED') {
+    if (!baseProduct || baseProduct.moderationStatus !== 'APPROVED' || baseProduct.deletedAt) {
       return null;
     }
 
@@ -741,7 +745,7 @@ export const productRepository = {
   },
   findSellerProductWithVariants: async (id: string, sellerId: string) => {
     const product = await prisma.product.findFirst({
-      where: { id, sellerId },
+      where: { id, sellerId, deletedAt: null },
       include: productInclude
     });
     if (!product) {
