@@ -764,6 +764,12 @@ export const productRepository = {
     }
 
     const groupId = masterProduct.variantGroupId ?? masterProduct.id;
+    if (!masterProduct.variantGroupId) {
+      await prisma.product.update({
+        where: { id: masterProduct.id },
+        data: { variantGroupId: groupId }
+      });
+    }
     const mediaRecords = buildMediaRecords(data);
     const imageUrls = mediaRecords.filter((item) => item.type === 'IMAGE').map((item) => item.url);
     const primaryImage = mediaRecords.find((item) => item.isPrimary && item.type === 'IMAGE')?.url ?? imageUrls[0] ?? data.image;
