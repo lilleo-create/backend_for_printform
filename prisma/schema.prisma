@@ -601,6 +601,7 @@ model SellerDocument {
 model Payment {
   id          String        @id @default(cuid())
   orderId     String
+  externalId  String?       @unique
   provider    String
   status      PaymentStatus @default(PENDING)
   amount      Int

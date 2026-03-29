@@ -84,6 +84,9 @@ const plusofonWebhookPublicUrl = process.env.PLUSOFON_WEBHOOK_PUBLIC_URL ?? '';
 const plusofonWebhookSecret = process.env.PLUSOFON_WEBHOOK_SECRET ?? '';
 const plusofonRequestTimeoutMs = Number(process.env.PLUSOFON_REQUEST_TIMEOUT_MS ?? 10000);
 const plusofonVerificationExpiresSec = Number(process.env.PLUSOFON_VERIFICATION_EXPIRES_SEC ?? 300);
+const yookassaShopId = process.env.YOOKASSA_SHOP_ID ?? '';
+const yookassaSecretKey = process.env.YOOKASSA_SECRET_KEY ?? '';
+const yookassaReturnUrl = process.env.YOOKASSA_RETURN_URL ?? '';
 
 if (otpProvider === 'plusofon' && !plusofonFlashAccessToken && isProduction) {
   throw new Error('PLUSOFON_FLASH_ACCESS_TOKEN is required when OTP_PROVIDER=plusofon in production');
@@ -147,5 +150,8 @@ plusofonWebhookPublicUrl,
   turnstileSecretKey: process.env.TURNSTILE_SECRET_KEY ?? '',
   googleSheetsId: process.env.GOOGLE_SHEETS_ID ?? '',
   googleServiceAccountEmail: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL ?? '',
-  googlePrivateKey: process.env.GOOGLE_PRIVATE_KEY ?? ''
+  googlePrivateKey: process.env.GOOGLE_PRIVATE_KEY ?? '',
+  yookassaShopId,
+  yookassaSecretKey,
+  yookassaReturnUrl
 };

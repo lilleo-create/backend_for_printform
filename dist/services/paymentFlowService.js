@@ -5,7 +5,7 @@ const client_1 = require("@prisma/client");
 const prisma_1 = require("../lib/prisma");
 const orderUseCases_1 = require("../usecases/orderUseCases");
 const orderPayment_1 = require("../utils/orderPayment");
-const buildPaymentUrl = (paymentId) => `https://payment.local/checkout/${paymentId}`;
+const yookassaService_1 = require("./yookassaService");
 const asRecord = (value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value))
         return null;
@@ -152,7 +152,7 @@ exports.paymentFlowService = {
         }
         const existingPayment = await prisma_1.prisma.payment.findFirst({ where: { orderId: order.id }, orderBy: { createdAt: 'desc' } });
         if (existingPayment) {
-            const paymentUrl = String(existingPayment.payloadJson?.paymentUrl ?? buildPaymentUrl(existingPayment.id));
+            const paymentUrl = String(existingPayment.payloadJson?.paymentUrl ?? '');
             return {
                 orderId: order.id,
                 paymentId: existingPayment.id,
@@ -170,7 +170,7 @@ exports.paymentFlowService = {
             if (lockedOrder.paymentId) {
                 const lockedPayment = await tx.payment.findUnique({ where: { id: lockedOrder.paymentId } });
                 if (lockedPayment) {
-                    const paymentUrl = String(lockedPayment.payloadJson?.paymentUrl ?? buildPaymentUrl(lockedPayment.id));
+                    const paymentUrl = String(lockedPayment.payloadJson?.paymentUrl ?? '');
                     return {
                         orderId: lockedOrder.id,
                         paymentId: lockedPayment.id,
@@ -182,18 +182,24 @@ exports.paymentFlowService = {
                     };
                 }
             }
+            const yookassaPayment = await yookassaService_1.yookassaService.createPayment({
+                amount: lockedOrder.total,
+                currency: lockedOrder.currency,
+                orderId: lockedOrder.id,
+                description: `Оплата заказа ${lockedOrder.id}`
+            });
             const payment = await tx.payment.create({
                 data: {
                     orderId: lockedOrder.id,
-                    provider: 'manual',
+                    provider: 'yookassa',
+                    externalId: yookassaPayment.id,
                     status: 'PENDING',
                     amount: lockedOrder.total,
                     currency: lockedOrder.currency,
-                    payloadJson: { paymentUrl: '' }
+                    payloadJson: yookassaPayment.payload
                 }
             });
-            const paymentUrl = buildPaymentUrl(payment.id);
-            await tx.payment.update({ where: { id: payment.id }, data: { payloadJson: { paymentUrl } } });
+            const paymentUrl = yookassaPayment.confirmationUrl;
             const claimed = await tx.order.updateMany({
                 where: { id: lockedOrder.id, paymentId: null },
                 data: {
@@ -210,7 +216,7 @@ exports.paymentFlowService = {
                 if (existing?.paymentId) {
                     const existingPayment2 = await tx.payment.findUnique({ where: { id: existing.paymentId } });
                     if (existingPayment2) {
-                        const url = String(existingPayment2.payloadJson?.paymentUrl ?? buildPaymentUrl(existingPayment2.id));
+                        const url = String(existingPayment2.payloadJson?.paymentUrl ?? '');
                         return {
                             orderId: existing.id,
                             paymentId: existingPayment2.id,
@@ -245,18 +251,33 @@ exports.paymentFlowService = {
             if (order.paymentStatus !== 'PAYMENT_EXPIRED')
                 throw new Error('PAYMENT_RETRY_FORBIDDEN');
             const payment = await tx.payment.create({
+                // TODO: migrate to YooKassa Safe Deal (escrow)
+                // TODO: add seller payouts via YooKassa
+                // TODO: integrate OAuth seller accounts
                 data: {
                     orderId: order.id,
-                    provider: order.paymentProvider ?? 'manual',
+                    provider: 'yookassa',
                     status: 'PENDING',
                     amount: order.total,
                     currency: order.currency,
-                    payloadJson: { paymentUrl: '' }
+                    payloadJson: {}
                 }
             });
-            const paymentUrl = buildPaymentUrl(payment.id);
+            const yookassaPayment = await yookassaService_1.yookassaService.createPayment({
+                amount: order.total,
+                currency: order.currency,
+                orderId: order.id,
+                description: `Оплата заказа ${order.id}`
+            });
+            const paymentUrl = yookassaPayment.confirmationUrl;
             const paymentExpiresAt = (0, orderPayment_1.nextPaymentExpiryDate)();
-            await tx.payment.update({ where: { id: payment.id }, data: { payloadJson: { paymentUrl } } });
+            await tx.payment.update({
+                where: { id: payment.id },
+                data: {
+                    externalId: yookassaPayment.id,
+                    payloadJson: yookassaPayment.payload
+                }
+            });
             await tx.order.update({
                 where: { id: order.id },
                 data: {
@@ -271,19 +292,8 @@ exports.paymentFlowService = {
             return { orderId: order.id, paymentStatus: 'PENDING_PAYMENT', paymentExpiresAt, paymentUrl };
         });
     },
-    async mockSuccess(paymentId, buyerId) {
-        const payment = await prisma_1.prisma.payment.findUnique({
-            where: { id: paymentId },
-            include: { order: { select: { buyerId: true } } }
-        });
-        if (!payment)
-            return { ok: true };
-        if (payment.order.buyerId !== buyerId)
-            throw new Error('FORBIDDEN');
-        return this.processWebhook({ paymentId, status: 'success', provider: 'manual' });
-    },
     async processWebhook(input) {
-        const payment = await prisma_1.prisma.payment.findUnique({ where: { id: input.paymentId }, include: { order: true } });
+        const payment = await prisma_1.prisma.payment.findFirst({ where: { externalId: input.externalId }, include: { order: true } });
         if (!payment)
             return { ok: true };
         if (input.status === 'success') {
@@ -322,9 +332,9 @@ exports.paymentFlowService = {
             await tx.order.update({
                 where: { id: order.id },
                 data: {
-                    status: input.status === 'expired' ? 'EXPIRED' : 'CREATED',
-                    paymentStatus: input.status === 'expired' ? 'PAYMENT_EXPIRED' : 'CANCELLED',
-                    expiredAt: input.status === 'expired' ? new Date() : order.expiredAt
+                    status: 'EXPIRED',
+                    paymentStatus: 'PAYMENT_EXPIRED',
+                    expiredAt: new Date()
                 }
             });
         });
