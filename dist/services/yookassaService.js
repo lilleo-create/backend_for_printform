@@ -18,6 +18,9 @@ exports.yookassaService = {
     // TODO: add seller payouts via YooKassa
     // TODO: integrate OAuth seller accounts
     async createPayment(input) {
+        if (!env_1.env.yookassaShopId || !env_1.env.yookassaSecretKey || !env_1.env.yookassaReturnUrl) {
+            throw new Error('YOOKASSA_CONFIG_MISSING');
+        }
         const idempotenceKey = node_crypto_1.default.randomUUID();
         const body = {
             amount: {
@@ -34,14 +37,28 @@ exports.yookassaService = {
                 orderId: input.orderId
             }
         };
-        const response = await axios_1.default.post(YOOKASSA_API_URL, body, {
-            headers: {
-                Authorization: authHeader(),
-                'Content-Type': 'application/json',
-                'Idempotence-Key': idempotenceKey
-            },
-            timeout: 15000
-        });
+        let response;
+        try {
+            response = await axios_1.default.post(YOOKASSA_API_URL, body, {
+                headers: {
+                    Authorization: authHeader(),
+                    'Content-Type': 'application/json',
+                    'Idempotence-Key': idempotenceKey
+                },
+                timeout: 15000
+            });
+        }
+        catch (error) {
+            console.error('[YOOKASSA][createPayment][ERROR]', {
+                orderId: input.orderId,
+                idempotenceKey,
+                error,
+                stack: error instanceof Error ? error.stack : undefined
+            });
+            const mappedError = new Error('YOOKASSA_CREATE_FAILED');
+            mappedError.cause = error;
+            throw mappedError;
+        }
         console.info('[YOOKASSA][createPayment]', {
             orderId: input.orderId,
             paymentId: response.data.id,

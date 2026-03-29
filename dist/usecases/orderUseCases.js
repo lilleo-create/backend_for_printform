@@ -1,12 +1,42 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.orderUseCases = void 0;
+const client_1 = require("@prisma/client");
 const orderRepository_1 = require("../repositories/orderRepository");
 const userRepository_1 = require("../repositories/userRepository");
 const sheetsService_1 = require("../services/sheetsService");
 exports.orderUseCases = {
     create: async (data) => {
-        const order = await orderRepository_1.orderRepository.create(data);
+        let order;
+        try {
+            order = await orderRepository_1.orderRepository.create(data);
+        }
+        catch (error) {
+            console.error('[PAYMENT][ORDER_CREATE_ERROR]', {
+                buyerId: data.buyerId,
+                paymentAttemptKey: data.paymentAttemptKey ?? null,
+                error,
+                stack: error instanceof Error ? error.stack : undefined,
+                prismaCode: error instanceof client_1.Prisma.PrismaClientKnownRequestError ? error.code : undefined,
+                prismaMeta: error instanceof client_1.Prisma.PrismaClientKnownRequestError ? error.meta : undefined,
+                prismaValidation: error instanceof client_1.Prisma.PrismaClientValidationError ? error.message : undefined
+            });
+            if (error instanceof client_1.Prisma.PrismaClientKnownRequestError) {
+                if (error.code === 'P2002') {
+                    console.error('[PAYMENT][ORDER_CREATE_ERROR][P2002]', { meta: error.meta });
+                }
+                if (error.code === 'P2003') {
+                    console.error('[PAYMENT][ORDER_CREATE_ERROR][RELATION_CONSTRAINT]', { meta: error.meta });
+                }
+                if (error.code === 'P2011') {
+                    console.error('[PAYMENT][ORDER_CREATE_ERROR][NULL_CONSTRAINT]', { meta: error.meta });
+                }
+                if (error.code === 'P2009') {
+                    console.error('[PAYMENT][ORDER_CREATE_ERROR][INVALID_ENUM_OR_INPUT]', { meta: error.meta });
+                }
+            }
+            throw error;
+        }
         const buyer = await userRepository_1.userRepository.findById(data.buyerId);
         if (buyer) {
             await Promise.all(order.items.map(async (item) => {

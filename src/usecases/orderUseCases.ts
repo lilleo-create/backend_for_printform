@@ -1,4 +1,4 @@
-import { OrderStatus } from '@prisma/client';
+import { OrderStatus, Prisma } from '@prisma/client';
 import { orderRepository } from '../repositories/orderRepository';
 import { userRepository } from '../repositories/userRepository';
 import { sheetsService } from '../services/sheetsService';
@@ -16,7 +16,37 @@ export const orderUseCases = {
     orderLabels?: { packageNo: number; code: string }[];
     items: { productId: string; variantId?: string; quantity: number }[];
   }) => {
-    const order: any = await orderRepository.create(data);
+    let order: any;
+    try {
+      order = await orderRepository.create(data);
+    } catch (error) {
+      console.error('[PAYMENT][ORDER_CREATE_ERROR]', {
+        buyerId: data.buyerId,
+        paymentAttemptKey: data.paymentAttemptKey ?? null,
+        error,
+        stack: error instanceof Error ? error.stack : undefined,
+        prismaCode: error instanceof Prisma.PrismaClientKnownRequestError ? error.code : undefined,
+        prismaMeta: error instanceof Prisma.PrismaClientKnownRequestError ? error.meta : undefined,
+        prismaValidation: error instanceof Prisma.PrismaClientValidationError ? error.message : undefined
+      });
+
+      if (error instanceof Prisma.PrismaClientKnownRequestError) {
+        if (error.code === 'P2002') {
+          console.error('[PAYMENT][ORDER_CREATE_ERROR][P2002]', { meta: error.meta });
+        }
+        if (error.code === 'P2003') {
+          console.error('[PAYMENT][ORDER_CREATE_ERROR][RELATION_CONSTRAINT]', { meta: error.meta });
+        }
+        if (error.code === 'P2011') {
+          console.error('[PAYMENT][ORDER_CREATE_ERROR][NULL_CONSTRAINT]', { meta: error.meta });
+        }
+        if (error.code === 'P2009') {
+          console.error('[PAYMENT][ORDER_CREATE_ERROR][INVALID_ENUM_OR_INPUT]', { meta: error.meta });
+        }
+      }
+
+      throw error;
+    }
     const buyer = await userRepository.findById(data.buyerId);
 
     if (buyer) {

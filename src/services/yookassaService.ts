@@ -42,6 +42,10 @@ export const yookassaService = {
     status: string;
     payload: YooKassaPaymentResponse;
   }> {
+    if (!env.yookassaShopId || !env.yookassaSecretKey || !env.yookassaReturnUrl) {
+      throw new Error('YOOKASSA_CONFIG_MISSING');
+    }
+
     const idempotenceKey = crypto.randomUUID();
     const body = {
       amount: {
@@ -59,14 +63,27 @@ export const yookassaService = {
       }
     };
 
-    const response = await axios.post<YooKassaPaymentResponse>(YOOKASSA_API_URL, body, {
-      headers: {
-        Authorization: authHeader(),
-        'Content-Type': 'application/json',
-        'Idempotence-Key': idempotenceKey
-      },
-      timeout: 15000
-    });
+    let response;
+    try {
+      response = await axios.post<YooKassaPaymentResponse>(YOOKASSA_API_URL, body, {
+        headers: {
+          Authorization: authHeader(),
+          'Content-Type': 'application/json',
+          'Idempotence-Key': idempotenceKey
+        },
+        timeout: 15000
+      });
+    } catch (error) {
+      console.error('[YOOKASSA][createPayment][ERROR]', {
+        orderId: input.orderId,
+        idempotenceKey,
+        error,
+        stack: error instanceof Error ? error.stack : undefined
+      });
+      const mappedError = new Error('YOOKASSA_CREATE_FAILED') as Error & { cause?: unknown };
+      mappedError.cause = error;
+      throw mappedError;
+    }
 
     console.info('[YOOKASSA][createPayment]', {
       orderId: input.orderId,
