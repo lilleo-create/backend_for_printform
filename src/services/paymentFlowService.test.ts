@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import { paymentFlowService } from './paymentFlowService';
 import { prisma } from '../lib/prisma';
 import { orderUseCases } from '../usecases/orderUseCases';
+import { yookassaService } from './yookassaService';
 
 const inputBase = {
   buyerId: 'buyer-1',
@@ -15,6 +16,12 @@ const inputBase = {
 test('startPayment double-click with same paymentAttemptKey -> 1 order, 1 payment', async () => {
   let orderCreateCalls = 0;
   let paymentCreateCalls = 0;
+  (yookassaService.createPayment as any) = async () => ({
+    id: 'ext-pay-1',
+    confirmationUrl: 'https://yookassa.test/pay-1',
+    status: 'pending',
+    payload: { paymentUrl: 'https://yookassa.test/pay-1' }
+  });
 
   (prisma.order.findFirst as any) = async ({ where }: any) => {
     if (where.paymentAttemptKey === 'attempt-1' && orderCreateCalls > 0) {
@@ -49,7 +56,7 @@ test('startPayment double-click with same paymentAttemptKey -> 1 order, 1 paymen
   let paymentFindCalls = 0;
   (prisma.payment.findFirst as any) = async () => {
     paymentFindCalls += 1;
-    if (paymentFindCalls > 1) return { id: 'pay-1', payloadJson: { paymentUrl: 'https://payment.local/checkout/pay-1' } };
+    if (paymentFindCalls > 1) return { id: 'pay-1', payloadJson: { paymentUrl: 'https://yookassa.test/pay-1' } };
     return null;
   };
   (prisma.$transaction as any) = async (cb: any) =>
@@ -63,7 +70,7 @@ test('startPayment double-click with same paymentAttemptKey -> 1 order, 1 paymen
         findUnique: async () => null,
         create: async () => {
           paymentCreateCalls += 1;
-          return { id: 'pay-1', provider: 'manual' };
+          return { id: 'pay-1', provider: 'yookassa' };
         },
         update: async () => ({}),
         delete: async () => ({})
@@ -81,6 +88,12 @@ test('startPayment with different paymentAttemptKey creates new order', async ()
   let createdOrders = 0;
   (prisma.order.findFirst as any) = async () => null;
   (prisma.product.findMany as any) = async () => ([{ id: 'product-1', sellerId: 'seller-1' }]);
+  (yookassaService.createPayment as any) = async ({ orderId }: any) => ({
+    id: `ext-${orderId}`,
+    confirmationUrl: `https://yookassa.test/${orderId}`,
+    status: 'pending',
+    payload: { paymentUrl: `https://yookassa.test/${orderId}` }
+  });
   (prisma.sellerSettings.findUnique as any) = async () => ({ defaultDropoffPvzId: 'dropoff-1', defaultDropoffPvzMeta: {} });
   (prisma.sellerDeliveryProfile.findUnique as any) = async () => ({ dropoffStationId: '10022023854' });
   (orderUseCases.create as any) = async ({ paymentAttemptKey }: any) => {
@@ -97,7 +110,7 @@ test('startPayment with different paymentAttemptKey creates new order', async ()
       },
       payment: {
         findUnique: async () => null,
-        create: async ({ data }: any) => ({ id: `pay-${data.orderId}`, provider: 'manual' }),
+        create: async ({ data }: any) => ({ id: `pay-${data.orderId}`, provider: 'yookassa' }),
         update: async () => ({}),
         delete: async () => ({})
       }
@@ -111,7 +124,7 @@ test('startPayment with different paymentAttemptKey creates new order', async ()
 });
 
 test('webhook success makes order PAID and sets paidAt', async () => {
-  (prisma.payment.findUnique as any) = async () => ({ id: 'pay-1', provider: 'manual', orderId: 'order-1', order: { id: 'order-1' } });
+  (prisma.payment.findFirst as any) = async () => ({ id: 'pay-1', provider: 'yookassa', orderId: 'order-1', order: { id: 'order-1' } });
 
   let updatedOrderData: any = null;
   (prisma.$transaction as any) = async (cb: any) =>
@@ -127,7 +140,7 @@ test('webhook success makes order PAID and sets paidAt', async () => {
       payment: { update: async () => ({}) }
     });
 
-  await paymentFlowService.processWebhook({ paymentId: 'pay-1', status: 'success' });
+  await paymentFlowService.processWebhook({ externalId: 'ext-pay-1', status: 'success' });
   assert.equal(updatedOrderData.status, 'PAID');
   assert.ok(updatedOrderData.paidAt instanceof Date);
 });
@@ -136,6 +149,12 @@ test('webhook success makes order PAID and sets paidAt', async () => {
 test('startPayment allows checkout when seller dropoff config is missing without blocking flags', async () => {
   (prisma.order.findFirst as any) = async () => null;
   (prisma.product.findMany as any) = async () => ([{ id: 'product-1', sellerId: 'seller-1' }]);
+  (yookassaService.createPayment as any) = async ({ orderId }: any) => ({
+    id: `ext-${orderId}`,
+    confirmationUrl: `https://yookassa.test/${orderId}`,
+    status: 'pending',
+    payload: { paymentUrl: `https://yookassa.test/${orderId}` }
+  });
   (prisma.sellerSettings.findUnique as any) = async () => ({ defaultDropoffPvzId: null, defaultDropoffPvzMeta: null });
 
   let createdPayload: any = null;
@@ -169,7 +188,7 @@ test('startPayment allows checkout when seller dropoff config is missing without
       },
       payment: {
         findUnique: async () => null,
-        create: async ({ data }: any) => ({ id: `pay-${data.orderId}`, provider: 'manual' }),
+        create: async ({ data }: any) => ({ id: `pay-${data.orderId}`, provider: 'yookassa' }),
         update: async () => ({}),
         delete: async () => ({})
       }

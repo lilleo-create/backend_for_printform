@@ -33,10 +33,12 @@ const startSchema = z.object({
     .min(1)
 });
 
-const webhookSchema = z.object({
-  paymentId: z.string(),
-  status: z.enum(['success', 'failed', 'cancelled', 'expired']),
-  provider: z.string().optional()
+const yookassaWebhookSchema = z.object({
+  event: z.enum(['payment.succeeded', 'payment.canceled']),
+  object: z.object({
+    id: z.string(),
+    status: z.string().optional()
+  })
 });
 
 paymentRoutes.post('/start', authenticate, writeLimiter, async (req: AuthRequest, res, next) => {
@@ -60,29 +62,23 @@ paymentRoutes.post('/start', authenticate, writeLimiter, async (req: AuthRequest
   }
 });
 
-
-paymentRoutes.post('/:id/mock-success', authenticate, writeLimiter, async (req: AuthRequest, res, next) => {
+paymentRoutes.post('/yookassa/webhook', async (req, res, next) => {
   try {
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error('FORBIDDEN');
-    }
+    const payload = yookassaWebhookSchema.parse(req.body);
+    const mappedStatus = payload.event === 'payment.succeeded' ? 'success' : 'cancelled';
 
-    await paymentFlowService.mockSuccess(req.params.id, req.user!.userId);
-    return res.json({ data: { ok: true } });
-  } catch (error) {
-    return next(error);
-  }
-});
+    console.info('[YOOKASSA][webhook]', {
+      event: payload.event,
+      paymentId: payload.object.id,
+      status: payload.object.status ?? null
+    });
 
-paymentRoutes.post('/webhook', async (req, res, next) => {
-  try {
-    const signature = req.headers['x-signature'];
-    if (!signature) {
-      return res.status(400).json({ error: { code: 'SIGNATURE_REQUIRED' } });
-    }
-
-    const payload = webhookSchema.parse(req.body);
-    await paymentFlowService.processWebhook(payload);
+    await paymentFlowService.processWebhook({
+      externalId: payload.object.id,
+      status: mappedStatus,
+      provider: 'yookassa',
+      payload
+    });
 
     return res.json({ received: true });
   } catch (error) {

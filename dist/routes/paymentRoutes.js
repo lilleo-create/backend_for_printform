@@ -31,10 +31,12 @@ const startSchema = zod_1.z.object({
     }))
         .min(1)
 });
-const webhookSchema = zod_1.z.object({
-    paymentId: zod_1.z.string(),
-    status: zod_1.z.enum(['success', 'failed', 'cancelled', 'expired']),
-    provider: zod_1.z.string().optional()
+const yookassaWebhookSchema = zod_1.z.object({
+    event: zod_1.z.enum(['payment.succeeded', 'payment.canceled']),
+    object: zod_1.z.object({
+        id: zod_1.z.string(),
+        status: zod_1.z.string().optional()
+    })
 });
 exports.paymentRoutes.post('/start', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
     try {
@@ -56,26 +58,21 @@ exports.paymentRoutes.post('/start', authMiddleware_1.authenticate, rateLimiters
         return next(error);
     }
 });
-exports.paymentRoutes.post('/:id/mock-success', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
+exports.paymentRoutes.post('/yookassa/webhook', async (req, res, next) => {
     try {
-        if (process.env.NODE_ENV === 'production') {
-            throw new Error('FORBIDDEN');
-        }
-        await paymentFlowService_1.paymentFlowService.mockSuccess(req.params.id, req.user.userId);
-        return res.json({ data: { ok: true } });
-    }
-    catch (error) {
-        return next(error);
-    }
-});
-exports.paymentRoutes.post('/webhook', async (req, res, next) => {
-    try {
-        const signature = req.headers['x-signature'];
-        if (!signature) {
-            return res.status(400).json({ error: { code: 'SIGNATURE_REQUIRED' } });
-        }
-        const payload = webhookSchema.parse(req.body);
-        await paymentFlowService_1.paymentFlowService.processWebhook(payload);
+        const payload = yookassaWebhookSchema.parse(req.body);
+        const mappedStatus = payload.event === 'payment.succeeded' ? 'success' : 'cancelled';
+        console.info('[YOOKASSA][webhook]', {
+            event: payload.event,
+            paymentId: payload.object.id,
+            status: payload.object.status ?? null
+        });
+        await paymentFlowService_1.paymentFlowService.processWebhook({
+            externalId: payload.object.id,
+            status: mappedStatus,
+            provider: 'yookassa',
+            payload
+        });
         return res.json({ received: true });
     }
     catch (error) {
