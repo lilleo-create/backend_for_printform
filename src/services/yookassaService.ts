@@ -1,6 +1,7 @@
 import axios from 'axios';
 import crypto from 'node:crypto';
 import { env } from '../config/env';
+import { kopecksToRubles } from '../utils/money';
 
 type YooKassaAmount = {
   value: string;
@@ -19,8 +20,6 @@ type YooKassaPaymentResponse = {
 };
 
 const YOOKASSA_API_URL = 'https://api.yookassa.ru/v3/payments';
-
-const toRubles = (amount: number) => (amount / 100).toFixed(2);
 
 const authHeader = () => {
   const authToken = Buffer.from(`${env.yookassaShopId}:${env.yookassaSecretKey}`).toString('base64');
@@ -49,7 +48,7 @@ export const yookassaService = {
     const idempotenceKey = crypto.randomUUID();
     const body = {
       amount: {
-        value: toRubles(input.amount),
+        value: kopecksToRubles(input.amount),
         currency: input.currency
       },
       confirmation: {

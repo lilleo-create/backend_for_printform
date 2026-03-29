@@ -7,8 +7,8 @@ exports.yookassaService = void 0;
 const axios_1 = __importDefault(require("axios"));
 const node_crypto_1 = __importDefault(require("node:crypto"));
 const env_1 = require("../config/env");
+const money_1 = require("../utils/money");
 const YOOKASSA_API_URL = 'https://api.yookassa.ru/v3/payments';
-const toRubles = (amount) => (amount / 100).toFixed(2);
 const authHeader = () => {
     const authToken = Buffer.from(`${env_1.env.yookassaShopId}:${env_1.env.yookassaSecretKey}`).toString('base64');
     return `Basic ${authToken}`;
@@ -24,7 +24,7 @@ exports.yookassaService = {
         const idempotenceKey = node_crypto_1.default.randomUUID();
         const body = {
             amount: {
-                value: toRubles(input.amount),
+                value: (0, money_1.kopecksToRubles)(input.amount),
                 currency: input.currency
             },
             confirmation: {
