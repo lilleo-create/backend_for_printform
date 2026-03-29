@@ -150,7 +150,7 @@ export const sellerProductCreateSchema = z.object({
     .array(
       z.object({
         sku: z.string().min(3).optional(),
-        price: z.number().int().positive().optional(),
+        price: z.number().positive().optional(),
         color: z.string().min(2).optional(),
         variantLabel: z.string().min(1).max(120).optional(),
         variantSize: z.string().min(1).max(64).optional(),

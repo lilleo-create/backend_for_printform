@@ -298,7 +298,7 @@ const sellerMediaUrlSchema = zod_1.z.string().refine((value) => {
 });
 const sellerVariantMutationSchema = zod_1.z.object({
     sku: zod_1.z.string().min(3).optional(),
-    price: zod_1.z.number().int().positive().optional(),
+    price: zod_1.z.number().positive().optional(),
     color: zod_1.z.string().min(2).optional(),
     variantLabel: zod_1.z.string().min(1).max(120).optional(),
     variantSize: zod_1.z.string().min(1).max(64).optional(),
