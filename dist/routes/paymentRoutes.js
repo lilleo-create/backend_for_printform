@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.paymentRoutes = void 0;
 const express_1 = require("express");
+const client_1 = require("@prisma/client");
 const zod_1 = require("zod");
 const authMiddleware_1 = require("../middleware/authMiddleware");
 const rateLimiters_1 = require("../middleware/rateLimiters");
@@ -55,6 +56,33 @@ exports.paymentRoutes.post('/start', authMiddleware_1.authenticate, rateLimiters
         return res.status(200).json({ data });
     }
     catch (error) {
+        const message = error instanceof Error ? error.message : '';
+        const mappedStatus = message === 'PRODUCT_NOT_FOUND' ||
+            message === 'MULTI_SELLER_CHECKOUT_NOT_SUPPORTED' ||
+            message === 'SELLER_DROPOFF_PVZ_REQUIRED'
+            ? 400
+            : message === 'ORDER_CREATE_FAILED' || message === 'YOOKASSA_CONFIG_MISSING'
+                ? 500
+                : message === 'YOOKASSA_CREATE_FAILED'
+                    ? 502
+                    : null;
+        if (mappedStatus) {
+            return res.status(mappedStatus).json({
+                error: {
+                    code: message,
+                    message
+                }
+            });
+        }
+        console.error('[PAYMENT][ERROR]', {
+            route: 'POST /payments/start',
+            buyerId: req.user?.userId,
+            error,
+            message,
+            stack: error instanceof Error ? error.stack : undefined,
+            prismaCode: error instanceof client_1.Prisma.PrismaClientKnownRequestError ? error.code : undefined,
+            prismaMeta: error instanceof client_1.Prisma.PrismaClientKnownRequestError ? error.meta : undefined
+        });
         return next(error);
     }
 });

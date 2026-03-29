@@ -61,184 +61,252 @@ const buildOrderLabels = (orderId, packagesCount) => {
 };
 exports.paymentFlowService = {
     async startPayment(input) {
-        await (0, orderPayment_1.expirePendingPayments)();
-        const existingOrder = await prisma_1.prisma.order.findFirst({
-            where: { buyerId: input.buyerId, paymentAttemptKey: input.paymentAttemptKey }
-        });
-        let order = existingOrder;
-        const deliveryConfigMissing = false;
-        const blockingReason = null;
-        if (!order) {
-            const productIds = input.items.map((item) => item.productId);
-            const uniqueProductIds = Array.from(new Set(productIds));
-            const products = await prisma_1.prisma.product.findMany({
-                where: { id: { in: uniqueProductIds }, deletedAt: null, moderationStatus: 'APPROVED' },
-                select: { id: true, sellerId: true }
+        try {
+            await (0, orderPayment_1.expirePendingPayments)();
+            console.info('[PAYMENT][START]', {
+                buyerId: input.buyerId,
+                paymentAttemptKey: input.paymentAttemptKey
             });
-            if (products.length !== uniqueProductIds.length) {
-                throw new Error('PRODUCT_NOT_FOUND');
-            }
-            const sellerIds = Array.from(new Set(products.map((product) => product.sellerId)));
-            if (sellerIds.length !== 1) {
-                throw new Error('MULTI_SELLER_CHECKOUT_NOT_SUPPORTED');
-            }
-            const sellerSettings = await prisma_1.prisma.sellerSettings.findUnique({ where: { sellerId: sellerIds[0] } });
-            try {
-                const normalizedBuyerPickupPvz = normalizeBuyerPickupPvz(input.buyerPickupPvz);
-                const createdOrder = await orderUseCases_1.orderUseCases.create({
+            const existingOrder = await prisma_1.prisma.order.findFirst({
+                where: { buyerId: input.buyerId, paymentAttemptKey: input.paymentAttemptKey }
+            });
+            let order = existingOrder;
+            const deliveryConfigMissing = false;
+            const blockingReason = null;
+            if (!order) {
+                const productIds = input.items.map((item) => item.productId);
+                const uniqueProductIds = Array.from(new Set(productIds));
+                console.info('[PAYMENT][PRODUCT_IDS]', {
                     buyerId: input.buyerId,
                     paymentAttemptKey: input.paymentAttemptKey,
-                    buyerPickupPvz: normalizedBuyerPickupPvz,
-                    sellerDropoffPvz: sellerSettings?.defaultDropoffPvzId
-                        ? {
-                            provider: 'CDEK',
-                            pvzId: sellerSettings.defaultDropoffPvzId,
-                            raw: sellerSettings.defaultDropoffPvzMeta ?? {},
-                            addressFull: typeof sellerSettings.defaultDropoffPvzMeta === 'object' && sellerSettings.defaultDropoffPvzMeta
-                                ? String(sellerSettings.defaultDropoffPvzMeta.addressFull ?? '')
-                                : undefined
-                        }
-                        : undefined,
-                    recipient: {
-                        name: input.recipient.name,
-                        phone: input.recipient.phone,
-                        email: input.recipient.email ?? null
-                    },
-                    packagesCount: input.packagesCount ?? 1,
-                    orderLabels: [],
-                    items: input.items
+                    productIds,
+                    uniqueProductIds
                 });
-                order = createdOrder;
-                const labels = buildOrderLabels(createdOrder.id, createdOrder.packagesCount ?? input.packagesCount ?? 1);
-                order = await prisma_1.prisma.order.update({ where: { id: createdOrder.id }, data: { orderLabels: labels } });
-            }
-            catch (error) {
-                const isUniqueViolation = error instanceof client_1.Prisma.PrismaClientKnownRequestError &&
-                    error.code === 'P2002' &&
-                    Array.isArray(error.meta?.target) &&
-                    (error.meta?.target).includes('buyerId') &&
-                    (error.meta?.target).includes('paymentAttemptKey');
-                if (!isUniqueViolation)
-                    throw error;
-                order = await prisma_1.prisma.order.findFirst({
-                    where: { buyerId: input.buyerId, paymentAttemptKey: input.paymentAttemptKey }
+                const products = await prisma_1.prisma.product.findMany({
+                    where: { id: { in: uniqueProductIds }, deletedAt: null, moderationStatus: 'APPROVED' },
+                    select: { id: true, sellerId: true }
                 });
-            }
-        }
-        if (!order)
-            throw new Error('ORDER_CREATE_FAILED');
-        const normalizedBuyerPickupPvz = normalizeBuyerPickupPvz(input.buyerPickupPvz);
-        console.info('[PAYMENT][buyer_pvz]', {
-            buyerId: input.buyerId,
-            provider: normalizedBuyerPickupPvz.provider,
-            buyerPickupPvzId: input.buyerPickupPvz.pvzId,
-            buyerPickupPlatformStationId: normalizedBuyerPickupPvz.buyerPickupPlatformStationId ?? null,
-            buyerPickupOperatorStationId: normalizedBuyerPickupPvz.buyerPickupOperatorStationId ?? null,
-            addressFull: input.buyerPickupPvz.addressFull ?? null
-        });
-        const shouldRefreshLabels = !order.orderLabels || !Array.isArray(order.orderLabels) || order.orderLabels.length === 0;
-        const shouldUpdateRecipient = !order.recipientName || !order.recipientPhone;
-        if (shouldRefreshLabels || shouldUpdateRecipient) {
-            const labels = shouldRefreshLabels ? buildOrderLabels(order.id, order.packagesCount ?? input.packagesCount ?? 1) : order.orderLabels;
-            order = await prisma_1.prisma.order.update({
-                where: { id: order.id },
-                data: {
-                    orderLabels: labels,
-                    recipientName: shouldUpdateRecipient ? input.recipient.name : order.recipientName,
-                    recipientPhone: shouldUpdateRecipient ? input.recipient.phone : order.recipientPhone,
-                    recipientEmail: shouldUpdateRecipient ? input.recipient.email ?? null : order.recipientEmail
+                console.info('[PAYMENT][PRODUCTS_FOUND]', {
+                    buyerId: input.buyerId,
+                    paymentAttemptKey: input.paymentAttemptKey,
+                    products
+                });
+                if (products.length !== uniqueProductIds.length) {
+                    console.error('[PAYMENT][PRODUCTS_FOUND][MISMATCH]', {
+                        buyerId: input.buyerId,
+                        paymentAttemptKey: input.paymentAttemptKey,
+                        requestedProductIds: uniqueProductIds,
+                        foundProductIds: products.map((product) => product.id)
+                    });
+                    throw new Error('PRODUCT_NOT_FOUND');
                 }
-            });
-        }
-        const existingPayment = await prisma_1.prisma.payment.findFirst({ where: { orderId: order.id }, orderBy: { createdAt: 'desc' } });
-        if (existingPayment) {
-            const paymentUrl = String(existingPayment.payloadJson?.paymentUrl ?? '');
-            return {
-                orderId: order.id,
-                paymentId: existingPayment.id,
-                paymentUrl,
-                paymentStatus: order.paymentStatus,
-                paymentExpiresAt: order.paymentExpiresAt,
-                deliveryConfigMissing,
-                blockingReason
-            };
-        }
-        return prisma_1.prisma.$transaction(async (tx) => {
-            const lockedOrder = await tx.order.findUnique({ where: { id: order.id } });
-            if (!lockedOrder)
-                throw new Error('ORDER_NOT_FOUND');
-            if (lockedOrder.paymentId) {
-                const lockedPayment = await tx.payment.findUnique({ where: { id: lockedOrder.paymentId } });
-                if (lockedPayment) {
-                    const paymentUrl = String(lockedPayment.payloadJson?.paymentUrl ?? '');
-                    return {
-                        orderId: lockedOrder.id,
-                        paymentId: lockedPayment.id,
-                        paymentUrl,
-                        paymentStatus: lockedOrder.paymentStatus,
-                        paymentExpiresAt: lockedOrder.paymentExpiresAt,
-                        deliveryConfigMissing,
-                        blockingReason
+                const sellerIds = Array.from(new Set(products.map((product) => product.sellerId)));
+                if (sellerIds.length !== 1) {
+                    throw new Error('MULTI_SELLER_CHECKOUT_NOT_SUPPORTED');
+                }
+                const sellerSettings = await prisma_1.prisma.sellerSettings.findUnique({ where: { sellerId: sellerIds[0] } });
+                console.info('[PAYMENT][SELLER_SETTINGS]', {
+                    buyerId: input.buyerId,
+                    paymentAttemptKey: input.paymentAttemptKey,
+                    sellerIds,
+                    sellerSettingsPresent: Boolean(sellerSettings),
+                    defaultDropoffPvzIdPresent: Boolean(sellerSettings?.defaultDropoffPvzId),
+                    defaultDropoffPvzMetaPresent: Boolean(sellerSettings?.defaultDropoffPvzMeta)
+                });
+                try {
+                    const normalizedBuyerPickupPvz = normalizeBuyerPickupPvz(input.buyerPickupPvz);
+                    const orderCreateInput = {
+                        buyerId: input.buyerId,
+                        paymentAttemptKey: input.paymentAttemptKey,
+                        buyerPickupPvz: normalizedBuyerPickupPvz,
+                        sellerDropoffPvz: sellerSettings?.defaultDropoffPvzId
+                            ? {
+                                provider: 'CDEK',
+                                pvzId: sellerSettings.defaultDropoffPvzId,
+                                raw: sellerSettings.defaultDropoffPvzMeta ?? {},
+                                addressFull: typeof sellerSettings.defaultDropoffPvzMeta === 'object' && sellerSettings.defaultDropoffPvzMeta
+                                    ? String(sellerSettings.defaultDropoffPvzMeta.addressFull ?? '')
+                                    : undefined
+                            }
+                            : undefined,
+                        recipient: {
+                            name: input.recipient.name,
+                            phone: input.recipient.phone,
+                            email: input.recipient.email ?? null
+                        },
+                        packagesCount: input.packagesCount ?? 1,
+                        orderLabels: [],
+                        items: input.items
                     };
+                    console.info('[PAYMENT][ORDER_CREATE_INPUT]', {
+                        buyerId: input.buyerId,
+                        paymentAttemptKey: input.paymentAttemptKey,
+                        normalizedBuyerPickupPvz: orderCreateInput.buyerPickupPvz,
+                        sellerDropoffPvz: orderCreateInput.sellerDropoffPvz,
+                        items: orderCreateInput.items
+                    });
+                    const createdOrder = await orderUseCases_1.orderUseCases.create(orderCreateInput);
+                    console.info('[PAYMENT][ORDER_CREATE_INPUT][CREATED]', {
+                        buyerId: input.buyerId,
+                        paymentAttemptKey: input.paymentAttemptKey,
+                        orderId: createdOrder.id
+                    });
+                    order = createdOrder;
+                    const labels = buildOrderLabels(createdOrder.id, createdOrder.packagesCount ?? input.packagesCount ?? 1);
+                    order = await prisma_1.prisma.order.update({ where: { id: createdOrder.id }, data: { orderLabels: labels } });
+                }
+                catch (error) {
+                    console.error('[PAYMENT][ORDER_CREATE_ERROR]', {
+                        buyerId: input.buyerId,
+                        paymentAttemptKey: input.paymentAttemptKey,
+                        error,
+                        stack: error instanceof Error ? error.stack : undefined,
+                        prismaCode: error instanceof client_1.Prisma.PrismaClientKnownRequestError ? error.code : undefined,
+                        prismaMeta: error instanceof client_1.Prisma.PrismaClientKnownRequestError ? error.meta : undefined
+                    });
+                    const isUniqueViolation = error instanceof client_1.Prisma.PrismaClientKnownRequestError &&
+                        error.code === 'P2002' &&
+                        Array.isArray(error.meta?.target) &&
+                        (error.meta?.target).includes('buyerId') &&
+                        (error.meta?.target).includes('paymentAttemptKey');
+                    if (!isUniqueViolation)
+                        throw error;
+                    order = await prisma_1.prisma.order.findFirst({
+                        where: { buyerId: input.buyerId, paymentAttemptKey: input.paymentAttemptKey }
+                    });
                 }
             }
-            const yookassaPayment = await yookassaService_1.yookassaService.createPayment({
-                amount: lockedOrder.total,
-                currency: lockedOrder.currency,
-                orderId: lockedOrder.id,
-                description: `Оплата заказа ${lockedOrder.id}`
+            if (!order)
+                throw new Error('ORDER_CREATE_FAILED');
+            const normalizedBuyerPickupPvz = normalizeBuyerPickupPvz(input.buyerPickupPvz);
+            console.info('[PAYMENT][START]', {
+                buyerId: input.buyerId,
+                paymentAttemptKey: input.paymentAttemptKey,
+                orderId: order.id,
+                normalizedBuyerPickupPvz
             });
-            const payment = await tx.payment.create({
-                data: {
-                    orderId: lockedOrder.id,
-                    provider: 'yookassa',
-                    externalId: yookassaPayment.id,
-                    status: 'PENDING',
-                    amount: lockedOrder.total,
-                    currency: lockedOrder.currency,
-                    payloadJson: yookassaPayment.payload
-                }
-            });
-            const paymentUrl = yookassaPayment.confirmationUrl;
-            const claimed = await tx.order.updateMany({
-                where: { id: lockedOrder.id, paymentId: null },
-                data: {
-                    paymentId: payment.id,
-                    paymentProvider: payment.provider,
-                    paymentStatus: 'PENDING_PAYMENT',
-                    paymentExpiresAt: (0, orderPayment_1.nextPaymentExpiryDate)(),
-                    expiredAt: null
-                }
-            });
-            if (claimed.count === 0) {
-                await tx.payment.delete({ where: { id: payment.id } });
-                const existing = await tx.order.findUnique({ where: { id: lockedOrder.id } });
-                if (existing?.paymentId) {
-                    const existingPayment2 = await tx.payment.findUnique({ where: { id: existing.paymentId } });
-                    if (existingPayment2) {
-                        const url = String(existingPayment2.payloadJson?.paymentUrl ?? '');
+            const shouldRefreshLabels = !order.orderLabels || !Array.isArray(order.orderLabels) || order.orderLabels.length === 0;
+            const shouldUpdateRecipient = !order.recipientName || !order.recipientPhone;
+            if (shouldRefreshLabels || shouldUpdateRecipient) {
+                const labels = shouldRefreshLabels ? buildOrderLabels(order.id, order.packagesCount ?? input.packagesCount ?? 1) : order.orderLabels;
+                order = await prisma_1.prisma.order.update({
+                    where: { id: order.id },
+                    data: {
+                        orderLabels: labels,
+                        recipientName: shouldUpdateRecipient ? input.recipient.name : order.recipientName,
+                        recipientPhone: shouldUpdateRecipient ? input.recipient.phone : order.recipientPhone,
+                        recipientEmail: shouldUpdateRecipient ? input.recipient.email ?? null : order.recipientEmail
+                    }
+                });
+            }
+            const existingPayment = await prisma_1.prisma.payment.findFirst({ where: { orderId: order.id }, orderBy: { createdAt: 'desc' } });
+            if (existingPayment) {
+                const paymentUrl = String(existingPayment.payloadJson?.paymentUrl ?? '');
+                return {
+                    orderId: order.id,
+                    paymentId: existingPayment.id,
+                    paymentUrl,
+                    paymentStatus: order.paymentStatus,
+                    paymentExpiresAt: order.paymentExpiresAt,
+                    deliveryConfigMissing,
+                    blockingReason
+                };
+            }
+            return prisma_1.prisma.$transaction(async (tx) => {
+                const lockedOrder = await tx.order.findUnique({ where: { id: order.id } });
+                if (!lockedOrder)
+                    throw new Error('ORDER_NOT_FOUND');
+                if (lockedOrder.paymentId) {
+                    const lockedPayment = await tx.payment.findUnique({ where: { id: lockedOrder.paymentId } });
+                    if (lockedPayment) {
+                        const paymentUrl = String(lockedPayment.payloadJson?.paymentUrl ?? '');
                         return {
-                            orderId: existing.id,
-                            paymentId: existingPayment2.id,
-                            paymentUrl: url,
-                            paymentStatus: existing.paymentStatus,
-                            paymentExpiresAt: existing.paymentExpiresAt,
+                            orderId: lockedOrder.id,
+                            paymentId: lockedPayment.id,
+                            paymentUrl,
+                            paymentStatus: lockedOrder.paymentStatus,
+                            paymentExpiresAt: lockedOrder.paymentExpiresAt,
                             deliveryConfigMissing,
                             blockingReason
                         };
                     }
                 }
-            }
-            return {
-                orderId: lockedOrder.id,
-                paymentId: payment.id,
-                paymentUrl,
-                paymentStatus: 'PENDING_PAYMENT',
-                paymentExpiresAt: (0, orderPayment_1.nextPaymentExpiryDate)(),
-                deliveryConfigMissing,
-                blockingReason
-            };
-        });
+                console.info('[PAYMENT][YOOKASSA_CREATE_INPUT]', {
+                    buyerId: input.buyerId,
+                    paymentAttemptKey: input.paymentAttemptKey,
+                    orderId: lockedOrder.id,
+                    amount: lockedOrder.total,
+                    currency: lockedOrder.currency
+                });
+                const yookassaPayment = await yookassaService_1.yookassaService.createPayment({
+                    amount: lockedOrder.total,
+                    currency: lockedOrder.currency,
+                    orderId: lockedOrder.id,
+                    description: `Оплата заказа ${lockedOrder.id}`
+                });
+                const payment = await tx.payment.create({
+                    data: {
+                        orderId: lockedOrder.id,
+                        provider: 'yookassa',
+                        externalId: yookassaPayment.id,
+                        status: 'PENDING',
+                        amount: lockedOrder.total,
+                        currency: lockedOrder.currency,
+                        payloadJson: yookassaPayment.payload
+                    }
+                });
+                const paymentUrl = yookassaPayment.confirmationUrl;
+                const claimed = await tx.order.updateMany({
+                    where: { id: lockedOrder.id, paymentId: null },
+                    data: {
+                        paymentId: payment.id,
+                        paymentProvider: payment.provider,
+                        paymentStatus: 'PENDING_PAYMENT',
+                        paymentExpiresAt: (0, orderPayment_1.nextPaymentExpiryDate)(),
+                        expiredAt: null
+                    }
+                });
+                if (claimed.count === 0) {
+                    await tx.payment.delete({ where: { id: payment.id } });
+                    const existing = await tx.order.findUnique({ where: { id: lockedOrder.id } });
+                    if (existing?.paymentId) {
+                        const existingPayment2 = await tx.payment.findUnique({ where: { id: existing.paymentId } });
+                        if (existingPayment2) {
+                            const url = String(existingPayment2.payloadJson?.paymentUrl ?? '');
+                            return {
+                                orderId: existing.id,
+                                paymentId: existingPayment2.id,
+                                paymentUrl: url,
+                                paymentStatus: existing.paymentStatus,
+                                paymentExpiresAt: existing.paymentExpiresAt,
+                                deliveryConfigMissing,
+                                blockingReason
+                            };
+                        }
+                    }
+                }
+                return {
+                    orderId: lockedOrder.id,
+                    paymentId: payment.id,
+                    paymentUrl,
+                    paymentStatus: 'PENDING_PAYMENT',
+                    paymentExpiresAt: (0, orderPayment_1.nextPaymentExpiryDate)(),
+                    deliveryConfigMissing,
+                    blockingReason
+                };
+            });
+        }
+        catch (error) {
+            console.error('[PAYMENT][ERROR]', {
+                buyerId: input.buyerId,
+                paymentAttemptKey: input.paymentAttemptKey,
+                error,
+                stack: error instanceof Error ? error.stack : undefined,
+                prismaCode: error instanceof client_1.Prisma.PrismaClientKnownRequestError ? error.code : undefined,
+                prismaMeta: error instanceof client_1.Prisma.PrismaClientKnownRequestError ? error.meta : undefined
+            });
+            throw error;
+        }
     },
     async retryPayment(orderId, buyerId) {
         await (0, orderPayment_1.expirePendingPayments)();
