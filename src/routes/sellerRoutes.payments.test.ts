@@ -21,6 +21,7 @@ const accessToken = jwt.sign({ userId, role: 'SELLER', scope: 'access' }, env.jw
 
 const originalUserFindUnique = prisma.user.findUnique;
 const originalOrderFindMany = prisma.order.findMany;
+let lastOrderFindManyArgs: any = null;
 
 const installPrismaMocks = () => {
   (prisma.user.findUnique as unknown as (args: any) => Promise<any>) = async () => ({
@@ -28,9 +29,12 @@ const installPrismaMocks = () => {
     sellerProfile: { id: 'sp-1', status: 'APPROVED' }
   });
 
-  (prisma.order.findMany as unknown as (args: any) => Promise<any>) = async () => ([
+  (prisma.order.findMany as unknown as (args: any) => Promise<any>) = async (args: any) => {
+    lastOrderFindManyArgs = args;
+    return ([
     {
       id: 'order-awaiting',
+      publicNumber: 'PF-101',
       total: 12000,
       grossAmountKopecks: 12000,
       platformFeeKopecks: 2000,
@@ -51,6 +55,7 @@ const installPrismaMocks = () => {
     },
     {
       id: 'order-frozen',
+      publicNumber: 'PF-102',
       total: 6000,
       grossAmountKopecks: 6000,
       platformFeeKopecks: 1000,
@@ -66,6 +71,7 @@ const installPrismaMocks = () => {
     },
     {
       id: 'order-paid-out',
+      publicNumber: 'PF-103',
       total: 8000,
       grossAmountKopecks: 8000,
       platformFeeKopecks: 1000,
@@ -86,6 +92,7 @@ const installPrismaMocks = () => {
     },
     {
       id: 'order-blocked',
+      publicNumber: 'PF-104',
       total: 4000,
       grossAmountKopecks: 4000,
       platformFeeKopecks: 1000,
@@ -107,10 +114,12 @@ const installPrismaMocks = () => {
       ],
       payout: null
     }
-  ]);
+    ]);
+  };
 };
 
 test.beforeEach(() => {
+  lastOrderFindManyArgs = null;
   installPrismaMocks();
 });
 
@@ -148,10 +157,21 @@ test('GET /seller/payments returns finance-oriented payload for seller accountin
   assert.equal(response.body.data.activeOrders.length, 2);
   assert.equal(response.body.data.payoutQueue.length, 2);
   assert.equal(response.body.data.payoutHistory.length, 2);
+  assert.equal(response.body.data.activeOrders[0].publicNumber, 'PF-101');
 
   const blockedAdjustments = response.body.data.adjustments.filter((item: any) => item.type === 'blocked');
   assert.equal(blockedAdjustments.length, 1);
 
   const refundAdjustments = response.body.data.adjustments.filter((item: any) => item.type === 'refund');
   assert.ok(refundAdjustments.length >= 1);
+});
+
+test('GET /seller/payments supports search by public number', async () => {
+  const response = await request(buildApp())
+    .get('/seller/payments?search=%23101')
+    .set('Authorization', `Bearer ${accessToken}`);
+
+  assert.equal(response.status, 200);
+  assert.equal(lastOrderFindManyArgs?.where?.OR?.[0]?.publicNumber?.contains, '#101');
+  assert.equal(lastOrderFindManyArgs?.where?.OR?.[1]?.publicNumber?.endsWith, '101');
 });

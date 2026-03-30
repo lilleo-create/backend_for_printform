@@ -76,6 +76,6 @@ export const orderUseCases = {
   },
   listByBuyer: orderRepository.findByBuyer,
   get: orderRepository.findById,
-  listBySeller: (sellerId: string, options?: { status?: OrderStatus; offset?: number; limit?: number }) =>
+  listBySeller: (sellerId: string, options?: { status?: OrderStatus; offset?: number; limit?: number; search?: string }) =>
     orderRepository.findSellerOrders(sellerId, options)
 };
