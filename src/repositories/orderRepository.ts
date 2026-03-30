@@ -1,6 +1,7 @@
 import { OrderStatus } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { nextPaymentExpiryDate } from '../utils/orderPayment';
+import { calculateOrderEconomics } from '../utils/orderEconomics';
 
 export const orderRepository = {
   create: (data: {
@@ -45,6 +46,7 @@ export const orderRepository = {
       });
 
       const total = itemsWithPrice.reduce((sum, item) => sum + item.priceAtPurchase * item.quantity, 0);
+      const economics = calculateOrderEconomics(total);
 
       const normalizePvzMeta = (pvz?: { pvzId: string; raw: unknown; addressFull?: string; provider?: 'CDEK' }) => {
         if (!pvz) return undefined;
@@ -84,6 +86,10 @@ export const orderRepository = {
           packagesCount: data.packagesCount ?? 1,
           orderLabels: (data.orderLabels as unknown as object | undefined) ?? undefined,
           total,
+          grossAmountKopecks: economics.grossAmountKopecks,
+          platformFeeKopecks: economics.platformFeeKopecks,
+          acquiringFeeKopecks: economics.acquiringFeeKopecks,
+          sellerNetAmountKopecks: economics.sellerNetAmountKopecks,
           paymentStatus: 'PENDING_PAYMENT',
           paymentExpiresAt: nextPaymentExpiryDate(),
           expiredAt: null,

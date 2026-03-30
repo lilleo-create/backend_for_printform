@@ -314,8 +314,10 @@ model Order {
   yookassaDealStatus       String?
   yookassaPayoutId         String?
   yookassaRefundId         String?
-  platformFeeAmount        Int?
-  sellerNetAmount          Int?
+  grossAmountKopecks       Int?
+  platformFeeKopecks       Int?
+  acquiringFeeKopecks      Int?
+  sellerNetAmountKopecks   Int?
   recipientName            String?
   recipientPhone           String?
   recipientEmail           String?

@@ -1497,9 +1497,13 @@ exports.sellerRoutes.get('/payments', async (req, res, next) => {
             select: {
                 id: true,
                 total: true,
+                grossAmountKopecks: true,
+                platformFeeKopecks: true,
+                sellerNetAmountKopecks: true,
                 currency: true,
                 payoutStatus: true,
                 paymentStatus: true,
+                yookassaDealStatus: true,
                 status: true,
                 createdAt: true,
                 paidAt: true
@@ -1514,7 +1518,10 @@ exports.sellerRoutes.get('/payments', async (req, res, next) => {
             blockedKopecks: 0
         };
         const operations = orders.map((order) => {
-            const amountKopecks = order.total;
+            const grossAmountKopecks = order.grossAmountKopecks ?? order.total;
+            const platformFeeKopecks = order.platformFeeKopecks ?? 0;
+            const sellerNetAmountKopecks = order.sellerNetAmountKopecks ?? Math.max(0, grossAmountKopecks - platformFeeKopecks);
+            const amountKopecks = sellerNetAmountKopecks;
             const payoutStatus = String(order.payoutStatus ?? '').toUpperCase();
             const paymentStatus = String(order.paymentStatus ?? '').toUpperCase();
             let type = 'income';
@@ -1542,8 +1549,16 @@ exports.sellerRoutes.get('/payments', async (req, res, next) => {
             return {
                 orderId: order.id,
                 type,
+                grossAmountKopecks,
+                platformFeeKopecks,
+                sellerNetAmountKopecks,
+                payoutStatus: payoutStatus || null,
+                dealStatus: order.yookassaDealStatus ?? null,
                 amountKopecks,
                 amountRubles: money_1.money.toRublesString(amountKopecks),
+                grossAmountRubles: money_1.money.toRublesString(grossAmountKopecks),
+                platformFeeRubles: money_1.money.toRublesString(platformFeeKopecks),
+                sellerNetAmountRubles: money_1.money.toRublesString(sellerNetAmountKopecks),
                 status: payoutStatus || paymentStatus || order.status,
                 createdAt: order.paidAt ?? order.createdAt
             };

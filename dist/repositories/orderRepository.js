@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.orderRepository = void 0;
 const prisma_1 = require("../lib/prisma");
 const orderPayment_1 = require("../utils/orderPayment");
+const orderEconomics_1 = require("../utils/orderEconomics");
 exports.orderRepository = {
     create: (data) => prisma_1.prisma.$transaction(async (tx) => {
         const productIds = data.items.map((item) => item.productId);
@@ -31,6 +32,7 @@ exports.orderRepository = {
             };
         });
         const total = itemsWithPrice.reduce((sum, item) => sum + item.priceAtPurchase * item.quantity, 0);
+        const economics = (0, orderEconomics_1.calculateOrderEconomics)(total);
         const normalizePvzMeta = (pvz) => {
             if (!pvz)
                 return undefined;
@@ -67,6 +69,10 @@ exports.orderRepository = {
                 packagesCount: data.packagesCount ?? 1,
                 orderLabels: data.orderLabels ?? undefined,
                 total,
+                grossAmountKopecks: economics.grossAmountKopecks,
+                platformFeeKopecks: economics.platformFeeKopecks,
+                acquiringFeeKopecks: economics.acquiringFeeKopecks,
+                sellerNetAmountKopecks: economics.sellerNetAmountKopecks,
                 paymentStatus: 'PENDING_PAYMENT',
                 paymentExpiresAt: (0, orderPayment_1.nextPaymentExpiryDate)(),
                 expiredAt: null,

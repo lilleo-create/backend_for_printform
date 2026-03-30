@@ -1,8 +1,16 @@
 import { prisma } from '../lib/prisma';
+import { yookassaService } from './yookassaService';
 
 type TxClient = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 
 const asTx = (tx?: TxClient) => tx ?? prisma;
+
+const safeDealEnabled = () => (process.env.YOOKASSA_SAFE_DEAL_ENABLED ?? '').toLowerCase() === 'true';
+const payoutDestinationData = () => {
+  const raw = process.env.YOOKASSA_PAYOUT_DESTINATION_DATA_JSON;
+  if (!raw) return undefined;
+  return JSON.parse(raw) as Record<string, unknown>;
+};
 
 const isTerminalPayoutStatus = (status: string | null | undefined) =>
   status === 'RELEASED' || status === 'PAID';
@@ -36,11 +44,46 @@ export const payoutService = {
         data: {
           orderId,
           sellerId: sellerItem.product.sellerId,
-          amount: order.total,
+          amount: order.sellerNetAmountKopecks ?? order.total,
           currency: order.currency,
           status: 'READY'
         }
       });
+    }
+
+    const sellerAmountKopecks = order.sellerNetAmountKopecks ?? order.total;
+    if (safeDealEnabled() && order.yookassaDealId) {
+      try {
+        const payoutDestination = payoutDestinationData();
+
+        if (payoutDestination) {
+          const yookassaPayout = await yookassaService.createPayoutInDeal({
+            orderId,
+            dealId: order.yookassaDealId,
+            sellerAmountKopecks,
+            currency: order.currency,
+            payoutDestinationData: payoutDestination
+          });
+
+          await db.order.update({
+            where: { id: orderId },
+            data: {
+              payoutStatus: 'PROCESSING',
+              yookassaPayoutId: yookassaPayout.id,
+              yookassaDealStatus: yookassaPayout.status
+            }
+          });
+
+          return { created: !existingPayout, skipped: null };
+        }
+      } catch (error) {
+        console.error('[PAYOUT][YOOKASSA_CREATE_FAILED]', {
+          orderId,
+          dealId: order.yookassaDealId,
+          error,
+          stack: error instanceof Error ? error.stack : undefined
+        });
+      }
     }
 
     await db.order.update({ where: { id: orderId }, data: { payoutStatus: 'RELEASED' } });
