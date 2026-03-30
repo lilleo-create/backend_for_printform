@@ -12,6 +12,7 @@ const prisma_1 = require("../lib/prisma");
 const orderDeliveryService_1 = require("../services/orderDeliveryService");
 const shipmentService_1 = require("../services/shipmentService");
 const paymentFlowService_1 = require("../services/paymentFlowService");
+const orderPublicId_1 = require("../utils/orderPublicId");
 exports.meRoutes = (0, express_1.Router)();
 const addressSchema = zod_1.z.object({
     addressText: zod_1.z.string().min(3),
@@ -255,7 +256,7 @@ exports.meRoutes.get('/orders', authMiddleware_1.requireAuth, async (req, res, n
         const shipments = await shipmentService_1.shipmentService.getByOrderIds(orders.map((order) => order.id));
         res.json({
             data: orders.map((order) => ({
-                ...order,
+                ...(0, orderPublicId_1.withOrderPublicId)(order),
                 delivery: deliveries.get(order.id) ?? null,
                 shipment: toShipmentView(shipments.get(order.id) ?? null)
             }))
@@ -284,7 +285,7 @@ exports.meRoutes.patch('/orders/:id/cancel', authMiddleware_1.requireAuth, rateL
                 orderId: order.id,
                 buyerId: req.user.userId
             });
-            return res.json({ data: cancelledWithRefund.order, refund: cancelledWithRefund.refund });
+            return res.json({ data: (0, orderPublicId_1.withOrderPublicId)(cancelledWithRefund.order), refund: cancelledWithRefund.refund });
         }
         const cancelled = await prisma_1.prisma.order.update({
             where: { id: order.id },
@@ -295,7 +296,7 @@ exports.meRoutes.patch('/orders/:id/cancel', authMiddleware_1.requireAuth, rateL
             paymentStatus: order.paymentStatus,
             mode: 'NO_REFUND'
         });
-        return res.json({ data: cancelled });
+        return res.json({ data: (0, orderPublicId_1.withOrderPublicId)(cancelled) });
     }
     catch (error) {
         const message = error instanceof Error ? error.message : 'UNKNOWN_ERROR';

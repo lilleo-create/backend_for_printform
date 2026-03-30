@@ -21,6 +21,7 @@ import { normalizeProductDto } from "../utils/productDto";
 import { computePaymentTiming, expirePendingPayments } from "../utils/orderPayment";
 import { getKycStatusLabelRu } from "../utils/statusLabels";
 import { money } from '../utils/money';
+import { withOrderPublicId } from '../utils/orderPublicId';
 export const sellerRoutes = Router();
 
 export type SellerKycSubmissionWithDocuments = Prisma.SellerKycSubmissionGetPayload<{ include: { documents: true } }>;
@@ -1276,7 +1277,7 @@ sellerRoutes.get('/orders', async (req: AuthRequest, res, next) => {
     const shipments = await shipmentService.getByOrderIds(orders.map((o) => o.id));
     res.json({
       data: orders.map((o) => ({
-        ...o,
+        ...withOrderPublicId(o),
         ...computePaymentTiming(o),
         paymentExpiresAt: o.paymentExpiresAt,
         shipment: toShipmentView(shipments.get(o.id) ?? null)
@@ -1325,7 +1326,7 @@ sellerRoutes.post('/orders/:orderId/ready-to-ship', writeLimiter, async (req: Au
       include: { shipment: true }
     });
 
-    return res.json({ data: { order, shipment: toShipmentView(result.shipment), cdek: result.cdek } });
+    return res.json({ data: { order: order ? withOrderPublicId(order) : null, shipment: toShipmentView(result.shipment), cdek: result.cdek } });
   } catch (e) {
     next(e);
   }
@@ -1343,7 +1344,7 @@ sellerRoutes.post('/orders/:orderId/shipment', writeLimiter, async (req: AuthReq
       include: { shipment: true }
     });
 
-    return res.json({ data: { order, shipment: toShipmentView(result.shipment), cdek: result.cdek } });
+    return res.json({ data: { order: order ? withOrderPublicId(order) : null, shipment: toShipmentView(result.shipment), cdek: result.cdek } });
   } catch (e) {
     next(e);
   }
