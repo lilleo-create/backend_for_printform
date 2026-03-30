@@ -6,6 +6,7 @@ const prisma_1 = require("../lib/prisma");
 const orderUseCases_1 = require("../usecases/orderUseCases");
 const orderPayment_1 = require("../utils/orderPayment");
 const money_1 = require("../utils/money");
+const env_1 = require("../config/env");
 const yookassaService_1 = require("./yookassaService");
 const asRecord = (value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -237,15 +238,48 @@ exports.paymentFlowService = {
                     buyerId: input.buyerId,
                     paymentAttemptKey: input.paymentAttemptKey,
                     orderId: lockedOrder.id,
-                    amount: lockedOrder.total,
-                    currency: lockedOrder.currency
-                });
-                const yookassaPayment = await yookassaService_1.yookassaService.createPayment({
-                    amount: lockedOrder.total,
+                    amountKopecks: lockedOrder.total,
                     currency: lockedOrder.currency,
-                    orderId: lockedOrder.id,
-                    description: `Оплата заказа ${lockedOrder.id}`
+                    safeDealEnabled: env_1.env.yookassaSafeDealEnabled
                 });
+                let yookassaPayment;
+                let safeDealId = lockedOrder.yookassaDealId;
+                if (env_1.env.yookassaSafeDealEnabled) {
+                    if (!safeDealId) {
+                        const deal = await yookassaService_1.yookassaService.createDeal({
+                            orderId: lockedOrder.id,
+                            currency: lockedOrder.currency,
+                            platformFeeAmountKopecks: lockedOrder.platformFeeAmount ?? undefined
+                        });
+                        safeDealId = deal.id;
+                        await tx.order.update({
+                            where: { id: lockedOrder.id },
+                            data: {
+                                yookassaDealId: deal.id,
+                                yookassaDealStatus: deal.status,
+                                sellerNetAmount: lockedOrder.total - (lockedOrder.platformFeeAmount ?? 0)
+                            }
+                        });
+                    }
+                    const returnUrl = new URL(env_1.env.yookassaReturnUrl);
+                    returnUrl.searchParams.set('orderId', lockedOrder.id);
+                    yookassaPayment = await yookassaService_1.yookassaService.createPaymentInDeal({
+                        orderId: lockedOrder.id,
+                        dealId: safeDealId,
+                        amountKopecks: lockedOrder.total,
+                        currency: lockedOrder.currency,
+                        returnUrl: returnUrl.toString(),
+                        description: `Оплата заказа ${lockedOrder.id}`
+                    });
+                }
+                else {
+                    yookassaPayment = await yookassaService_1.yookassaService.createPayment({
+                        amount: lockedOrder.total,
+                        currency: lockedOrder.currency,
+                        orderId: lockedOrder.id,
+                        description: `Оплата заказа ${lockedOrder.id}`
+                    });
+                }
                 const payment = await tx.payment.create({
                     data: {
                         orderId: lockedOrder.id,
@@ -333,12 +367,27 @@ exports.paymentFlowService = {
                     payloadJson: {}
                 }
             });
-            const yookassaPayment = await yookassaService_1.yookassaService.createPayment({
-                amount: order.total,
-                currency: order.currency,
-                orderId: order.id,
-                description: `Оплата заказа ${order.id}`
-            });
+            let yookassaPayment;
+            if (env_1.env.yookassaSafeDealEnabled && order.yookassaDealId) {
+                const returnUrl = new URL(env_1.env.yookassaReturnUrl);
+                returnUrl.searchParams.set('orderId', order.id);
+                yookassaPayment = await yookassaService_1.yookassaService.createPaymentInDeal({
+                    orderId: order.id,
+                    dealId: order.yookassaDealId,
+                    amountKopecks: order.total,
+                    currency: order.currency,
+                    returnUrl: returnUrl.toString(),
+                    description: `Оплата заказа ${order.id}`
+                });
+            }
+            else {
+                yookassaPayment = await yookassaService_1.yookassaService.createPayment({
+                    amount: order.total,
+                    currency: order.currency,
+                    orderId: order.id,
+                    description: `Оплата заказа ${order.id}`
+                });
+            }
             const paymentUrl = yookassaPayment.confirmationUrl;
             const paymentExpiresAt = (0, orderPayment_1.nextPaymentExpiryDate)();
             await tx.payment.update({
@@ -403,13 +452,25 @@ exports.paymentFlowService = {
             }
             let refundResponse;
             try {
-                refundResponse = await yookassaService_1.yookassaService.createRefund({
-                    paymentId: externalPaymentId,
-                    amount: refundAmount,
-                    currency: order.currency,
-                    orderId: order.id,
-                    reason: input.reason
-                });
+                if (order.yookassaDealId) {
+                    refundResponse = await yookassaService_1.yookassaService.createRefundInDeal({
+                        orderId: order.id,
+                        dealId: order.yookassaDealId,
+                        paymentId: externalPaymentId,
+                        amountKopecks: refundAmount,
+                        currency: order.currency,
+                        reason: input.reason
+                    });
+                }
+                else {
+                    refundResponse = await yookassaService_1.yookassaService.createRefund({
+                        paymentId: externalPaymentId,
+                        amount: refundAmount,
+                        currency: order.currency,
+                        orderId: order.id,
+                        reason: input.reason
+                    });
+                }
             }
             catch (error) {
                 console.error('[ORDER][CANCEL][REFUND_CREATE_FAILED]', {
@@ -439,7 +500,8 @@ exports.paymentFlowService = {
                     status: 'CANCELLED',
                     statusUpdatedAt: new Date(),
                     paymentStatus: refundResponse.status === 'succeeded' ? 'REFUNDED' : 'REFUND_PENDING',
-                    payoutStatus: 'BLOCKED'
+                    payoutStatus: 'BLOCKED',
+                    yookassaDealStatus: order.yookassaDealId ? 'refunded' : order.yookassaDealStatus
                 }
             });
             console.info('[ORDER][CANCEL]', {
@@ -493,7 +555,8 @@ exports.paymentFlowService = {
                 where: { id: refund.orderId },
                 data: {
                     paymentStatus: nextPaymentStatus,
-                    payoutStatus: 'BLOCKED'
+                    payoutStatus: 'BLOCKED',
+                    yookassaDealStatus: refund.order.yookassaDealId ? 'refunded' : refund.order.yookassaDealStatus
                 }
             });
         }
@@ -511,7 +574,7 @@ exports.paymentFlowService = {
         if (!order)
             return { ok: true };
         const paymentAmount = Number(input.amount);
-        const orderAmount = order.total / 100;
+        const orderAmount = money_1.money.toRublesFloat(order.total);
         if (paymentAmount !== orderAmount) {
             console.error('[YOOKASSA][AMOUNT_MISMATCH]', {
                 externalId: input.externalId,
@@ -546,7 +609,8 @@ exports.paymentFlowService = {
                     paidAt: new Date(),
                     paymentProvider: input.provider ?? payment.provider,
                     paymentId: payment.id,
-                    payoutStatus: 'HOLD'
+                    payoutStatus: 'HOLD',
+                    yookassaDealStatus: order.yookassaDealId ? 'open' : order.yookassaDealStatus
                 }
             });
             return { ok: true };

@@ -25,6 +25,7 @@ const cdekService_1 = require("../services/cdekService");
 const productDto_1 = require("../utils/productDto");
 const orderPayment_1 = require("../utils/orderPayment");
 const statusLabels_1 = require("../utils/statusLabels");
+const money_1 = require("../utils/money");
 exports.sellerRoutes = (0, express_1.Router)();
 // ---------------------------------------------------------
 // Uploads
@@ -1490,12 +1491,75 @@ exports.sellerRoutes.patch('/orders/:id/preparation', rateLimiters_1.writeLimite
 // ------------------- Payments -------------------
 exports.sellerRoutes.get('/payments', async (req, res, next) => {
     try {
-        const payments = await prisma_1.prisma.payment.findMany({
-            where: { order: { items: { some: { product: { sellerId: req.user.userId } } } } },
-            select: { id: true, orderId: true, amount: true, status: true, currency: true, createdAt: true },
+        const sellerId = req.user.userId;
+        const orders = await prisma_1.prisma.order.findMany({
+            where: { items: { some: { product: { sellerId } } } },
+            select: {
+                id: true,
+                total: true,
+                currency: true,
+                payoutStatus: true,
+                paymentStatus: true,
+                status: true,
+                createdAt: true,
+                paidAt: true
+            },
             orderBy: { createdAt: 'desc' }
         });
-        res.json({ data: payments });
+        const summary = {
+            availableKopecks: 0,
+            frozenKopecks: 0,
+            paidOutKopecks: 0,
+            processingKopecks: 0,
+            blockedKopecks: 0
+        };
+        const operations = orders.map((order) => {
+            const amountKopecks = order.total;
+            const payoutStatus = String(order.payoutStatus ?? '').toUpperCase();
+            const paymentStatus = String(order.paymentStatus ?? '').toUpperCase();
+            let type = 'income';
+            if (payoutStatus === 'HOLD') {
+                summary.frozenKopecks += amountKopecks;
+                type = 'hold';
+            }
+            else if (['RELEASED', 'PAID_OUT', 'PAID'].includes(payoutStatus)) {
+                summary.paidOutKopecks += amountKopecks;
+                type = 'payout';
+            }
+            else if (['PENDING', 'PENDING_PAYOUT', 'PROCESSING'].includes(payoutStatus)) {
+                summary.processingKopecks += amountKopecks;
+            }
+            else if (payoutStatus === 'BLOCKED' ||
+                paymentStatus === 'REFUND_PENDING' ||
+                paymentStatus === 'REFUNDED' ||
+                order.status === 'CANCELLED') {
+                summary.blockedKopecks += amountKopecks;
+                type = paymentStatus === 'REFUNDED' ? 'refund' : 'blocked';
+            }
+            else {
+                summary.availableKopecks += amountKopecks;
+            }
+            return {
+                orderId: order.id,
+                type,
+                amountKopecks,
+                amountRubles: money_1.money.toRublesString(amountKopecks),
+                status: payoutStatus || paymentStatus || order.status,
+                createdAt: order.paidAt ?? order.createdAt
+            };
+        });
+        const data = {
+            summary: {
+                ...summary,
+                availableRubles: money_1.money.toRublesString(summary.availableKopecks),
+                frozenRubles: money_1.money.toRublesString(summary.frozenKopecks),
+                paidOutRubles: money_1.money.toRublesString(summary.paidOutKopecks),
+                processingRubles: money_1.money.toRublesString(summary.processingKopecks),
+                blockedRubles: money_1.money.toRublesString(summary.blockedKopecks)
+            },
+            operations
+        };
+        res.json({ data });
     }
     catch (error) {
         next(error);

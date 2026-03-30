@@ -310,6 +310,12 @@ model Order {
   paymentExpiresAt         DateTime?
   paidAt                   DateTime?
   expiredAt                DateTime?
+  yookassaDealId           String?
+  yookassaDealStatus       String?
+  yookassaPayoutId         String?
+  yookassaRefundId         String?
+  platformFeeAmount        Int?
+  sellerNetAmount          Int?
   recipientName            String?
   recipientPhone           String?
   recipientEmail           String?

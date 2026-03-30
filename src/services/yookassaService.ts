@@ -1,7 +1,7 @@
 import axios from 'axios';
 import crypto from 'node:crypto';
 import { env } from '../config/env';
-import { kopecksToRubles } from '../utils/money';
+import { money } from '../utils/money';
 
 type YooKassaAmount = {
   value: string;
@@ -16,11 +16,32 @@ type YooKassaPaymentResponse = {
     type?: string;
     confirmation_url?: string;
   };
+  paid?: boolean;
+  metadata?: Record<string, string>;
+  [key: string]: unknown;
+};
+
+type YooKassaDealResponse = {
+  id: string;
+  status: string;
+  type?: string;
+  fee_moment?: string;
+  metadata?: Record<string, string>;
+  [key: string]: unknown;
+};
+
+type YooKassaPayoutResponse = {
+  id: string;
+  status: string;
+  amount?: YooKassaAmount;
+  deal?: { id?: string };
   [key: string]: unknown;
 };
 
 const YOOKASSA_API_URL = 'https://api.yookassa.ru/v3/payments';
 const YOOKASSA_REFUNDS_API_URL = 'https://api.yookassa.ru/v3/refunds';
+const YOOKASSA_DEALS_API_URL = 'https://api.yookassa.ru/v3/deals';
+const YOOKASSA_PAYOUTS_API_URL = 'https://api.yookassa.ru/v3/payouts';
 
 type YooKassaRefundResponse = {
   id: string;
@@ -35,10 +56,55 @@ const authHeader = () => {
   return `Basic ${authToken}`;
 };
 
+const requestHeaders = (idempotenceKey: string) => ({
+  Authorization: authHeader(),
+  'Content-Type': 'application/json',
+  'Idempotence-Key': idempotenceKey
+});
+
 export const yookassaService = {
-  // TODO: migrate to YooKassa Safe Deal (escrow)
-  // TODO: add seller payouts via YooKassa
-  // TODO: integrate OAuth seller accounts
+  async createDeal(input: {
+    orderId: string;
+    platformFeeAmountKopecks?: number;
+    currency: string;
+  }): Promise<YooKassaDealResponse> {
+    if (!env.yookassaShopId || !env.yookassaSecretKey) {
+      throw new Error('YOOKASSA_CONFIG_MISSING');
+    }
+
+    const idempotenceKey = crypto.randomUUID();
+    const body = {
+      type: 'safe_deal',
+      fee_moment: 'deal_closed',
+      ...(typeof input.platformFeeAmountKopecks === 'number'
+        ? {
+            commission: {
+              value: money.toRublesString(input.platformFeeAmountKopecks),
+              currency: input.currency
+            }
+          }
+        : {}),
+      metadata: {
+        orderId: input.orderId
+      }
+    };
+
+    const response = await axios.post<YooKassaDealResponse>(YOOKASSA_DEALS_API_URL, body, {
+      headers: requestHeaders(idempotenceKey),
+      timeout: 15000
+    });
+
+    console.info('[YOOKASSA][DEAL_CREATE]', {
+      orderId: input.orderId,
+      dealId: response.data.id,
+      status: response.data.status,
+      platformFeeAmountKopecks: input.platformFeeAmountKopecks ?? null,
+      idempotenceKey
+    });
+
+    return response.data;
+  },
+
   async createPayment(input: {
     amount: number;
     currency: string;
@@ -61,7 +127,7 @@ export const yookassaService = {
 
     const body = {
       amount: {
-        value: kopecksToRubles(input.amount),
+        value: money.toRublesString(input.amount),
         currency: input.currency
       },
       confirmation: {
@@ -77,11 +143,7 @@ export const yookassaService = {
     let response;
     try {
       response = await axios.post<YooKassaPaymentResponse>(YOOKASSA_API_URL, body, {
-        headers: {
-          Authorization: authHeader(),
-          'Content-Type': 'application/json',
-          'Idempotence-Key': idempotenceKey
-        },
+        headers: requestHeaders(idempotenceKey),
         timeout: 15000
       });
     } catch (error) {
@@ -119,6 +181,112 @@ export const yookassaService = {
     };
   },
 
+  async createPaymentInDeal(input: {
+    orderId: string;
+    dealId: string;
+    amountKopecks: number;
+    currency: string;
+    returnUrl: string;
+    description: string;
+  }): Promise<{
+    id: string;
+    confirmationUrl: string;
+    status: string;
+    payload: YooKassaPaymentResponse;
+  }> {
+    const idempotenceKey = crypto.randomUUID();
+    const body = {
+      amount: {
+        value: money.toRublesString(input.amountKopecks),
+        currency: input.currency
+      },
+      confirmation: {
+        type: 'redirect',
+        return_url: input.returnUrl
+      },
+      capture: true,
+      description: input.description,
+      deal: {
+        id: input.dealId
+      },
+      metadata: {
+        orderId: input.orderId,
+        dealId: input.dealId
+      }
+    };
+
+    const response = await axios.post<YooKassaPaymentResponse>(YOOKASSA_API_URL, body, {
+      headers: requestHeaders(idempotenceKey),
+      timeout: 15000
+    });
+
+    const confirmationUrl = response.data.confirmation?.confirmation_url;
+    if (!confirmationUrl) throw new Error('YOOKASSA_CONFIRMATION_URL_MISSING');
+
+    console.info('[YOOKASSA][PAYMENT_IN_DEAL]', {
+      orderId: input.orderId,
+      dealId: input.dealId,
+      paymentId: response.data.id,
+      status: response.data.status,
+      amountKopecks: input.amountKopecks,
+      idempotenceKey
+    });
+
+    return {
+      id: response.data.id,
+      confirmationUrl,
+      status: response.data.status,
+      payload: {
+        ...response.data,
+        paymentUrl: confirmationUrl
+      }
+    };
+  },
+
+  async createPayoutInDeal(input: {
+    orderId: string;
+    dealId: string;
+    sellerAmountKopecks: number;
+    currency: string;
+    payoutDestinationData?: Record<string, unknown>;
+  }) {
+    if (!input.payoutDestinationData) {
+      throw new Error('YOOKASSA_PAYOUT_DESTINATION_NOT_CONFIGURED');
+    }
+
+    const idempotenceKey = crypto.randomUUID();
+    const body = {
+      amount: {
+        value: money.toRublesString(input.sellerAmountKopecks),
+        currency: input.currency
+      },
+      payout_destination_data: input.payoutDestinationData,
+      deal: {
+        id: input.dealId
+      },
+      metadata: {
+        orderId: input.orderId,
+        dealId: input.dealId
+      }
+    };
+
+    const response = await axios.post<YooKassaPayoutResponse>(YOOKASSA_PAYOUTS_API_URL, body, {
+      headers: requestHeaders(idempotenceKey),
+      timeout: 15000
+    });
+
+    console.info('[YOOKASSA][PAYOUT_CREATE]', {
+      orderId: input.orderId,
+      dealId: input.dealId,
+      payoutId: response.data.id,
+      status: response.data.status,
+      amountKopecks: input.sellerAmountKopecks,
+      idempotenceKey
+    });
+
+    return response.data;
+  },
+
   async getPayment(paymentId: string) {
     const response = await axios.get<YooKassaPaymentResponse>(`${YOOKASSA_API_URL}/${paymentId}`, {
       headers: {
@@ -149,7 +317,7 @@ export const yookassaService = {
     const idempotenceKey = crypto.randomUUID();
     const body = {
       amount: {
-        value: kopecksToRubles(input.amount),
+        value: money.toRublesString(input.amount),
         currency: input.currency
       },
       payment_id: input.paymentId,
@@ -160,11 +328,7 @@ export const yookassaService = {
 
     try {
       const response = await axios.post<YooKassaRefundResponse>(YOOKASSA_REFUNDS_API_URL, body, {
-        headers: {
-          Authorization: authHeader(),
-          'Content-Type': 'application/json',
-          'Idempotence-Key': idempotenceKey
-        },
+        headers: requestHeaders(idempotenceKey),
         timeout: 15000
       });
 
@@ -195,5 +359,56 @@ export const yookassaService = {
       mappedError.cause = error;
       throw mappedError;
     }
+  },
+
+  async createRefundInDeal(input: {
+    orderId: string;
+    dealId: string;
+    paymentId: string;
+    amountKopecks: number;
+    currency: string;
+    reason?: string;
+  }): Promise<{
+    id: string;
+    status: string;
+    payload: YooKassaRefundResponse;
+  }> {
+    const idempotenceKey = crypto.randomUUID();
+    const body = {
+      amount: {
+        value: money.toRublesString(input.amountKopecks),
+        currency: input.currency
+      },
+      payment_id: input.paymentId,
+      deal: {
+        id: input.dealId
+      },
+      description: input.reason,
+      metadata: {
+        orderId: input.orderId,
+        dealId: input.dealId
+      }
+    };
+
+    const response = await axios.post<YooKassaRefundResponse>(YOOKASSA_REFUNDS_API_URL, body, {
+      headers: requestHeaders(idempotenceKey),
+      timeout: 15000
+    });
+
+    console.info('[YOOKASSA][REFUND_IN_DEAL]', {
+      orderId: input.orderId,
+      dealId: input.dealId,
+      paymentId: input.paymentId,
+      refundId: response.data.id,
+      amountKopecks: input.amountKopecks,
+      status: response.data.status,
+      idempotenceKey
+    });
+
+    return {
+      id: response.data.id,
+      status: response.data.status,
+      payload: response.data
+    };
   }
 };
