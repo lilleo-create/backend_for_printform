@@ -322,6 +322,7 @@ model Order {
   items                    OrderItem[]
   shipment                 OrderShipment?
   payments                 Payment[]
+  refunds                  Refund[]
   payout                   Payout?
   order_shipments          order_shipments?
 
@@ -613,6 +614,24 @@ model Payment {
   @@index([orderId, status])
 }
 
+model Refund {
+  id          String       @id @default(cuid())
+  orderId     String
+  paymentId   String
+  externalId  String?      @unique
+  amount      Int
+  currency    String       @default("RUB")
+  status      RefundStatus @default(PENDING)
+  reason      String?
+  payloadJson Json?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  order       Order        @relation(fields: [orderId], references: [id])
+
+  @@index([orderId, status])
+  @@index([paymentId])
+}
+
 model PendingRegistration {
   id           String    @id @default(cuid())
   name         String
@@ -783,6 +802,7 @@ enum ProductMediaType {
 enum OrderStatus {
   CREATED
   PAID
+  CANCELLED_REQUESTED
   READY_FOR_SHIPMENT
   PRINTING
   HANDED_TO_DELIVERY
@@ -875,6 +895,16 @@ enum OrderPaymentStatus {
   PAID
   PAYMENT_EXPIRED
   CANCELLED
+  REFUND_PENDING
+  PARTIALLY_REFUNDED
+  REFUNDED
+}
+
+enum RefundStatus {
+  PENDING
+  SUCCEEDED
+  CANCELED
+  FAILED
 }
 
 enum ReturnStatus {
