@@ -1667,79 +1667,216 @@ sellerRoutes.get('/payments', async (req: AuthRequest, res, next) => {
         currency: true,
         payoutStatus: true,
         paymentStatus: true,
-        yookassaDealStatus: true,
         status: true,
         createdAt: true,
-        paidAt: true
+        paidAt: true,
+        refunds: {
+          select: {
+            id: true,
+            amount: true,
+            status: true,
+            reason: true,
+            createdAt: true
+          },
+          orderBy: { createdAt: 'desc' }
+        },
+        payout: {
+          select: {
+            id: true,
+            createdAt: true,
+            status: true,
+            amount: true
+          }
+        }
       },
       orderBy: { createdAt: 'desc' }
     });
 
     const summary = {
-      availableKopecks: 0,
+      awaitingPayoutKopecks: 0,
       frozenKopecks: 0,
       paidOutKopecks: 0,
-      processingKopecks: 0,
       blockedKopecks: 0
     };
 
-    const operations = orders.map((order) => {
+    const activeOrderStatuses = new Set(['PAID', 'READY_FOR_SHIPMENT', 'PRINTING', 'HANDED_TO_DELIVERY', 'IN_TRANSIT']);
+    const blockedOrderStatuses = new Set(['CANCELLED', 'CANCELLED_REQUESTED', 'RETURNED', 'PAYMENT_FAILED', 'EXPIRED']);
+    const paidOutPayoutStatuses = new Set(['PAID', 'PAID_OUT']);
+    const awaitingPayoutStatuses = new Set(['RELEASED', 'PENDING', 'PENDING_PAYOUT', 'PROCESSING', 'READY']);
+    const queuePayoutStatuses = new Set(['HOLD', 'RELEASED', 'PENDING', 'PENDING_PAYOUT', 'PROCESSING', 'READY']);
+    const holdPeriodDays = 7;
+    const activeOrders: Array<Record<string, unknown>> = [];
+    const payoutQueue: Array<Record<string, unknown>> = [];
+    const adjustments: Array<Record<string, unknown>> = [];
+    const payoutHistory: Array<Record<string, unknown>> = [];
+
+    const withMoney = (kopecks: number) => ({
+      amountKopecks: kopecks,
+      amountRubles: money.toRublesString(kopecks)
+    });
+    const mapPayoutHistoryStatus = (status: string): 'PENDING' | 'SENT' | 'COMPLETED' | 'FAILED' => {
+      const normalized = status.toUpperCase();
+      if (['PAID', 'PAID_OUT', 'COMPLETED'].includes(normalized)) return 'COMPLETED';
+      if (['PROCESSING', 'SENT'].includes(normalized)) return 'SENT';
+      if (['FAILED', 'ERROR', 'CANCELED', 'CANCELLED'].includes(normalized)) return 'FAILED';
+      return 'PENDING';
+    };
+
+    for (const order of orders) {
       const grossAmountKopecks = order.grossAmountKopecks ?? order.total;
       const platformFeeKopecks = order.platformFeeKopecks ?? 0;
       const sellerNetAmountKopecks = order.sellerNetAmountKopecks ?? Math.max(0, grossAmountKopecks - platformFeeKopecks);
-      const amountKopecks = sellerNetAmountKopecks;
       const payoutStatus = String(order.payoutStatus ?? '').toUpperCase();
       const paymentStatus = String(order.paymentStatus ?? '').toUpperCase();
-      let type: 'income' | 'hold' | 'payout' | 'refund' | 'blocked' = 'income';
+      const orderStatus = String(order.status ?? '').toUpperCase();
 
-      if (payoutStatus === 'HOLD') {
-        summary.frozenKopecks += amountKopecks;
-        type = 'hold';
-      } else if (['RELEASED', 'PAID_OUT', 'PAID'].includes(payoutStatus)) {
-        summary.paidOutKopecks += amountKopecks;
-        type = 'payout';
-      } else if (['PENDING', 'PENDING_PAYOUT', 'PROCESSING'].includes(payoutStatus)) {
-        summary.processingKopecks += amountKopecks;
-      } else if (
-        payoutStatus === 'BLOCKED' ||
-        paymentStatus === 'REFUND_PENDING' ||
-        paymentStatus === 'REFUNDED' ||
-        order.status === 'CANCELLED'
-      ) {
-        summary.blockedKopecks += amountKopecks;
-        type = paymentStatus === 'REFUNDED' ? 'refund' : 'blocked';
+      const isBlocked = payoutStatus === 'BLOCKED' || blockedOrderStatuses.has(orderStatus) || paymentStatus === 'REFUND_PENDING' || paymentStatus === 'REFUNDED';
+      const isPaidOut = paidOutPayoutStatuses.has(payoutStatus);
+      const isFrozen = payoutStatus === 'HOLD' || (paymentStatus === 'PAID' && !isPaidOut && !isBlocked && !awaitingPayoutStatuses.has(payoutStatus));
+
+      if (isBlocked) {
+        summary.blockedKopecks += sellerNetAmountKopecks;
+      } else if (isPaidOut) {
+        summary.paidOutKopecks += sellerNetAmountKopecks;
+      } else if (isFrozen) {
+        summary.frozenKopecks += sellerNetAmountKopecks;
+      } else if (awaitingPayoutStatuses.has(payoutStatus)) {
+        summary.awaitingPayoutKopecks += sellerNetAmountKopecks;
       } else {
-        summary.availableKopecks += amountKopecks;
+        summary.frozenKopecks += sellerNetAmountKopecks;
       }
 
-      return {
-        orderId: order.id,
-        type,
-        grossAmountKopecks,
-        platformFeeKopecks,
-        sellerNetAmountKopecks,
-        payoutStatus: payoutStatus || null,
-        dealStatus: order.yookassaDealStatus ?? null,
-        amountKopecks,
-        amountRubles: money.toRublesString(amountKopecks),
-        grossAmountRubles: money.toRublesString(grossAmountKopecks),
-        platformFeeRubles: money.toRublesString(platformFeeKopecks),
-        sellerNetAmountRubles: money.toRublesString(sellerNetAmountKopecks),
-        status: payoutStatus || paymentStatus || order.status,
-        createdAt: order.paidAt ?? order.createdAt
-      };
+      if (activeOrderStatuses.has(orderStatus) && !isBlocked) {
+        activeOrders.push({
+          orderId: order.id,
+          createdAt: order.createdAt.toISOString(),
+          paidAt: order.paidAt ? order.paidAt.toISOString() : null,
+          grossAmountKopecks,
+          grossAmountRubles: money.toRublesString(grossAmountKopecks),
+          platformFeeKopecks,
+          platformFeeRubles: money.toRublesString(platformFeeKopecks),
+          sellerNetAmountKopecks,
+          sellerNetAmountRubles: money.toRublesString(sellerNetAmountKopecks),
+          payoutStatus: payoutStatus || null,
+          paymentStatus: paymentStatus || null,
+          orderStatus: orderStatus || null
+        });
+      }
+
+      const queueAllowedByPaymentStatus = paymentStatus !== 'REFUNDED' && paymentStatus !== 'REFUND_PENDING' && paymentStatus !== 'CANCELLED';
+      if (!isBlocked && sellerNetAmountKopecks > 0 && queuePayoutStatuses.has(payoutStatus) && queueAllowedByPaymentStatus) {
+        const eligibleForPayoutAt = order.paidAt
+          ? new Date(order.paidAt.getTime() + holdPeriodDays * 24 * 60 * 60 * 1000)
+          : null;
+
+        payoutQueue.push({
+          orderId: order.id,
+          eligibleForPayoutAt: eligibleForPayoutAt ? eligibleForPayoutAt.toISOString() : null,
+          grossAmountKopecks,
+          grossAmountRubles: money.toRublesString(grossAmountKopecks),
+          platformFeeKopecks,
+          platformFeeRubles: money.toRublesString(platformFeeKopecks),
+          sellerNetAmountKopecks,
+          sellerNetAmountRubles: money.toRublesString(sellerNetAmountKopecks),
+          payoutStatus: payoutStatus || null
+        });
+      }
+
+      if (order.paymentStatus === 'REFUND_PENDING') {
+        adjustments.push({
+          orderId: order.id,
+          type: 'refund',
+          createdAt: order.paidAt?.toISOString() ?? order.createdAt.toISOString(),
+          ...withMoney(sellerNetAmountKopecks),
+          status: 'REFUND_PENDING',
+          description: 'Возврат покупателю'
+        });
+      }
+
+      if (order.paymentStatus === 'REFUNDED') {
+        adjustments.push({
+          orderId: order.id,
+          type: 'refund',
+          createdAt: order.paidAt?.toISOString() ?? order.createdAt.toISOString(),
+          ...withMoney(sellerNetAmountKopecks),
+          status: 'REFUNDED',
+          description: 'Возврат покупателю'
+        });
+      }
+
+      if (payoutStatus === 'BLOCKED' || blockedOrderStatuses.has(orderStatus)) {
+        adjustments.push({
+          orderId: order.id,
+          type: 'blocked',
+          createdAt: order.createdAt.toISOString(),
+          ...withMoney(sellerNetAmountKopecks),
+          status: payoutStatus || orderStatus,
+          description: 'Сумма заблокирована'
+        });
+      }
+
+      for (const refund of order.refunds) {
+        const reason = String(refund.reason ?? '').toLowerCase();
+        const isChargeback = reason.includes('chargeback');
+        const isCorrection = reason.includes('correction') || reason.includes('коррект');
+        adjustments.push({
+          orderId: order.id,
+          type: isChargeback ? 'chargeback' : isCorrection ? 'correction' : 'refund',
+          createdAt: refund.createdAt.toISOString(),
+          ...withMoney(refund.amount),
+          status: refund.status,
+          description: isChargeback
+            ? 'Чарджбэк'
+            : isCorrection
+              ? 'Корректировка выплаты'
+              : 'Возврат покупателю'
+        });
+      }
+
+      if (order.payout) {
+        payoutHistory.push({
+          id: order.payout.id,
+          createdAt: order.payout.createdAt.toISOString(),
+          status: mapPayoutHistoryStatus(String(order.payout.status ?? 'PENDING')),
+          grossAmountKopecks,
+          grossAmountRubles: money.toRublesString(grossAmountKopecks),
+          platformFeeKopecks,
+          platformFeeRubles: money.toRublesString(platformFeeKopecks),
+          sellerNetAmountKopecks: order.payout.amount ?? sellerNetAmountKopecks,
+          sellerNetAmountRubles: money.toRublesString(order.payout.amount ?? sellerNetAmountKopecks),
+          orderCount: 1,
+          externalPayoutId: null
+        });
+      }
+    }
+
+    payoutQueue.sort((a, b) => {
+      const aTime = a.eligibleForPayoutAt ? Date.parse(String(a.eligibleForPayoutAt)) : Number.POSITIVE_INFINITY;
+      const bTime = b.eligibleForPayoutAt ? Date.parse(String(b.eligibleForPayoutAt)) : Number.POSITIVE_INFINITY;
+      return aTime - bTime;
     });
+
+    const nextPayoutAmountKopecks = payoutQueue.reduce((acc, item) => acc + Number(item.sellerNetAmountKopecks ?? 0), 0);
 
     const data = {
       summary: {
         ...summary,
-        availableRubles: money.toRublesString(summary.availableKopecks),
+        awaitingPayoutRubles: money.toRublesString(summary.awaitingPayoutKopecks),
         frozenRubles: money.toRublesString(summary.frozenKopecks),
         paidOutRubles: money.toRublesString(summary.paidOutKopecks),
-        processingRubles: money.toRublesString(summary.processingKopecks),
         blockedRubles: money.toRublesString(summary.blockedKopecks)
       },
-      operations
+      nextPayout: {
+        scheduledAt: null,
+        amountKopecks: nextPayoutAmountKopecks,
+        amountRubles: money.toRublesString(nextPayoutAmountKopecks),
+        orderCount: payoutQueue.length,
+        payoutScheduleType: 'MANUAL' as const
+      },
+      activeOrders,
+      payoutQueue,
+      adjustments,
+      payoutHistory
     };
 
     res.json({ data });
