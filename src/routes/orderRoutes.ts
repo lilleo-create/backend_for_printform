@@ -6,6 +6,7 @@ import { prisma } from '../lib/prisma';
 import { orderUseCases } from '../usecases/orderUseCases';
 import { canRetryPayment, computePaymentTiming, expirePendingPayments } from '../utils/orderPayment';
 import { paymentFlowService } from '../services/paymentFlowService';
+import { withOrderPublicId } from '../utils/orderPublicId';
 
 export const orderRoutes = Router();
 
@@ -150,7 +151,7 @@ orderRoutes.post('/', authenticate, writeLimiter, async (req: AuthRequest, res, 
         : undefined
     });
 
-    return res.status(201).json({ data: order, orderId: order.id });
+    return res.status(201).json({ data: withOrderPublicId(order), orderId: order.id });
   } catch (error) {
     return next(error);
   }
@@ -200,7 +201,7 @@ orderRoutes.post('/:id/ready-for-shipment', authenticate, writeLimiter, async (r
         dropoffDeadlineAt: new Date(now.getTime() + 24 * 60 * 60 * 1000)
       }
     });
-    return res.json({ data: updated });
+    return res.json({ data: withOrderPublicId(updated) });
   } catch (error) {
     return next(error);
   }
@@ -214,7 +215,7 @@ orderRoutes.post('/:orderId/cancel', authenticate, writeLimiter, async (req: Aut
       buyerId: req.user!.userId
     });
 
-    return res.json({ data: order, refund });
+    return res.json({ data: withOrderPublicId(order), refund });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
     if (message === 'ORDER_NOT_FOUND') {
@@ -247,7 +248,7 @@ orderRoutes.get('/me', authenticate, async (req: AuthRequest, res, next) => {
       data: orders.map((order) => {
         const timing = computePaymentTiming(order);
         return {
-          ...order,
+          ...withOrderPublicId(order),
           ...timing,
           canRetryPayment: canRetryPayment(order),
           retryPaymentAvailable: canRetryPayment(order)
@@ -295,7 +296,7 @@ orderRoutes.get('/:id', authenticate, async (req, res, next) => {
     if (!order) {
       return res.status(404).json({ error: { code: 'NOT_FOUND' } });
     }
-    return res.json({ data: order });
+    return res.json({ data: withOrderPublicId(order) });
   } catch (error) {
     return next(error);
   }

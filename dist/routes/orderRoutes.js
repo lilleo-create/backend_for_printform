@@ -9,6 +9,7 @@ const prisma_1 = require("../lib/prisma");
 const orderUseCases_1 = require("../usecases/orderUseCases");
 const orderPayment_1 = require("../utils/orderPayment");
 const paymentFlowService_1 = require("../services/paymentFlowService");
+const orderPublicId_1 = require("../utils/orderPublicId");
 exports.orderRoutes = (0, express_1.Router)();
 const buyerPvzSelectionSchema = zod_1.z.object({
     provider: zod_1.z.string().optional(),
@@ -130,7 +131,7 @@ exports.orderRoutes.post('/', authMiddleware_1.authenticate, rateLimiters_1.writ
                 }
                 : undefined
         });
-        return res.status(201).json({ data: order, orderId: order.id });
+        return res.status(201).json({ data: (0, orderPublicId_1.withOrderPublicId)(order), orderId: order.id });
     }
     catch (error) {
         return next(error);
@@ -178,7 +179,7 @@ exports.orderRoutes.post('/:id/ready-for-shipment', authMiddleware_1.authenticat
                 dropoffDeadlineAt: new Date(now.getTime() + 24 * 60 * 60 * 1000)
             }
         });
-        return res.json({ data: updated });
+        return res.json({ data: (0, orderPublicId_1.withOrderPublicId)(updated) });
     }
     catch (error) {
         return next(error);
@@ -190,7 +191,7 @@ exports.orderRoutes.post('/:orderId/cancel', authMiddleware_1.authenticate, rate
             orderId: req.params.orderId,
             buyerId: req.user.userId
         });
-        return res.json({ data: order, refund });
+        return res.json({ data: (0, orderPublicId_1.withOrderPublicId)(order), refund });
     }
     catch (error) {
         const message = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
@@ -221,7 +222,7 @@ exports.orderRoutes.get('/me', authMiddleware_1.authenticate, async (req, res, n
             data: orders.map((order) => {
                 const timing = (0, orderPayment_1.computePaymentTiming)(order);
                 return {
-                    ...order,
+                    ...(0, orderPublicId_1.withOrderPublicId)(order),
                     ...timing,
                     canRetryPayment: (0, orderPayment_1.canRetryPayment)(order),
                     retryPaymentAvailable: (0, orderPayment_1.canRetryPayment)(order)
@@ -269,7 +270,7 @@ exports.orderRoutes.get('/:id', authMiddleware_1.authenticate, async (req, res, 
         if (!order) {
             return res.status(404).json({ error: { code: 'NOT_FOUND' } });
         }
-        return res.json({ data: order });
+        return res.json({ data: (0, orderPublicId_1.withOrderPublicId)(order) });
     }
     catch (error) {
         return next(error);

@@ -9,6 +9,7 @@ import { prisma } from '../lib/prisma';
 import { orderDeliveryService } from '../services/orderDeliveryService';
 import { shipmentService } from '../services/shipmentService';
 import { paymentFlowService } from '../services/paymentFlowService';
+import { withOrderPublicId } from '../utils/orderPublicId';
 
 export const meRoutes = Router();
 
@@ -257,7 +258,7 @@ meRoutes.get('/orders', requireAuth, async (req: AuthRequest, res, next) => {
     const shipments = await shipmentService.getByOrderIds(orders.map((order) => order.id));
     res.json({
       data: orders.map((order) => ({
-        ...order,
+        ...withOrderPublicId(order),
         delivery: deliveries.get(order.id) ?? null,
         shipment: toShipmentView(shipments.get(order.id) ?? null)
       }))
@@ -291,7 +292,7 @@ meRoutes.patch('/orders/:id/cancel', requireAuth, writeLimiter, async (req: Auth
         orderId: order.id,
         buyerId: req.user!.userId
       });
-      return res.json({ data: cancelledWithRefund.order, refund: cancelledWithRefund.refund });
+      return res.json({ data: withOrderPublicId(cancelledWithRefund.order), refund: cancelledWithRefund.refund });
     }
 
     const cancelled = await prisma.order.update({
@@ -305,7 +306,7 @@ meRoutes.patch('/orders/:id/cancel', requireAuth, writeLimiter, async (req: Auth
       mode: 'NO_REFUND'
     });
 
-    return res.json({ data: cancelled });
+    return res.json({ data: withOrderPublicId(cancelled) });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
     if (
