@@ -35,17 +35,18 @@ const startSchema = z.object({
 });
 
 const yookassaWebhookSchema = z.object({
-  event: z.enum(['payment.succeeded', 'payment.canceled', 'refund.succeeded']),
+  event: z.string(),
   object: z.object({
     id: z.string(),
     status: z.string().optional(),
     amount: z.object({
       value: z.string()
-    }),
+    }).optional(),
     payment_id: z.string().optional(),
     metadata: z
       .object({
-        orderId: z.string()
+        orderId: z.string().optional(),
+        dealId: z.string().optional()
       })
       .optional()
   })
@@ -108,20 +109,36 @@ paymentRoutes.post('/yookassa/webhook', async (req, res, next) => {
 
     console.info('[YOOKASSA][WEBHOOK]', {
       event: payload.event,
-      paymentId: payload.object.id,
+      objectId: payload.object.id,
+      paymentId: payload.object.payment_id ?? payload.object.id,
+      dealId: payload.object.metadata?.dealId ?? null,
       orderId: payload.object.metadata?.orderId ?? null,
-      amount: payload.object.amount.value,
+      amount: payload.object.amount?.value ?? null,
       status: payload.object.status ?? null
     });
 
     if (payload.event === 'refund.succeeded') {
       await paymentFlowService.processRefundWebhook({
         externalRefundId: payload.object.id,
-        amount: payload.object.amount.value,
+        amount: payload.object.amount?.value ?? '0',
         orderId: payload.object.metadata?.orderId,
         payload
       });
-    } else {
+      return res.json({ received: true });
+    }
+
+    if (payload.event.startsWith('deal.') || payload.event.startsWith('payout.')) {
+      console.info('[YOOKASSA][DEAL_WEBHOOK]', {
+        event: payload.event,
+        dealId: payload.object.metadata?.dealId ?? null,
+        orderId: payload.object.metadata?.orderId ?? null,
+        payoutId: payload.object.id,
+        status: payload.object.status ?? null
+      });
+      return res.json({ received: true });
+    }
+
+    if (payload.event === 'payment.succeeded' || payload.event === 'payment.canceled') {
       const orderId = payload.object.metadata?.orderId;
       if (!orderId) {
         throw new Error('ORDER_ID_MISSING');
@@ -131,7 +148,7 @@ paymentRoutes.post('/yookassa/webhook', async (req, res, next) => {
         externalId: payload.object.id,
         status: payload.object.status === 'succeeded' ? 'succeeded' : 'canceled',
         orderId,
-        amount: payload.object.amount.value,
+        amount: payload.object.amount?.value ?? '0',
         provider: 'yookassa',
         payload
       });

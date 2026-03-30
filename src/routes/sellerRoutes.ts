@@ -20,6 +20,7 @@ import { cdekService } from "../services/cdekService";
 import { normalizeProductDto } from "../utils/productDto";
 import { computePaymentTiming, expirePendingPayments } from "../utils/orderPayment";
 import { getKycStatusLabelRu } from "../utils/statusLabels";
+import { money } from '../utils/money';
 export const sellerRoutes = Router();
 
 export type SellerKycSubmissionWithDocuments = Prisma.SellerKycSubmissionGetPayload<{ include: { documents: true } }>;
@@ -1654,12 +1655,79 @@ sellerRoutes.patch('/orders/:id/preparation', writeLimiter, async (req: AuthRequ
 // ------------------- Payments -------------------
 sellerRoutes.get('/payments', async (req: AuthRequest, res, next) => {
   try {
-    const payments = await prisma.payment.findMany({
-      where: { order: { items: { some: { product: { sellerId: req.user!.userId } } } } },
-      select: { id: true, orderId: true, amount: true, status: true, currency: true, createdAt: true },
+    const sellerId = req.user!.userId;
+    const orders = await prisma.order.findMany({
+      where: { items: { some: { product: { sellerId } } } },
+      select: {
+        id: true,
+        total: true,
+        currency: true,
+        payoutStatus: true,
+        paymentStatus: true,
+        status: true,
+        createdAt: true,
+        paidAt: true
+      },
       orderBy: { createdAt: 'desc' }
     });
-    res.json({ data: payments });
+
+    const summary = {
+      availableKopecks: 0,
+      frozenKopecks: 0,
+      paidOutKopecks: 0,
+      processingKopecks: 0,
+      blockedKopecks: 0
+    };
+
+    const operations = orders.map((order) => {
+      const amountKopecks = order.total;
+      const payoutStatus = String(order.payoutStatus ?? '').toUpperCase();
+      const paymentStatus = String(order.paymentStatus ?? '').toUpperCase();
+      let type: 'income' | 'hold' | 'payout' | 'refund' | 'blocked' = 'income';
+
+      if (payoutStatus === 'HOLD') {
+        summary.frozenKopecks += amountKopecks;
+        type = 'hold';
+      } else if (['RELEASED', 'PAID_OUT', 'PAID'].includes(payoutStatus)) {
+        summary.paidOutKopecks += amountKopecks;
+        type = 'payout';
+      } else if (['PENDING', 'PENDING_PAYOUT', 'PROCESSING'].includes(payoutStatus)) {
+        summary.processingKopecks += amountKopecks;
+      } else if (
+        payoutStatus === 'BLOCKED' ||
+        paymentStatus === 'REFUND_PENDING' ||
+        paymentStatus === 'REFUNDED' ||
+        order.status === 'CANCELLED'
+      ) {
+        summary.blockedKopecks += amountKopecks;
+        type = paymentStatus === 'REFUNDED' ? 'refund' : 'blocked';
+      } else {
+        summary.availableKopecks += amountKopecks;
+      }
+
+      return {
+        orderId: order.id,
+        type,
+        amountKopecks,
+        amountRubles: money.toRublesString(amountKopecks),
+        status: payoutStatus || paymentStatus || order.status,
+        createdAt: order.paidAt ?? order.createdAt
+      };
+    });
+
+    const data = {
+      summary: {
+        ...summary,
+        availableRubles: money.toRublesString(summary.availableKopecks),
+        frozenRubles: money.toRublesString(summary.frozenKopecks),
+        paidOutRubles: money.toRublesString(summary.paidOutKopecks),
+        processingRubles: money.toRublesString(summary.processingKopecks),
+        blockedRubles: money.toRublesString(summary.blockedKopecks)
+      },
+      operations
+    };
+
+    res.json({ data });
   } catch (error) {
     next(error);
   }

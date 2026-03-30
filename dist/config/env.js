@@ -76,6 +76,7 @@ const plusofonVerificationExpiresSec = Number(process.env.PLUSOFON_VERIFICATION_
 const yookassaShopId = process.env.YOOKASSA_SHOP_ID ?? '';
 const yookassaSecretKey = process.env.YOOKASSA_SECRET_KEY ?? '';
 const yookassaReturnUrl = process.env.YOOKASSA_RETURN_URL ?? '';
+const yookassaSafeDealEnabled = (process.env.YOOKASSA_SAFE_DEAL_ENABLED ?? '').toLowerCase() === 'true';
 if (otpProvider === 'plusofon' && !plusofonFlashAccessToken && isProduction) {
     throw new Error('PLUSOFON_FLASH_ACCESS_TOKEN is required when OTP_PROVIDER=plusofon in production');
 }
@@ -135,5 +136,6 @@ exports.env = {
     googlePrivateKey: process.env.GOOGLE_PRIVATE_KEY ?? '',
     yookassaShopId,
     yookassaSecretKey,
-    yookassaReturnUrl
+    yookassaReturnUrl,
+    yookassaSafeDealEnabled
 };
