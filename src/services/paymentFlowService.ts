@@ -413,54 +413,77 @@ export const paymentFlowService = {
     });
   },
 
-  async processWebhook(input: { externalId: string; status: 'success' | 'cancelled'; provider?: string; payload?: unknown }) {
+  async processWebhook(input: {
+    externalId: string;
+    status: 'succeeded' | 'canceled';
+    orderId: string;
+    amount: string;
+    provider?: string;
+    payload?: unknown;
+  }) {
+    const order = await prisma.order.findUnique({ where: { id: input.orderId } });
+    if (!order) return { ok: true };
+
+    const paymentAmount = Number(input.amount);
+    const orderAmount = order.total / 100;
+    if (paymentAmount !== orderAmount) {
+      console.error('[YOOKASSA][AMOUNT_MISMATCH]', {
+        externalId: input.externalId,
+        orderId: input.orderId,
+        paymentAmount,
+        orderAmount
+      });
+      throw new Error('PAYMENT_AMOUNT_MISMATCH');
+    }
+
     const payment = await prisma.payment.findFirst({ where: { externalId: input.externalId }, include: { order: true } });
     if (!payment) return { ok: true };
 
-    if (input.status === 'success') {
-      await prisma.$transaction(async (tx) => {
-        const order = await tx.order.findUnique({ where: { id: payment.orderId } });
-        if (!order) return;
+    if (payment.status === 'SUCCEEDED' || payment.status === 'CANCELED') {
+      return { ok: true };
+    }
 
-        if (order.status === 'PAID') {
-          await tx.payment.update({ where: { id: payment.id }, data: { status: 'SUCCEEDED' } });
-          return;
+    if (input.status === 'succeeded') {
+      const updateResult = await prisma.payment.updateMany({
+        where: {
+          externalId: input.externalId,
+          status: { not: 'SUCCEEDED' }
+        },
+        data: { status: 'SUCCEEDED' }
+      });
+
+      if (updateResult.count === 0) return { ok: true };
+
+      await prisma.order.update({
+        where: { id: order.id },
+        data: {
+          status: 'PAID',
+          paymentStatus: 'PAID',
+          paymentExpiresAt: null,
+          paidAt: new Date(),
+          paymentProvider: input.provider ?? payment.provider,
+          paymentId: payment.id,
+          payoutStatus: 'HOLD'
         }
-
-        await tx.payment.update({ where: { id: payment.id }, data: { status: 'SUCCEEDED' } });
-
-        await tx.order.update({
-          where: { id: order.id },
-          data: {
-            status: 'PAID',
-            paymentStatus: 'PAID',
-            paymentExpiresAt: null,
-            paidAt: new Date(),
-            paymentProvider: input.provider ?? payment.provider,
-            paymentId: payment.id,
-            payoutStatus: 'HOLD'
-          }
-        });
       });
 
       return { ok: true };
     }
 
-    const paymentStatus: PaymentStatus = 'FAILED';
+    const updateResult = await prisma.payment.updateMany({
+      where: {
+        externalId: input.externalId,
+        status: { notIn: ['SUCCEEDED', 'CANCELED'] }
+      },
+      data: { status: 'CANCELED' as PaymentStatus }
+    });
+    if (updateResult.count === 0) return { ok: true };
 
-    await prisma.$transaction(async (tx) => {
-      const order = await tx.order.findUnique({ where: { id: payment.orderId } });
-      if (!order) return;
-      await tx.payment.update({ where: { id: payment.id }, data: { status: paymentStatus } });
-      if (order.status === 'PAID') return;
-      await tx.order.update({
-        where: { id: order.id },
-        data: {
-          status: 'EXPIRED',
-          paymentStatus: 'PAYMENT_EXPIRED',
-          expiredAt: new Date()
-        }
-      });
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        paymentStatus: 'PAYMENT_EXPIRED'
+      }
     });
 
     return { ok: true };
