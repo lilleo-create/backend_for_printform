@@ -9,6 +9,7 @@ const node_crypto_1 = __importDefault(require("node:crypto"));
 const env_1 = require("../config/env");
 const money_1 = require("../utils/money");
 const YOOKASSA_API_URL = 'https://api.yookassa.ru/v3/payments';
+const YOOKASSA_REFUNDS_API_URL = 'https://api.yookassa.ru/v3/refunds';
 const authHeader = () => {
     const authToken = Buffer.from(`${env_1.env.yookassaShopId}:${env_1.env.yookassaSecretKey}`).toString('base64');
     return `Basic ${authToken}`;
@@ -90,5 +91,57 @@ exports.yookassaService = {
             timeout: 15000
         });
         return response.data;
+    },
+    async createRefund(input) {
+        if (!env_1.env.yookassaShopId || !env_1.env.yookassaSecretKey) {
+            throw new Error('YOOKASSA_CONFIG_MISSING');
+        }
+        const idempotenceKey = node_crypto_1.default.randomUUID();
+        const body = {
+            amount: {
+                value: (0, money_1.kopecksToRubles)(input.amount),
+                currency: input.currency
+            },
+            payment_id: input.paymentId,
+            metadata: {
+                orderId: input.orderId
+            }
+        };
+        try {
+            const response = await axios_1.default.post(YOOKASSA_REFUNDS_API_URL, body, {
+                headers: {
+                    Authorization: authHeader(),
+                    'Content-Type': 'application/json',
+                    'Idempotence-Key': idempotenceKey
+                },
+                timeout: 15000
+            });
+            console.info('[YOOKASSA][REFUND_CREATE]', {
+                orderId: input.orderId,
+                paymentId: input.paymentId,
+                refundId: response.data.id,
+                amount: input.amount,
+                status: response.data.status,
+                idempotenceKey
+            });
+            return {
+                id: response.data.id,
+                status: response.data.status,
+                payload: response.data
+            };
+        }
+        catch (error) {
+            console.error('[YOOKASSA][REFUND_CREATE][ERROR]', {
+                orderId: input.orderId,
+                paymentId: input.paymentId,
+                amount: input.amount,
+                idempotenceKey,
+                error,
+                stack: error instanceof Error ? error.stack : undefined
+            });
+            const mappedError = new Error('YOOKASSA_REFUND_CREATE_FAILED');
+            mappedError.cause = error;
+            throw mappedError;
+        }
     }
 };

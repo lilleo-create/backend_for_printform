@@ -35,7 +35,7 @@ const sendWebhook = async (body: unknown) => {
   }
 };
 
-test('yookassa webhook maps payment.succeeded to success', async () => {
+test('yookassa webhook maps payment.succeeded to succeeded', async () => {
   let payload: any = null;
   (paymentFlowService.processWebhook as any) = async (input: any) => {
     payload = input;
@@ -44,16 +44,23 @@ test('yookassa webhook maps payment.succeeded to success', async () => {
 
   const response = await sendWebhook({
     event: 'payment.succeeded',
-    object: { id: 'yk-pay-1', status: 'succeeded' }
+    object: {
+      id: 'yk-pay-1',
+      status: 'succeeded',
+      amount: { value: '1.00' },
+      metadata: { orderId: 'order-1' }
+    }
   });
 
   assert.equal(response.status, 200);
   assert.equal(payload.externalId, 'yk-pay-1');
-  assert.equal(payload.status, 'success');
+  assert.equal(payload.status, 'succeeded');
+  assert.equal(payload.orderId, 'order-1');
+  assert.equal(payload.amount, '1.00');
   assert.equal(payload.provider, 'yookassa');
 });
 
-test('yookassa webhook maps payment.canceled to cancelled', async () => {
+test('yookassa webhook maps payment.canceled to canceled', async () => {
   let payload: any = null;
   (paymentFlowService.processWebhook as any) = async (input: any) => {
     payload = input;
@@ -62,10 +69,15 @@ test('yookassa webhook maps payment.canceled to cancelled', async () => {
 
   const response = await sendWebhook({
     event: 'payment.canceled',
-    object: { id: 'yk-pay-2', status: 'canceled' }
+    object: {
+      id: 'yk-pay-2',
+      status: 'canceled',
+      amount: { value: '1.00' },
+      metadata: { orderId: 'order-2' }
+    }
   });
 
   assert.equal(response.status, 200);
   assert.equal(payload.externalId, 'yk-pay-2');
-  assert.equal(payload.status, 'cancelled');
+  assert.equal(payload.status, 'canceled');
 });

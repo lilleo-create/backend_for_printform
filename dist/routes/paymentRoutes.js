@@ -33,10 +33,19 @@ const startSchema = zod_1.z.object({
         .min(1)
 });
 const yookassaWebhookSchema = zod_1.z.object({
-    event: zod_1.z.enum(['payment.succeeded', 'payment.canceled']),
+    event: zod_1.z.enum(['payment.succeeded', 'payment.canceled', 'refund.succeeded']),
     object: zod_1.z.object({
         id: zod_1.z.string(),
-        status: zod_1.z.string().optional()
+        status: zod_1.z.string().optional(),
+        amount: zod_1.z.object({
+            value: zod_1.z.string()
+        }),
+        payment_id: zod_1.z.string().optional(),
+        metadata: zod_1.z
+            .object({
+            orderId: zod_1.z.string()
+        })
+            .optional()
     })
 });
 exports.paymentRoutes.post('/start', authMiddleware_1.authenticate, rateLimiters_1.writeLimiter, async (req, res, next) => {
@@ -89,21 +98,43 @@ exports.paymentRoutes.post('/start', authMiddleware_1.authenticate, rateLimiters
 exports.paymentRoutes.post('/yookassa/webhook', async (req, res, next) => {
     try {
         const payload = yookassaWebhookSchema.parse(req.body);
-        const mappedStatus = payload.event === 'payment.succeeded' ? 'success' : 'cancelled';
-        console.info('[YOOKASSA][webhook]', {
+        console.info('[YOOKASSA][WEBHOOK]', {
             event: payload.event,
             paymentId: payload.object.id,
+            orderId: payload.object.metadata?.orderId ?? null,
+            amount: payload.object.amount.value,
             status: payload.object.status ?? null
         });
-        await paymentFlowService_1.paymentFlowService.processWebhook({
-            externalId: payload.object.id,
-            status: mappedStatus,
-            provider: 'yookassa',
-            payload
-        });
+        if (payload.event === 'refund.succeeded') {
+            await paymentFlowService_1.paymentFlowService.processRefundWebhook({
+                externalRefundId: payload.object.id,
+                amount: payload.object.amount.value,
+                orderId: payload.object.metadata?.orderId,
+                payload
+            });
+        }
+        else {
+            const orderId = payload.object.metadata?.orderId;
+            if (!orderId) {
+                throw new Error('ORDER_ID_MISSING');
+            }
+            await paymentFlowService_1.paymentFlowService.processWebhook({
+                externalId: payload.object.id,
+                status: payload.object.status === 'succeeded' ? 'succeeded' : 'canceled',
+                orderId,
+                amount: payload.object.amount.value,
+                provider: 'yookassa',
+                payload
+            });
+        }
         return res.json({ received: true });
     }
     catch (error) {
-        return next(error);
+        const message = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
+        console.error('[YOOKASSA][WEBHOOK_ERROR]', {
+            message,
+            error
+        });
+        return res.status(200).json({ received: true });
     }
 });

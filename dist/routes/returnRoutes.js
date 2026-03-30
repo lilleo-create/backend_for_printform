@@ -165,6 +165,11 @@ exports.returnRoutes.post('/', authMiddleware_1.requireAuth, rateLimiters_1.writ
                 }
             });
         });
+        console.info('[RETURN][CREATE]', {
+            orderId: orderItem.orderId,
+            amount: orderItem.priceAtPurchase * orderItem.quantity,
+            status: created?.status ?? 'CREATED'
+        });
         res.status(201).json({ data: created });
     }
     catch (error) {

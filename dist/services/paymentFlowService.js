@@ -5,6 +5,7 @@ const client_1 = require("@prisma/client");
 const prisma_1 = require("../lib/prisma");
 const orderUseCases_1 = require("../usecases/orderUseCases");
 const orderPayment_1 = require("../utils/orderPayment");
+const money_1 = require("../utils/money");
 const yookassaService_1 = require("./yookassaService");
 const asRecord = (value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -59,6 +60,7 @@ const buildOrderLabels = (orderId, packagesCount) => {
         return { packageNo, code: base.slice(0, 15) };
     });
 };
+const isFullRefund = (paidAmount, refundedAmount) => refundedAmount >= paidAmount;
 exports.paymentFlowService = {
     async startPayment(input) {
         try {
@@ -360,51 +362,194 @@ exports.paymentFlowService = {
             return { orderId: order.id, paymentStatus: 'PENDING_PAYMENT', paymentExpiresAt, paymentUrl };
         });
     },
+    async createOrderCancellationRefund(input) {
+        return prisma_1.prisma.$transaction(async (tx) => {
+            const order = await tx.order.findFirst({
+                where: { id: input.orderId, buyerId: input.buyerId },
+                include: { shipment: true, payments: { where: { status: 'SUCCEEDED' }, orderBy: { createdAt: 'desc' }, take: 1 } }
+            });
+            if (!order)
+                throw new Error('ORDER_NOT_FOUND');
+            if (order.paymentStatus !== 'PAID')
+                throw new Error('ORDER_NOT_PAID');
+            const shipmentStatus = String(order.shipment?.status ?? '').toUpperCase();
+            const isAlreadyShipped = ['READY_FOR_SHIPMENT', 'HANDED_TO_DELIVERY', 'IN_TRANSIT', 'DELIVERED'].includes(order.status) ||
+                ['SHIPPED', 'DELIVERED', 'IN_TRANSIT', 'READY_FOR_PICKUP'].includes(shipmentStatus) ||
+                ['SHIPPED', 'DELIVERED', 'IN_TRANSIT'].includes(String(order.cdekStatus ?? '').toUpperCase());
+            if (isAlreadyShipped) {
+                throw new Error('ORDER_ALREADY_SHIPPED');
+            }
+            const successPayment = order.payments[0];
+            const externalPaymentId = successPayment?.externalId ?? null;
+            if (!externalPaymentId)
+                throw new Error('PAYMENT_EXTERNAL_ID_NOT_FOUND');
+            const succeededRefundAgg = await tx.refund.aggregate({
+                where: { orderId: order.id, status: 'SUCCEEDED' },
+                _sum: { amount: true }
+            });
+            const succeededRefundAmount = succeededRefundAgg._sum.amount ?? 0;
+            const pendingRefundAgg = await tx.refund.aggregate({
+                where: { orderId: order.id, status: 'PENDING' },
+                _sum: { amount: true }
+            });
+            const pendingRefundAmount = pendingRefundAgg._sum.amount ?? 0;
+            const refundableAmount = order.total - succeededRefundAmount - pendingRefundAmount;
+            if (refundableAmount <= 0) {
+                throw new Error('REFUND_AMOUNT_EXCEEDS_PAYMENT');
+            }
+            const refundAmount = order.total;
+            if (refundAmount > refundableAmount) {
+                throw new Error('REFUND_AMOUNT_EXCEEDS_PAYMENT');
+            }
+            const refundResponse = await yookassaService_1.yookassaService.createRefund({
+                paymentId: externalPaymentId,
+                amount: refundAmount,
+                currency: order.currency,
+                orderId: order.id,
+                reason: input.reason
+            });
+            const createdRefund = await tx.refund.create({
+                data: {
+                    orderId: order.id,
+                    paymentId: externalPaymentId,
+                    externalId: refundResponse.id,
+                    amount: refundAmount,
+                    currency: order.currency,
+                    reason: input.reason,
+                    status: refundResponse.status === 'succeeded' ? 'SUCCEEDED' : 'PENDING',
+                    payloadJson: refundResponse.payload
+                }
+            });
+            const totalRefundedAmount = succeededRefundAmount + (createdRefund.status === 'SUCCEEDED' ? createdRefund.amount : 0);
+            const fullRefunded = isFullRefund(order.total, totalRefundedAmount);
+            const updatedOrder = await tx.order.update({
+                where: { id: order.id },
+                data: {
+                    status: createdRefund.status === 'SUCCEEDED' && fullRefunded ? 'CANCELLED' : 'CANCELLED_REQUESTED',
+                    statusUpdatedAt: new Date(),
+                    paymentStatus: createdRefund.status === 'SUCCEEDED' ? (fullRefunded ? 'REFUNDED' : 'PARTIALLY_REFUNDED') : 'REFUND_PENDING',
+                    payoutStatus: createdRefund.status === 'SUCCEEDED' && fullRefunded ? 'BLOCKED' : order.payoutStatus
+                }
+            });
+            console.info('[ORDER][CANCEL]', {
+                orderId: order.id,
+                paymentId: externalPaymentId,
+                refundId: createdRefund.externalId,
+                amount: refundAmount,
+                status: createdRefund.status
+            });
+            return { order: updatedOrder, refund: createdRefund };
+        });
+    },
+    async processRefundWebhook(input) {
+        const refund = await prisma_1.prisma.refund.findFirst({
+            where: { externalId: input.externalRefundId },
+            include: { order: true }
+        });
+        if (!refund)
+            return { ok: true };
+        const refundAmount = (0, money_1.rublesToKopecks)(Number(input.amount));
+        if (refundAmount !== refund.amount) {
+            console.error('[YOOKASSA][REFUND_WEBHOOK][AMOUNT_MISMATCH]', {
+                orderId: refund.orderId,
+                externalRefundId: input.externalRefundId,
+                expectedAmount: refund.amount,
+                gotAmount: refundAmount
+            });
+            throw new Error('REFUND_AMOUNT_MISMATCH');
+        }
+        const marked = await prisma_1.prisma.refund.updateMany({
+            where: { id: refund.id, status: { not: 'SUCCEEDED' } },
+            data: {
+                status: 'SUCCEEDED',
+                payloadJson: input.payload ? input.payload : undefined
+            }
+        });
+        if (marked.count === 0)
+            return { ok: true };
+        const succeededAgg = await prisma_1.prisma.refund.aggregate({
+            where: { orderId: refund.orderId, status: 'SUCCEEDED' },
+            _sum: { amount: true }
+        });
+        const refundedAmount = succeededAgg._sum.amount ?? 0;
+        const fullRefund = isFullRefund(refund.order.total, refundedAmount);
+        await prisma_1.prisma.order.update({
+            where: { id: refund.orderId },
+            data: {
+                paymentStatus: fullRefund ? 'REFUNDED' : 'PARTIALLY_REFUNDED',
+                status: fullRefund ? 'CANCELLED' : refund.order.status,
+                payoutStatus: fullRefund ? 'BLOCKED' : refund.order.payoutStatus,
+                statusUpdatedAt: fullRefund ? new Date() : refund.order.statusUpdatedAt
+            }
+        });
+        console.info('[YOOKASSA][REFUND_WEBHOOK]', {
+            orderId: refund.orderId,
+            paymentId: refund.paymentId,
+            refundId: input.externalRefundId,
+            amount: refundAmount,
+            status: 'SUCCEEDED'
+        });
+        return { ok: true };
+    },
     async processWebhook(input) {
+        const order = await prisma_1.prisma.order.findUnique({ where: { id: input.orderId } });
+        if (!order)
+            return { ok: true };
+        const paymentAmount = Number(input.amount);
+        const orderAmount = order.total / 100;
+        if (paymentAmount !== orderAmount) {
+            console.error('[YOOKASSA][AMOUNT_MISMATCH]', {
+                externalId: input.externalId,
+                orderId: input.orderId,
+                paymentAmount,
+                orderAmount
+            });
+            throw new Error('PAYMENT_AMOUNT_MISMATCH');
+        }
         const payment = await prisma_1.prisma.payment.findFirst({ where: { externalId: input.externalId }, include: { order: true } });
         if (!payment)
             return { ok: true };
-        if (input.status === 'success') {
-            await prisma_1.prisma.$transaction(async (tx) => {
-                const order = await tx.order.findUnique({ where: { id: payment.orderId } });
-                if (!order)
-                    return;
-                if (order.status === 'PAID') {
-                    await tx.payment.update({ where: { id: payment.id }, data: { status: 'SUCCEEDED' } });
-                    return;
+        if (payment.status === 'SUCCEEDED' || payment.status === 'CANCELED') {
+            return { ok: true };
+        }
+        if (input.status === 'succeeded') {
+            const updateResult = await prisma_1.prisma.payment.updateMany({
+                where: {
+                    externalId: input.externalId,
+                    status: { not: 'SUCCEEDED' }
+                },
+                data: { status: 'SUCCEEDED' }
+            });
+            if (updateResult.count === 0)
+                return { ok: true };
+            await prisma_1.prisma.order.update({
+                where: { id: order.id },
+                data: {
+                    status: 'PAID',
+                    paymentStatus: 'PAID',
+                    paymentExpiresAt: null,
+                    paidAt: new Date(),
+                    paymentProvider: input.provider ?? payment.provider,
+                    paymentId: payment.id,
+                    payoutStatus: 'HOLD'
                 }
-                await tx.payment.update({ where: { id: payment.id }, data: { status: 'SUCCEEDED' } });
-                await tx.order.update({
-                    where: { id: order.id },
-                    data: {
-                        status: 'PAID',
-                        paymentStatus: 'PAID',
-                        paymentExpiresAt: null,
-                        paidAt: new Date(),
-                        paymentProvider: input.provider ?? payment.provider,
-                        paymentId: payment.id,
-                        payoutStatus: 'HOLD'
-                    }
-                });
             });
             return { ok: true };
         }
-        const paymentStatus = 'FAILED';
-        await prisma_1.prisma.$transaction(async (tx) => {
-            const order = await tx.order.findUnique({ where: { id: payment.orderId } });
-            if (!order)
-                return;
-            await tx.payment.update({ where: { id: payment.id }, data: { status: paymentStatus } });
-            if (order.status === 'PAID')
-                return;
-            await tx.order.update({
-                where: { id: order.id },
-                data: {
-                    status: 'EXPIRED',
-                    paymentStatus: 'PAYMENT_EXPIRED',
-                    expiredAt: new Date()
-                }
-            });
+        const updateResult = await prisma_1.prisma.payment.updateMany({
+            where: {
+                externalId: input.externalId,
+                status: { notIn: ['SUCCEEDED', 'CANCELED'] }
+            },
+            data: { status: 'CANCELED' }
+        });
+        if (updateResult.count === 0)
+            return { ok: true };
+        await prisma_1.prisma.order.update({
+            where: { id: order.id },
+            data: {
+                paymentStatus: 'PAYMENT_EXPIRED'
+            }
         });
         return { ok: true };
     }

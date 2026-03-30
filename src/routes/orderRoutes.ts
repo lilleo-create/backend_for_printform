@@ -207,35 +207,27 @@ orderRoutes.post('/:id/ready-for-shipment', authenticate, writeLimiter, async (r
 });
 
 
-orderRoutes.post('/:id/cancel', authenticate, writeLimiter, async (req: AuthRequest, res, next) => {
+orderRoutes.post('/:orderId/cancel', authenticate, writeLimiter, async (req: AuthRequest, res, next) => {
   try {
-    const order = await prisma.order.findFirst({
-      where: { id: req.params.id, buyerId: req.user!.userId },
-      include: { shipment: true }
-    });
-    if (!order) return res.status(404).json({ error: { code: 'ORDER_NOT_FOUND' } });
-
-    if (order.status === 'CANCELLED') {
-      return res.json({ data: order });
-    }
-
-    const handoverStarted = Boolean(order.readyForShipmentAt) || Boolean(order.shipment);
-    if (handoverStarted) {
-      return res.status(409).json({
-        error: {
-          code: 'CANNOT_CANCEL_AFTER_HANDOVER',
-          message: 'Заказ уже передан в доставку. Оформите возврат через кабинет.'
-        }
-      });
-    }
-
-    const updated = await prisma.order.update({
-      where: { id: order.id },
-      data: { status: 'CANCELLED', statusUpdatedAt: new Date() }
+    const { order, refund } = await paymentFlowService.createOrderCancellationRefund({
+      orderId: req.params.orderId,
+      buyerId: req.user!.userId
     });
 
-    return res.json({ data: updated });
+    return res.json({ data: order, refund });
   } catch (error) {
+    const message = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
+    if (message === 'ORDER_NOT_FOUND') {
+      return res.status(404).json({ error: { code: message } });
+    }
+    if (
+      message === 'ORDER_NOT_PAID' ||
+      message === 'ORDER_ALREADY_SHIPPED' ||
+      message === 'REFUND_AMOUNT_EXCEEDS_PAYMENT' ||
+      message === 'PAYMENT_EXTERNAL_ID_NOT_FOUND'
+    ) {
+      return res.status(409).json({ error: { code: message } });
+    }
     return next(error);
   }
 });
