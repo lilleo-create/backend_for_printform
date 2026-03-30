@@ -401,13 +401,26 @@ exports.paymentFlowService = {
             if (refundAmount > refundableAmount) {
                 throw new Error('REFUND_AMOUNT_EXCEEDS_PAYMENT');
             }
-            const refundResponse = await yookassaService_1.yookassaService.createRefund({
-                paymentId: externalPaymentId,
-                amount: refundAmount,
-                currency: order.currency,
-                orderId: order.id,
-                reason: input.reason
-            });
+            let refundResponse;
+            try {
+                refundResponse = await yookassaService_1.yookassaService.createRefund({
+                    paymentId: externalPaymentId,
+                    amount: refundAmount,
+                    currency: order.currency,
+                    orderId: order.id,
+                    reason: input.reason
+                });
+            }
+            catch (error) {
+                console.error('[ORDER][CANCEL][REFUND_CREATE_FAILED]', {
+                    orderId: order.id,
+                    paymentId: externalPaymentId,
+                    amount: refundAmount,
+                    error,
+                    stack: error instanceof Error ? error.stack : undefined
+                });
+                throw new Error('REFUND_CREATE_FAILED');
+            }
             const createdRefund = await tx.refund.create({
                 data: {
                     orderId: order.id,
@@ -420,15 +433,13 @@ exports.paymentFlowService = {
                     payloadJson: refundResponse.payload
                 }
             });
-            const totalRefundedAmount = succeededRefundAmount + (createdRefund.status === 'SUCCEEDED' ? createdRefund.amount : 0);
-            const fullRefunded = isFullRefund(order.total, totalRefundedAmount);
             const updatedOrder = await tx.order.update({
                 where: { id: order.id },
                 data: {
-                    status: createdRefund.status === 'SUCCEEDED' && fullRefunded ? 'CANCELLED' : 'CANCELLED_REQUESTED',
+                    status: 'CANCELLED',
                     statusUpdatedAt: new Date(),
-                    paymentStatus: createdRefund.status === 'SUCCEEDED' ? (fullRefunded ? 'REFUNDED' : 'PARTIALLY_REFUNDED') : 'REFUND_PENDING',
-                    payoutStatus: createdRefund.status === 'SUCCEEDED' && fullRefunded ? 'BLOCKED' : order.payoutStatus
+                    paymentStatus: 'REFUND_PENDING',
+                    payoutStatus: 'BLOCKED'
                 }
             });
             console.info('[ORDER][CANCEL]', {
@@ -467,19 +478,11 @@ exports.paymentFlowService = {
         });
         if (marked.count === 0)
             return { ok: true };
-        const succeededAgg = await prisma_1.prisma.refund.aggregate({
-            where: { orderId: refund.orderId, status: 'SUCCEEDED' },
-            _sum: { amount: true }
-        });
-        const refundedAmount = succeededAgg._sum.amount ?? 0;
-        const fullRefund = isFullRefund(refund.order.total, refundedAmount);
         await prisma_1.prisma.order.update({
             where: { id: refund.orderId },
             data: {
-                paymentStatus: fullRefund ? 'REFUNDED' : 'PARTIALLY_REFUNDED',
-                status: fullRefund ? 'CANCELLED' : refund.order.status,
-                payoutStatus: fullRefund ? 'BLOCKED' : refund.order.payoutStatus,
-                statusUpdatedAt: fullRefund ? new Date() : refund.order.statusUpdatedAt
+                paymentStatus: 'REFUNDED',
+                payoutStatus: 'BLOCKED'
             }
         });
         console.info('[YOOKASSA][REFUND_WEBHOOK]', {

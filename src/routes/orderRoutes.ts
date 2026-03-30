@@ -228,6 +228,9 @@ orderRoutes.post('/:orderId/cancel', authenticate, writeLimiter, async (req: Aut
     ) {
       return res.status(409).json({ error: { code: message } });
     }
+    if (message === 'REFUND_CREATE_FAILED') {
+      return res.status(502).json({ error: { code: message } });
+    }
     return next(error);
   }
 });
