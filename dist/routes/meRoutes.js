@@ -11,6 +11,7 @@ const rateLimiters_1 = require("../middleware/rateLimiters");
 const prisma_1 = require("../lib/prisma");
 const orderDeliveryService_1 = require("../services/orderDeliveryService");
 const shipmentService_1 = require("../services/shipmentService");
+const paymentFlowService_1 = require("../services/paymentFlowService");
 exports.meRoutes = (0, express_1.Router)();
 const addressSchema = zod_1.z.object({
     addressText: zod_1.z.string().min(3),
@@ -278,13 +279,35 @@ exports.meRoutes.patch('/orders/:id/cancel', authMiddleware_1.requireAuth, rateL
         if (isSentToDelivery) {
             return res.status(409).json({ error: { code: 'ORDER_ALREADY_SHIPPED', message: 'Заказ уже отправлен в доставку. Доступен только возврат.' } });
         }
+        if (order.paymentStatus === 'PAID') {
+            const cancelledWithRefund = await paymentFlowService_1.paymentFlowService.createOrderCancellationRefund({
+                orderId: order.id,
+                buyerId: req.user.userId
+            });
+            return res.json({ data: cancelledWithRefund.order, refund: cancelledWithRefund.refund });
+        }
         const cancelled = await prisma_1.prisma.order.update({
             where: { id: order.id },
-            data: { status: 'CANCELLED', statusUpdatedAt: new Date() }
+            data: { status: 'CANCELLED', statusUpdatedAt: new Date(), paymentStatus: 'CANCELLED', payoutStatus: 'BLOCKED' }
+        });
+        console.info('[ORDER][CANCEL]', {
+            orderId: order.id,
+            paymentStatus: order.paymentStatus,
+            mode: 'NO_REFUND'
         });
         return res.json({ data: cancelled });
     }
     catch (error) {
+        const message = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
+        if (message === 'ORDER_NOT_PAID' ||
+            message === 'ORDER_ALREADY_SHIPPED' ||
+            message === 'REFUND_AMOUNT_EXCEEDS_PAYMENT' ||
+            message === 'PAYMENT_EXTERNAL_ID_NOT_FOUND') {
+            return res.status(409).json({ error: { code: message } });
+        }
+        if (message === 'REFUND_CREATE_FAILED') {
+            return res.status(502).json({ error: { code: message } });
+        }
         next(error);
     }
 });
