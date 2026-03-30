@@ -497,7 +497,7 @@ export const paymentFlowService = {
         data: {
           status: 'CANCELLED',
           statusUpdatedAt: new Date(),
-          paymentStatus: 'REFUND_PENDING',
+          paymentStatus: refundResponse.status === 'succeeded' ? 'REFUNDED' : 'REFUND_PENDING',
           payoutStatus: 'BLOCKED'
         }
       });
@@ -541,13 +541,27 @@ export const paymentFlowService = {
     });
     if (marked.count === 0) return { ok: true };
 
-    await prisma.order.update({
-      where: { id: refund.orderId },
-      data: {
-        paymentStatus: 'REFUNDED',
-        payoutStatus: 'BLOCKED'
-      }
+    const previousPaymentStatus = refund.order.paymentStatus;
+    const computedNextPaymentStatus = refund.amount === refund.order.total ? 'REFUNDED' : 'PARTIALLY_REFUNDED';
+    const nextPaymentStatus = previousPaymentStatus === 'REFUNDED' ? 'REFUNDED' : computedNextPaymentStatus;
+
+    console.info('[YOOKASSA][REFUND_WEBHOOK][MATCH]', {
+      refundExternalId: input.externalRefundId,
+      refundId: refund.id,
+      orderId: refund.orderId,
+      previousPaymentStatus,
+      nextPaymentStatus
     });
+
+    if (previousPaymentStatus !== 'REFUNDED') {
+      await prisma.order.update({
+        where: { id: refund.orderId },
+        data: {
+          paymentStatus: nextPaymentStatus,
+          payoutStatus: 'BLOCKED'
+        }
+      });
+    }
 
     console.info('[YOOKASSA][REFUND_WEBHOOK]', {
       orderId: refund.orderId,
