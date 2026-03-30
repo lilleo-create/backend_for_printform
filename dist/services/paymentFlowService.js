@@ -361,50 +361,64 @@ exports.paymentFlowService = {
         });
     },
     async processWebhook(input) {
+        const order = await prisma_1.prisma.order.findUnique({ where: { id: input.orderId } });
+        if (!order)
+            return { ok: true };
+        const paymentAmount = Number(input.amount);
+        const orderAmount = order.total / 100;
+        if (paymentAmount !== orderAmount) {
+            console.error('[YOOKASSA][AMOUNT_MISMATCH]', {
+                externalId: input.externalId,
+                orderId: input.orderId,
+                paymentAmount,
+                orderAmount
+            });
+            throw new Error('PAYMENT_AMOUNT_MISMATCH');
+        }
         const payment = await prisma_1.prisma.payment.findFirst({ where: { externalId: input.externalId }, include: { order: true } });
         if (!payment)
             return { ok: true };
-        if (input.status === 'success') {
-            await prisma_1.prisma.$transaction(async (tx) => {
-                const order = await tx.order.findUnique({ where: { id: payment.orderId } });
-                if (!order)
-                    return;
-                if (order.status === 'PAID') {
-                    await tx.payment.update({ where: { id: payment.id }, data: { status: 'SUCCEEDED' } });
-                    return;
+        if (payment.status === 'SUCCEEDED' || payment.status === 'CANCELED') {
+            return { ok: true };
+        }
+        if (input.status === 'succeeded') {
+            const updateResult = await prisma_1.prisma.payment.updateMany({
+                where: {
+                    externalId: input.externalId,
+                    status: { not: 'SUCCEEDED' }
+                },
+                data: { status: 'SUCCEEDED' }
+            });
+            if (updateResult.count === 0)
+                return { ok: true };
+            await prisma_1.prisma.order.update({
+                where: { id: order.id },
+                data: {
+                    status: 'PAID',
+                    paymentStatus: 'PAID',
+                    paymentExpiresAt: null,
+                    paidAt: new Date(),
+                    paymentProvider: input.provider ?? payment.provider,
+                    paymentId: payment.id,
+                    payoutStatus: 'HOLD'
                 }
-                await tx.payment.update({ where: { id: payment.id }, data: { status: 'SUCCEEDED' } });
-                await tx.order.update({
-                    where: { id: order.id },
-                    data: {
-                        status: 'PAID',
-                        paymentStatus: 'PAID',
-                        paymentExpiresAt: null,
-                        paidAt: new Date(),
-                        paymentProvider: input.provider ?? payment.provider,
-                        paymentId: payment.id,
-                        payoutStatus: 'HOLD'
-                    }
-                });
             });
             return { ok: true };
         }
-        const paymentStatus = 'FAILED';
-        await prisma_1.prisma.$transaction(async (tx) => {
-            const order = await tx.order.findUnique({ where: { id: payment.orderId } });
-            if (!order)
-                return;
-            await tx.payment.update({ where: { id: payment.id }, data: { status: paymentStatus } });
-            if (order.status === 'PAID')
-                return;
-            await tx.order.update({
-                where: { id: order.id },
-                data: {
-                    status: 'EXPIRED',
-                    paymentStatus: 'PAYMENT_EXPIRED',
-                    expiredAt: new Date()
-                }
-            });
+        const updateResult = await prisma_1.prisma.payment.updateMany({
+            where: {
+                externalId: input.externalId,
+                status: { notIn: ['SUCCEEDED', 'CANCELED'] }
+            },
+            data: { status: 'CANCELED' }
+        });
+        if (updateResult.count === 0)
+            return { ok: true };
+        await prisma_1.prisma.order.update({
+            where: { id: order.id },
+            data: {
+                paymentStatus: 'PAYMENT_EXPIRED'
+            }
         });
         return { ok: true };
     }

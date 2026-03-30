@@ -124,23 +124,22 @@ test('startPayment with different paymentAttemptKey creates new order', async ()
 });
 
 test('webhook success makes order PAID and sets paidAt', async () => {
-  (prisma.payment.findFirst as any) = async () => ({ id: 'pay-1', provider: 'yookassa', orderId: 'order-1', order: { id: 'order-1' } });
+  (prisma.order.findUnique as any) = async () => ({ id: 'order-1', total: 100, status: 'CREATED' });
+  (prisma.payment.findFirst as any) = async () => ({ id: 'pay-1', provider: 'yookassa', orderId: 'order-1', order: { id: 'order-1' }, status: 'PENDING' });
+  (prisma.payment.updateMany as any) = async () => ({ count: 1 });
 
   let updatedOrderData: any = null;
-  (prisma.$transaction as any) = async (cb: any) =>
-    cb({
-      order: {
-        findUnique: async () => ({ id: 'order-1', status: 'CREATED' }),
-        update: async ({ data }: any) => {
-          updatedOrderData = data;
-          return {};
-        },
-        updateMany: async () => ({ count: 0 })
-      },
-      payment: { update: async () => ({}) }
-    });
+  (prisma.order.update as any) = async ({ data }: any) => {
+    updatedOrderData = data;
+    return {};
+  };
 
-  await paymentFlowService.processWebhook({ externalId: 'ext-pay-1', status: 'success' });
+  await paymentFlowService.processWebhook({
+    externalId: 'ext-pay-1',
+    status: 'succeeded',
+    orderId: 'order-1',
+    amount: '1.00'
+  });
   assert.equal(updatedOrderData.status, 'PAID');
   assert.ok(updatedOrderData.paidAt instanceof Date);
 });

@@ -866,6 +866,7 @@ enum PaymentStatus {
   PENDING
   REQUIRES_ACTION
   SUCCEEDED
+  CANCELED
   FAILED
 }
 

@@ -38,7 +38,13 @@ const yookassaWebhookSchema = z.object({
   event: z.enum(['payment.succeeded', 'payment.canceled']),
   object: z.object({
     id: z.string(),
-    status: z.string().optional()
+    status: z.string().optional(),
+    amount: z.object({
+      value: z.string()
+    }),
+    metadata: z.object({
+      orderId: z.string()
+    })
   })
 });
 
@@ -96,23 +102,31 @@ paymentRoutes.post('/start', authenticate, writeLimiter, async (req: AuthRequest
 paymentRoutes.post('/yookassa/webhook', async (req, res, next) => {
   try {
     const payload = yookassaWebhookSchema.parse(req.body);
-    const mappedStatus = payload.event === 'payment.succeeded' ? 'success' : 'cancelled';
 
-    console.info('[YOOKASSA][webhook]', {
+    console.info('[YOOKASSA][WEBHOOK]', {
       event: payload.event,
       paymentId: payload.object.id,
+      orderId: payload.object.metadata.orderId,
+      amount: payload.object.amount.value,
       status: payload.object.status ?? null
     });
 
     await paymentFlowService.processWebhook({
       externalId: payload.object.id,
-      status: mappedStatus,
+      status: payload.object.status === 'succeeded' ? 'succeeded' : 'canceled',
+      orderId: payload.object.metadata.orderId,
+      amount: payload.object.amount.value,
       provider: 'yookassa',
       payload
     });
 
     return res.json({ received: true });
   } catch (error) {
-    return next(error);
+    const message = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
+    console.error('[YOOKASSA][WEBHOOK_ERROR]', {
+      message,
+      error
+    });
+    return res.status(200).json({ received: true });
   }
 });
