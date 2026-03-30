@@ -22,6 +22,8 @@ exports.yookassaService = {
             throw new Error('YOOKASSA_CONFIG_MISSING');
         }
         const idempotenceKey = node_crypto_1.default.randomUUID();
+        const returnUrl = new URL(env_1.env.yookassaReturnUrl);
+        returnUrl.searchParams.set('orderId', input.orderId);
         const body = {
             amount: {
                 value: (0, money_1.kopecksToRubles)(input.amount),
@@ -29,7 +31,7 @@ exports.yookassaService = {
             },
             confirmation: {
                 type: 'redirect',
-                return_url: env_1.env.yookassaReturnUrl
+                return_url: returnUrl.toString()
             },
             capture: true,
             description: input.description,

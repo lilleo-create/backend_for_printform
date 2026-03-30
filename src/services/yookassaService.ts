@@ -46,6 +46,10 @@ export const yookassaService = {
     }
 
     const idempotenceKey = crypto.randomUUID();
+
+    const returnUrl = new URL(env.yookassaReturnUrl);
+    returnUrl.searchParams.set('orderId', input.orderId);
+
     const body = {
       amount: {
         value: kopecksToRubles(input.amount),
@@ -53,7 +57,7 @@ export const yookassaService = {
       },
       confirmation: {
         type: 'redirect',
-        return_url: env.yookassaReturnUrl
+        return_url: returnUrl.toString()
       },
       capture: true,
       description: input.description,
@@ -61,7 +65,6 @@ export const yookassaService = {
         orderId: input.orderId
       }
     };
-
     let response;
     try {
       response = await axios.post<YooKassaPaymentResponse>(YOOKASSA_API_URL, body, {
