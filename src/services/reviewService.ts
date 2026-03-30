@@ -9,6 +9,28 @@ type ListReviewOptions = {
   isAdmin?: boolean;
 };
 
+const extractPrismaErrorInfo = (error: unknown): { prismaCode: string | null; prismaMessage: string | null } => {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    return { prismaCode: error.code, prismaMessage: error.message };
+  }
+  if (error instanceof Prisma.PrismaClientValidationError) {
+    return { prismaCode: 'PRISMA_VALIDATION', prismaMessage: error.message };
+  }
+  return { prismaCode: null, prismaMessage: null };
+};
+
+const logReviewEndpointError = (endpoint: string, context: Record<string, unknown>, error: unknown) => {
+  const { prismaCode, prismaMessage } = extractPrismaErrorInfo(error);
+  console.error(`[${endpoint}] failed`, {
+    endpoint,
+    ...context,
+    prismaCode,
+    prismaMessage,
+    message: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined
+  });
+};
+
 const sortMap = (sort: string): ReviewOrderBy => {
   switch (sort) {
     case 'helpful':
@@ -315,68 +337,90 @@ export const reviewService = {
         }, options)
       );
     } catch (error) {
-      console.error('[reviewService.listByProducts] failed to load reviews', {
+      logReviewEndpointError('reviewService.listByProducts', {
         productIds,
         currentUserId: options.currentUserId ?? null,
         isAdmin: options.isAdmin ?? false,
         page,
         limit,
-        sort,
-        message: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined
-      });
+        sort
+      }, error);
       throw error;
     }
   },
 
   async countByProducts(productIds: string[], options: ListReviewOptions = {}) {
-    const approvedCount = await prisma.review.count({ where: buildWhere(productIds) });
-    if (!options.currentUserId || options.isAdmin) {
-      return approvedCount;
-    }
-    const pendingCount = await prisma.review.count({
-      where: {
-        productId: { in: productIds },
-        userId: options.currentUserId,
-        moderationStatus: 'PENDING'
+    try {
+      const approvedCount = await prisma.review.count({ where: buildWhere(productIds) });
+      if (!options.currentUserId || options.isAdmin) {
+        return approvedCount;
       }
-    });
-    return approvedCount + pendingCount;
+      const pendingCount = await prisma.review.count({
+        where: {
+          productId: { in: productIds },
+          userId: options.currentUserId,
+          moderationStatus: 'PENDING'
+        }
+      });
+      return approvedCount + pendingCount;
+    } catch (error) {
+      logReviewEndpointError('reviewService.countByProducts', {
+        productIds,
+        currentUserId: options.currentUserId ?? null,
+        isAdmin: options.isAdmin ?? false
+      }, error);
+      throw error;
+    }
   },
 
   async summaryByProducts(productIds: string[]) {
-    const grouped = await prisma.review.groupBy({
-      by: ['rating'],
-      where: buildWhere(productIds),
-      _count: { _all: true }
-    });
-
-    const total = grouped.reduce((sum, item) => sum + item._count._all, 0);
-    const avg = total
-      ? grouped.reduce((sum, item) => sum + item.rating * item._count._all, 0) / total
-      : 0;
-
-    const counts = [5, 4, 3, 2, 1].map((value) => ({
-      rating: value,
-      count: grouped.find((item) => item.rating === value)?._count._all ?? 0
-    }));
-
-    const photos = (
-      await prisma.review.findMany({
+    try {
+      const grouped = await prisma.review.groupBy({
+        by: ['rating'],
         where: buildWhere(productIds),
-        select: { photos: true }
-      })
-    ).flatMap((review) => review.photos ?? []);
+        _count: { _all: true }
+      });
 
-    return { total, avg, counts, photos };
+      const total = grouped.reduce((sum, item) => sum + item._count._all, 0);
+      const avg = total
+        ? grouped.reduce((sum, item) => sum + item.rating * item._count._all, 0) / total
+        : 0;
+
+      const counts = [5, 4, 3, 2, 1].map((value) => ({
+        rating: value,
+        count: grouped.find((item) => item.rating === value)?._count._all ?? 0
+      }));
+
+      const photos = (
+        await prisma.review.findMany({
+          where: buildWhere(productIds),
+          select: { photos: true }
+        })
+      ).flatMap((review) => review.photos ?? []);
+
+      return { total, avg, counts, photos };
+    } catch (error) {
+      logReviewEndpointError('reviewService.summaryByProducts', {
+        productIds
+      }, error);
+      throw error;
+    }
   },
 
-  listByUser: (userId: string) =>
-    prisma.review.findMany({
-      where: { userId },
-      orderBy: [{ createdAt: 'desc' }],
-      include: { product: { select: { id: true, title: true, image: true } } }
-    }),
+  async listByUser(userId: string) {
+    try {
+      return await prisma.review.findMany({
+        where: { userId },
+        orderBy: [{ createdAt: 'desc' }],
+        include: { product: { select: { id: true, title: true, image: true } } }
+      });
+    } catch (error) {
+      logReviewEndpointError('reviewService.listByUser', {
+        userId
+      }, error);
+      throw error;
+    }
+  },
 
   async updateVisibility(id: string, userId: string, isPublic: boolean) {
     const review = await prisma.review.findFirst({ where: { id, userId } });
