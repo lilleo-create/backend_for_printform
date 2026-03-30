@@ -8,6 +8,7 @@ import { writeLimiter } from '../middleware/rateLimiters';
 import { prisma } from '../lib/prisma';
 import { orderDeliveryService } from '../services/orderDeliveryService';
 import { shipmentService } from '../services/shipmentService';
+import { paymentFlowService } from '../services/paymentFlowService';
 
 export const meRoutes = Router();
 
@@ -285,13 +286,39 @@ meRoutes.patch('/orders/:id/cancel', requireAuth, writeLimiter, async (req: Auth
       return res.status(409).json({ error: { code: 'ORDER_ALREADY_SHIPPED', message: 'Заказ уже отправлен в доставку. Доступен только возврат.' } });
     }
 
+    if (order.paymentStatus === 'PAID') {
+      const cancelledWithRefund = await paymentFlowService.createOrderCancellationRefund({
+        orderId: order.id,
+        buyerId: req.user!.userId
+      });
+      return res.json({ data: cancelledWithRefund.order, refund: cancelledWithRefund.refund });
+    }
+
     const cancelled = await prisma.order.update({
       where: { id: order.id },
-      data: { status: 'CANCELLED', statusUpdatedAt: new Date() }
+      data: { status: 'CANCELLED', statusUpdatedAt: new Date(), paymentStatus: 'CANCELLED', payoutStatus: 'BLOCKED' }
+    });
+
+    console.info('[ORDER][CANCEL]', {
+      orderId: order.id,
+      paymentStatus: order.paymentStatus,
+      mode: 'NO_REFUND'
     });
 
     return res.json({ data: cancelled });
   } catch (error) {
+    const message = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
+    if (
+      message === 'ORDER_NOT_PAID' ||
+      message === 'ORDER_ALREADY_SHIPPED' ||
+      message === 'REFUND_AMOUNT_EXCEEDS_PAYMENT' ||
+      message === 'PAYMENT_EXTERNAL_ID_NOT_FOUND'
+    ) {
+      return res.status(409).json({ error: { code: message } });
+    }
+    if (message === 'REFUND_CREATE_FAILED') {
+      return res.status(502).json({ error: { code: message } });
+    }
     next(error);
   }
 });

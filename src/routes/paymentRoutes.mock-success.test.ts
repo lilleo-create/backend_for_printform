@@ -81,3 +81,26 @@ test('yookassa webhook maps payment.canceled to canceled', async () => {
   assert.equal(payload.externalId, 'yk-pay-2');
   assert.equal(payload.status, 'canceled');
 });
+
+test('yookassa webhook maps refund.succeeded to processRefundWebhook', async () => {
+  let payload: any = null;
+  (paymentFlowService.processRefundWebhook as any) = async (input: any) => {
+    payload = input;
+    return { ok: true };
+  };
+
+  const response = await sendWebhook({
+    event: 'refund.succeeded',
+    object: {
+      id: 'yk-refund-1',
+      status: 'succeeded',
+      amount: { value: '1.00' },
+      metadata: { orderId: 'order-3' }
+    }
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(payload.externalRefundId, 'yk-refund-1');
+  assert.equal(payload.amount, '1.00');
+  assert.equal(payload.orderId, 'order-3');
+});
