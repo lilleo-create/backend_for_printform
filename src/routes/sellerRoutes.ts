@@ -1661,9 +1661,13 @@ sellerRoutes.get('/payments', async (req: AuthRequest, res, next) => {
       select: {
         id: true,
         total: true,
+        grossAmountKopecks: true,
+        platformFeeKopecks: true,
+        sellerNetAmountKopecks: true,
         currency: true,
         payoutStatus: true,
         paymentStatus: true,
+        yookassaDealStatus: true,
         status: true,
         createdAt: true,
         paidAt: true
@@ -1680,7 +1684,10 @@ sellerRoutes.get('/payments', async (req: AuthRequest, res, next) => {
     };
 
     const operations = orders.map((order) => {
-      const amountKopecks = order.total;
+      const grossAmountKopecks = order.grossAmountKopecks ?? order.total;
+      const platformFeeKopecks = order.platformFeeKopecks ?? 0;
+      const sellerNetAmountKopecks = order.sellerNetAmountKopecks ?? Math.max(0, grossAmountKopecks - platformFeeKopecks);
+      const amountKopecks = sellerNetAmountKopecks;
       const payoutStatus = String(order.payoutStatus ?? '').toUpperCase();
       const paymentStatus = String(order.paymentStatus ?? '').toUpperCase();
       let type: 'income' | 'hold' | 'payout' | 'refund' | 'blocked' = 'income';
@@ -1708,8 +1715,16 @@ sellerRoutes.get('/payments', async (req: AuthRequest, res, next) => {
       return {
         orderId: order.id,
         type,
+        grossAmountKopecks,
+        platformFeeKopecks,
+        sellerNetAmountKopecks,
+        payoutStatus: payoutStatus || null,
+        dealStatus: order.yookassaDealStatus ?? null,
         amountKopecks,
         amountRubles: money.toRublesString(amountKopecks),
+        grossAmountRubles: money.toRublesString(grossAmountKopecks),
+        platformFeeRubles: money.toRublesString(platformFeeKopecks),
+        sellerNetAmountRubles: money.toRublesString(sellerNetAmountKopecks),
         status: payoutStatus || paymentStatus || order.status,
         createdAt: order.paidAt ?? order.createdAt
       };

@@ -88,13 +88,16 @@ const yookassaShopId = process.env.YOOKASSA_SHOP_ID ?? '';
 const yookassaSecretKey = process.env.YOOKASSA_SECRET_KEY ?? '';
 const yookassaReturnUrl = process.env.YOOKASSA_RETURN_URL ?? '';
 const yookassaSafeDealEnabled = (process.env.YOOKASSA_SAFE_DEAL_ENABLED ?? '').toLowerCase() === 'true';
+const yookassaPayoutDestinationDataJson = process.env.YOOKASSA_PAYOUT_DESTINATION_DATA_JSON ?? '';
+const platformFeeBps = Number(process.env.PLATFORM_FEE_BPS ?? 0);
+const acquiringFeeBps = Number(process.env.ACQUIRING_FEE_BPS ?? 0);
 
 if (otpProvider === 'plusofon' && !plusofonFlashAccessToken && isProduction) {
   throw new Error('PLUSOFON_FLASH_ACCESS_TOKEN is required when OTP_PROVIDER=plusofon in production');
 }
 
-if (Number.isNaN(plusofonRequestTimeoutMs) || Number.isNaN(plusofonVerificationExpiresSec)) {
-  throw new Error('PLUSOFON_REQUEST_TIMEOUT_MS and PLUSOFON_VERIFICATION_EXPIRES_SEC must be numbers');
+if (Number.isNaN(plusofonRequestTimeoutMs) || Number.isNaN(plusofonVerificationExpiresSec) || Number.isNaN(platformFeeBps) || Number.isNaN(acquiringFeeBps)) {
+  throw new Error('PLUSOFON_REQUEST_TIMEOUT_MS, PLUSOFON_VERIFICATION_EXPIRES_SEC, PLATFORM_FEE_BPS, ACQUIRING_FEE_BPS must be numbers');
 }
 
 const otpTtlMinutes = Number(process.env.OTP_TTL_MINUTES ?? 10);
@@ -155,5 +158,8 @@ plusofonWebhookPublicUrl,
   yookassaShopId,
   yookassaSecretKey,
   yookassaReturnUrl,
-  yookassaSafeDealEnabled
+  yookassaSafeDealEnabled,
+  yookassaPayoutDestinationDataJson,
+  platformFeeBps,
+  acquiringFeeBps
 };

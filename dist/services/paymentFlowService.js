@@ -249,7 +249,7 @@ exports.paymentFlowService = {
                         const deal = await yookassaService_1.yookassaService.createDeal({
                             orderId: lockedOrder.id,
                             currency: lockedOrder.currency,
-                            platformFeeAmountKopecks: lockedOrder.platformFeeAmount ?? undefined
+                            platformFeeAmountKopecks: lockedOrder.platformFeeKopecks ?? undefined
                         });
                         safeDealId = deal.id;
                         await tx.order.update({
@@ -257,7 +257,7 @@ exports.paymentFlowService = {
                             data: {
                                 yookassaDealId: deal.id,
                                 yookassaDealStatus: deal.status,
-                                sellerNetAmount: lockedOrder.total - (lockedOrder.platformFeeAmount ?? 0)
+                                sellerNetAmountKopecks: lockedOrder.sellerNetAmountKopecks ?? lockedOrder.total - (lockedOrder.platformFeeKopecks ?? 0)
                             }
                         });
                     }
