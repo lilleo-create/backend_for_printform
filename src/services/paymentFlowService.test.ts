@@ -222,7 +222,7 @@ test('startPayment rejects multi-seller checkout items', async () => {
   );
 });
 
-test('createOrderCancellationRefund marks order CANCELLED with REFUND_PENDING after refund create', async () => {
+test('createOrderCancellationRefund marks order CANCELLED with REFUND_PENDING when refund is pending', async () => {
   (prisma.$transaction as any) = async (cb: any) =>
     cb({
       order: {
@@ -261,6 +261,46 @@ test('createOrderCancellationRefund marks order CANCELLED with REFUND_PENDING af
   assert.equal(order.paymentStatus, 'REFUND_PENDING');
   assert.equal(order.payoutStatus, 'BLOCKED');
   assert.equal(refund.externalId, 'ext-refund-1');
+});
+
+test('createOrderCancellationRefund marks order CANCELLED with REFUNDED when refund is succeeded immediately', async () => {
+  (prisma.$transaction as any) = async (cb: any) =>
+    cb({
+      order: {
+        findFirst: async () => ({
+          id: 'order-1',
+          buyerId: 'buyer-1',
+          paymentStatus: 'PAID',
+          status: 'PAID',
+          total: 10000,
+          currency: 'RUB',
+          payoutStatus: 'HOLD',
+          shipment: null,
+          cdekStatus: null,
+          payments: [{ externalId: 'ext-pay-1', status: 'SUCCEEDED' }]
+        }),
+        update: async ({ data }: any) => ({ id: 'order-1', ...data })
+      },
+      refund: {
+        aggregate: async ({ where }: any) => ({ _sum: { amount: where.status === 'SUCCEEDED' ? 0 : 0 } }),
+        create: async ({ data }: any) => ({ id: 'refund-1', ...data })
+      }
+    });
+
+  (yookassaService.createRefund as any) = async () => ({
+    id: 'ext-refund-1',
+    status: 'succeeded',
+    payload: { id: 'ext-refund-1', status: 'succeeded' }
+  });
+
+  const { order } = await paymentFlowService.createOrderCancellationRefund({
+    orderId: 'order-1',
+    buyerId: 'buyer-1'
+  });
+
+  assert.equal(order.status, 'CANCELLED');
+  assert.equal(order.paymentStatus, 'REFUNDED');
+  assert.equal(order.payoutStatus, 'BLOCKED');
 });
 
 test('createOrderCancellationRefund throws REFUND_CREATE_FAILED when YooKassa refund create fails', async () => {
@@ -303,7 +343,7 @@ test('refund webhook is idempotent and does not update order twice', async () =>
     orderId: 'order-1',
     paymentId: 'ext-pay-1',
     amount: 10000,
-    order: { id: 'order-1', total: 10000 }
+    order: { id: 'order-1', total: 10000, paymentStatus: 'REFUND_PENDING' }
   });
   (prisma.refund.updateMany as any) = async () => {
     updateManyCalls += 1;
@@ -324,4 +364,28 @@ test('refund webhook is idempotent and does not update order twice', async () =>
   });
 
   assert.equal(updateOrderCalls, 1);
+});
+
+test('refund webhook sets PARTIALLY_REFUNDED when refund amount is less than order total', async () => {
+  let updatedPaymentStatus: string | null = null;
+
+  (prisma.refund.findFirst as any) = async () => ({
+    id: 'refund-1',
+    orderId: 'order-1',
+    paymentId: 'ext-pay-1',
+    amount: 5000,
+    order: { id: 'order-1', total: 10000, paymentStatus: 'REFUND_PENDING' }
+  });
+  (prisma.refund.updateMany as any) = async () => ({ count: 1 });
+  (prisma.order.update as any) = async ({ data }: any) => {
+    updatedPaymentStatus = data.paymentStatus;
+    return {};
+  };
+
+  await paymentFlowService.processRefundWebhook({
+    externalRefundId: 'ext-refund-1',
+    amount: '50.00'
+  });
+
+  assert.equal(updatedPaymentStatus, 'PARTIALLY_REFUNDED');
 });
