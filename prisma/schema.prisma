@@ -265,6 +265,7 @@ model ReviewReply {
 
 model Order {
   id                       String               @id @default(cuid())
+  publicNumber             String               @unique
   buyerId                  String
   status                   OrderStatus          @default(CREATED)
   statusUpdatedAt          DateTime             @default(now())
@@ -335,6 +336,12 @@ model Order {
   order_shipments          order_shipments?
 
   @@unique([buyerId, paymentAttemptKey])
+}
+
+model OrderPublicNumberCounter {
+  scope     String   @id
+  lastValue Int
+  updatedAt DateTime @updatedAt
 }
 
 model Payout {

@@ -2,6 +2,7 @@ import { OrderStatus } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { nextPaymentExpiryDate } from '../utils/orderPayment';
 import { calculateOrderEconomics } from '../utils/orderEconomics';
+import { formatOrderPublicNumber } from '../utils/orderPublicId';
 
 export const orderRepository = {
   create: (data: {
@@ -68,9 +69,16 @@ export const orderRepository = {
 
       const normalizedBuyerPickupPvz = normalizePvzMeta(data.buyerPickupPvz);
       const normalizedSellerDropoffPvz = normalizePvzMeta(data.sellerDropoffPvz);
+      const sequence = await tx.orderPublicNumberCounter.upsert({
+        where: { scope: 'ORDER' },
+        create: { scope: 'ORDER', lastValue: 1 },
+        update: { lastValue: { increment: 1 } },
+        select: { lastValue: true }
+      });
 
       return tx.order.create({
         data: {
+          publicNumber: formatOrderPublicNumber(sequence.lastValue),
           buyerId: data.buyerId,
           paymentAttemptKey: data.paymentAttemptKey,
           contactId: data.contactId,
@@ -121,25 +129,40 @@ export const orderRepository = {
       status?: OrderStatus;
       offset?: number;
       limit?: number;
+      search?: string;
     }
   ) =>
-    prisma.order.findMany({
-      where: {
-        items: { some: { product: { sellerId } } },
-        NOT: [{ paymentStatus: 'PAYMENT_EXPIRED' }],
-        ...(options?.status ? { status: options.status } : {})
-      },
-      include: {
-        items: {
-          where: { product: { sellerId } },
-          include: { product: true, variant: true }
+    {
+      const search = options?.search?.trim();
+      const digitsOnly = search?.replace(/\D/g, '') ?? '';
+      const searchFilter = search
+        ? {
+            OR: [
+              { publicNumber: { contains: search, mode: 'insensitive' as const } },
+              ...(digitsOnly ? [{ publicNumber: { endsWith: digitsOnly } }] : [])
+            ]
+          }
+        : {};
+
+      return prisma.order.findMany({
+        where: {
+          items: { some: { product: { sellerId } } },
+          NOT: [{ paymentStatus: 'PAYMENT_EXPIRED' }],
+          ...(options?.status ? { status: options.status } : {}),
+          ...searchFilter
         },
-        contact: true,
-        shippingAddress: true,
-        buyer: true
-      },
-      orderBy: { createdAt: 'desc' },
-      skip: options?.offset ?? 0,
-      take: options?.limit ?? 50
-    })
+        include: {
+          items: {
+            where: { product: { sellerId } },
+            include: { product: true, variant: true }
+          },
+          contact: true,
+          shippingAddress: true,
+          buyer: true
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: options?.offset ?? 0,
+        take: options?.limit ?? 50
+      });
+    }
 };

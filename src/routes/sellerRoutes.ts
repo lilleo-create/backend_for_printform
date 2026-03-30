@@ -289,7 +289,8 @@ const normalizeMerchantUpdateData = (
 const sellerOrdersQuerySchema = z.object({
   status: z.enum(['CREATED', 'PRINTING', 'HANDED_TO_DELIVERY', 'IN_TRANSIT', 'DELIVERED']).optional(),
   offset: z.coerce.number().int().min(0).optional(),
-  limit: z.coerce.number().int().min(1).max(100).optional()
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  search: z.string().trim().min(1).optional()
 });
 
 const sellerOrderStatusSchema = z.object({
@@ -1272,7 +1273,8 @@ sellerRoutes.get('/orders', async (req: AuthRequest, res, next) => {
     const orders = await orderUseCases.listBySeller(req.user!.userId, {
       status: query.status as OrderStatus | undefined,
       offset: query.offset,
-      limit: query.limit
+      limit: query.limit,
+      search: query.search
     });
     const shipments = await shipmentService.getByOrderIds(orders.map((o) => o.id));
     res.json({
@@ -1656,11 +1658,25 @@ sellerRoutes.patch('/orders/:id/preparation', writeLimiter, async (req: AuthRequ
 // ------------------- Payments -------------------
 sellerRoutes.get('/payments', async (req: AuthRequest, res, next) => {
   try {
+    const query = z.object({ search: z.string().trim().min(1).optional() }).parse(req.query);
+    const search = query.search?.trim();
+    const searchDigits = search?.replace(/\D/g, '') ?? '';
     const sellerId = req.user!.userId;
     const orders = await prisma.order.findMany({
-      where: { items: { some: { product: { sellerId } } } },
+      where: {
+        items: { some: { product: { sellerId } } },
+        ...(search
+          ? {
+              OR: [
+                { publicNumber: { contains: search, mode: 'insensitive' } },
+                ...(searchDigits ? [{ publicNumber: { endsWith: searchDigits } }] : [])
+              ]
+            }
+          : {})
+      },
       select: {
         id: true,
+        publicNumber: true,
         total: true,
         grossAmountKopecks: true,
         platformFeeKopecks: true,
@@ -1750,6 +1766,7 @@ sellerRoutes.get('/payments', async (req: AuthRequest, res, next) => {
       if (activeOrderStatuses.has(orderStatus) && !isBlocked) {
         activeOrders.push({
           orderId: order.id,
+          publicNumber: order.publicNumber,
           createdAt: order.createdAt.toISOString(),
           paidAt: order.paidAt ? order.paidAt.toISOString() : null,
           grossAmountKopecks,
@@ -1772,6 +1789,7 @@ sellerRoutes.get('/payments', async (req: AuthRequest, res, next) => {
 
         payoutQueue.push({
           orderId: order.id,
+          publicNumber: order.publicNumber,
           eligibleForPayoutAt: eligibleForPayoutAt ? eligibleForPayoutAt.toISOString() : null,
           grossAmountKopecks,
           grossAmountRubles: money.toRublesString(grossAmountKopecks),
@@ -1786,6 +1804,7 @@ sellerRoutes.get('/payments', async (req: AuthRequest, res, next) => {
       if (order.paymentStatus === 'REFUND_PENDING') {
         adjustments.push({
           orderId: order.id,
+          publicNumber: order.publicNumber,
           type: 'refund',
           createdAt: order.paidAt?.toISOString() ?? order.createdAt.toISOString(),
           ...withMoney(sellerNetAmountKopecks),
@@ -1797,6 +1816,7 @@ sellerRoutes.get('/payments', async (req: AuthRequest, res, next) => {
       if (order.paymentStatus === 'REFUNDED') {
         adjustments.push({
           orderId: order.id,
+          publicNumber: order.publicNumber,
           type: 'refund',
           createdAt: order.paidAt?.toISOString() ?? order.createdAt.toISOString(),
           ...withMoney(sellerNetAmountKopecks),
@@ -1808,6 +1828,7 @@ sellerRoutes.get('/payments', async (req: AuthRequest, res, next) => {
       if (payoutStatus === 'BLOCKED' || blockedOrderStatuses.has(orderStatus)) {
         adjustments.push({
           orderId: order.id,
+          publicNumber: order.publicNumber,
           type: 'blocked',
           createdAt: order.createdAt.toISOString(),
           ...withMoney(sellerNetAmountKopecks),
@@ -1822,6 +1843,7 @@ sellerRoutes.get('/payments', async (req: AuthRequest, res, next) => {
         const isCorrection = reason.includes('correction') || reason.includes('коррект');
         adjustments.push({
           orderId: order.id,
+          publicNumber: order.publicNumber,
           type: isChargeback ? 'chargeback' : isCorrection ? 'correction' : 'refund',
           createdAt: refund.createdAt.toISOString(),
           ...withMoney(refund.amount),
@@ -1837,6 +1859,8 @@ sellerRoutes.get('/payments', async (req: AuthRequest, res, next) => {
       if (order.payout) {
         payoutHistory.push({
           id: order.payout.id,
+          orderId: order.id,
+          publicNumber: order.publicNumber,
           createdAt: order.payout.createdAt.toISOString(),
           status: mapPayoutHistoryStatus(String(order.payout.status ?? 'PENDING')),
           grossAmountKopecks,
