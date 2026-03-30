@@ -203,6 +203,9 @@ exports.orderRoutes.post('/:orderId/cancel', authMiddleware_1.authenticate, rate
             message === 'PAYMENT_EXTERNAL_ID_NOT_FOUND') {
             return res.status(409).json({ error: { code: message } });
         }
+        if (message === 'REFUND_CREATE_FAILED') {
+            return res.status(502).json({ error: { code: message } });
+        }
         return next(error);
     }
 });
