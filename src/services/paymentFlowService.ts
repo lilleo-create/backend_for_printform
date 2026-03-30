@@ -2,6 +2,7 @@ import { Prisma, PaymentStatus } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { orderUseCases } from '../usecases/orderUseCases';
 import { expirePendingPayments, nextPaymentExpiryDate } from '../utils/orderPayment';
+import { rublesToKopecks } from '../utils/money';
 import { yookassaService } from './yookassaService';
 
 type StartPaymentInput = {
@@ -84,6 +85,8 @@ const buildOrderLabels = (orderId: string, packagesCount: number) => {
     return { packageNo, code: base.slice(0, 15) };
   });
 };
+
+const isFullRefund = (paidAmount: number, refundedAmount: number) => refundedAmount >= paidAmount;
 
 export const paymentFlowService = {
   async startPayment(input: StartPaymentInput) {
@@ -411,6 +414,150 @@ export const paymentFlowService = {
 
       return { orderId: order.id, paymentStatus: 'PENDING_PAYMENT' as const, paymentExpiresAt, paymentUrl };
     });
+  },
+
+  async createOrderCancellationRefund(input: { orderId: string; buyerId: string; reason?: string }) {
+    return prisma.$transaction(async (tx) => {
+      const order = await tx.order.findFirst({
+        where: { id: input.orderId, buyerId: input.buyerId },
+        include: { shipment: true, payments: { where: { status: 'SUCCEEDED' }, orderBy: { createdAt: 'desc' }, take: 1 } }
+      });
+      if (!order) throw new Error('ORDER_NOT_FOUND');
+      if (order.paymentStatus !== 'PAID') throw new Error('ORDER_NOT_PAID');
+
+      const shipmentStatus = String(order.shipment?.status ?? '').toUpperCase();
+      const isAlreadyShipped =
+        ['READY_FOR_SHIPMENT', 'HANDED_TO_DELIVERY', 'IN_TRANSIT', 'DELIVERED'].includes(order.status) ||
+        ['SHIPPED', 'DELIVERED', 'IN_TRANSIT', 'READY_FOR_PICKUP'].includes(shipmentStatus) ||
+        ['SHIPPED', 'DELIVERED', 'IN_TRANSIT'].includes(String(order.cdekStatus ?? '').toUpperCase());
+      if (isAlreadyShipped) {
+        throw new Error('ORDER_ALREADY_SHIPPED');
+      }
+
+      const successPayment = order.payments[0];
+      const externalPaymentId = successPayment?.externalId ?? null;
+      if (!externalPaymentId) throw new Error('PAYMENT_EXTERNAL_ID_NOT_FOUND');
+
+      const succeededRefundAgg = await tx.refund.aggregate({
+        where: { orderId: order.id, status: 'SUCCEEDED' },
+        _sum: { amount: true }
+      });
+      const succeededRefundAmount = succeededRefundAgg._sum.amount ?? 0;
+      const pendingRefundAgg = await tx.refund.aggregate({
+        where: { orderId: order.id, status: 'PENDING' },
+        _sum: { amount: true }
+      });
+      const pendingRefundAmount = pendingRefundAgg._sum.amount ?? 0;
+      const refundableAmount = order.total - succeededRefundAmount - pendingRefundAmount;
+
+      if (refundableAmount <= 0) {
+        throw new Error('REFUND_AMOUNT_EXCEEDS_PAYMENT');
+      }
+
+      const refundAmount = order.total;
+      if (refundAmount > refundableAmount) {
+        throw new Error('REFUND_AMOUNT_EXCEEDS_PAYMENT');
+      }
+
+      const refundResponse = await yookassaService.createRefund({
+        paymentId: externalPaymentId,
+        amount: refundAmount,
+        currency: order.currency,
+        orderId: order.id,
+        reason: input.reason
+      });
+
+      const createdRefund = await tx.refund.create({
+        data: {
+          orderId: order.id,
+          paymentId: externalPaymentId,
+          externalId: refundResponse.id,
+          amount: refundAmount,
+          currency: order.currency,
+          reason: input.reason,
+          status: refundResponse.status === 'succeeded' ? 'SUCCEEDED' : 'PENDING',
+          payloadJson: refundResponse.payload as Prisma.InputJsonValue
+        }
+      });
+
+      const totalRefundedAmount = succeededRefundAmount + (createdRefund.status === 'SUCCEEDED' ? createdRefund.amount : 0);
+      const fullRefunded = isFullRefund(order.total, totalRefundedAmount);
+
+      const updatedOrder = await tx.order.update({
+        where: { id: order.id },
+        data: {
+          status: createdRefund.status === 'SUCCEEDED' && fullRefunded ? 'CANCELLED' : 'CANCELLED_REQUESTED',
+          statusUpdatedAt: new Date(),
+          paymentStatus: createdRefund.status === 'SUCCEEDED' ? (fullRefunded ? 'REFUNDED' : 'PARTIALLY_REFUNDED') : 'REFUND_PENDING',
+          payoutStatus: createdRefund.status === 'SUCCEEDED' && fullRefunded ? 'BLOCKED' : order.payoutStatus
+        }
+      });
+
+      console.info('[ORDER][CANCEL]', {
+        orderId: order.id,
+        paymentId: externalPaymentId,
+        refundId: createdRefund.externalId,
+        amount: refundAmount,
+        status: createdRefund.status
+      });
+
+      return { order: updatedOrder, refund: createdRefund };
+    });
+  },
+
+  async processRefundWebhook(input: { externalRefundId: string; amount: string; orderId?: string; payload?: unknown }) {
+    const refund = await prisma.refund.findFirst({
+      where: { externalId: input.externalRefundId },
+      include: { order: true }
+    });
+    if (!refund) return { ok: true };
+
+    const refundAmount = rublesToKopecks(Number(input.amount));
+    if (refundAmount !== refund.amount) {
+      console.error('[YOOKASSA][REFUND_WEBHOOK][AMOUNT_MISMATCH]', {
+        orderId: refund.orderId,
+        externalRefundId: input.externalRefundId,
+        expectedAmount: refund.amount,
+        gotAmount: refundAmount
+      });
+      throw new Error('REFUND_AMOUNT_MISMATCH');
+    }
+
+    const marked = await prisma.refund.updateMany({
+      where: { id: refund.id, status: { not: 'SUCCEEDED' } },
+      data: {
+        status: 'SUCCEEDED',
+        payloadJson: input.payload ? (input.payload as Prisma.InputJsonValue) : undefined
+      }
+    });
+    if (marked.count === 0) return { ok: true };
+
+    const succeededAgg = await prisma.refund.aggregate({
+      where: { orderId: refund.orderId, status: 'SUCCEEDED' },
+      _sum: { amount: true }
+    });
+    const refundedAmount = succeededAgg._sum.amount ?? 0;
+    const fullRefund = isFullRefund(refund.order.total, refundedAmount);
+
+    await prisma.order.update({
+      where: { id: refund.orderId },
+      data: {
+        paymentStatus: fullRefund ? 'REFUNDED' : 'PARTIALLY_REFUNDED',
+        status: fullRefund ? 'CANCELLED' : refund.order.status,
+        payoutStatus: fullRefund ? 'BLOCKED' : refund.order.payoutStatus,
+        statusUpdatedAt: fullRefund ? new Date() : refund.order.statusUpdatedAt
+      }
+    });
+
+    console.info('[YOOKASSA][REFUND_WEBHOOK]', {
+      orderId: refund.orderId,
+      paymentId: refund.paymentId,
+      refundId: input.externalRefundId,
+      amount: refundAmount,
+      status: 'SUCCEEDED'
+    });
+
+    return { ok: true };
   },
 
   async processWebhook(input: {

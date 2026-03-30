@@ -182,6 +182,12 @@ returnRoutes.post('/', requireAuth, writeLimiter, async (req: AuthRequest, res, 
       });
     });
 
+    console.info('[RETURN][CREATE]', {
+      orderId: orderItem.orderId,
+      amount: orderItem.priceAtPurchase * orderItem.quantity,
+      status: created?.status ?? 'CREATED'
+    });
+
     res.status(201).json({ data: created });
   } catch (error) {
     next(error);

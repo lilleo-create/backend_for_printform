@@ -35,16 +35,19 @@ const startSchema = z.object({
 });
 
 const yookassaWebhookSchema = z.object({
-  event: z.enum(['payment.succeeded', 'payment.canceled']),
+  event: z.enum(['payment.succeeded', 'payment.canceled', 'refund.succeeded']),
   object: z.object({
     id: z.string(),
     status: z.string().optional(),
     amount: z.object({
       value: z.string()
     }),
-    metadata: z.object({
-      orderId: z.string()
-    })
+    payment_id: z.string().optional(),
+    metadata: z
+      .object({
+        orderId: z.string()
+      })
+      .optional()
   })
 });
 
@@ -106,19 +109,33 @@ paymentRoutes.post('/yookassa/webhook', async (req, res, next) => {
     console.info('[YOOKASSA][WEBHOOK]', {
       event: payload.event,
       paymentId: payload.object.id,
-      orderId: payload.object.metadata.orderId,
+      orderId: payload.object.metadata?.orderId ?? null,
       amount: payload.object.amount.value,
       status: payload.object.status ?? null
     });
 
-    await paymentFlowService.processWebhook({
-      externalId: payload.object.id,
-      status: payload.object.status === 'succeeded' ? 'succeeded' : 'canceled',
-      orderId: payload.object.metadata.orderId,
-      amount: payload.object.amount.value,
-      provider: 'yookassa',
-      payload
-    });
+    if (payload.event === 'refund.succeeded') {
+      await paymentFlowService.processRefundWebhook({
+        externalRefundId: payload.object.id,
+        amount: payload.object.amount.value,
+        orderId: payload.object.metadata?.orderId,
+        payload
+      });
+    } else {
+      const orderId = payload.object.metadata?.orderId;
+      if (!orderId) {
+        throw new Error('ORDER_ID_MISSING');
+      }
+
+      await paymentFlowService.processWebhook({
+        externalId: payload.object.id,
+        status: payload.object.status === 'succeeded' ? 'succeeded' : 'canceled',
+        orderId,
+        amount: payload.object.amount.value,
+        provider: 'yookassa',
+        payload
+      });
+    }
 
     return res.json({ received: true });
   } catch (error) {
