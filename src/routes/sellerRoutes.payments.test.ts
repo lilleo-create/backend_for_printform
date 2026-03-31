@@ -21,6 +21,7 @@ const accessToken = jwt.sign({ userId, role: 'SELLER', scope: 'access' }, env.jw
 
 const originalUserFindUnique = prisma.user.findUnique;
 const originalOrderFindMany = prisma.order.findMany;
+const originalSellerPayoutMethodFindMany = (prisma as any).sellerPayoutMethod?.findMany;
 let lastOrderFindManyArgs: any = null;
 
 const installPrismaMocks = () => {
@@ -46,12 +47,7 @@ const installPrismaMocks = () => {
       createdAt: new Date('2026-03-20T09:00:00.000Z'),
       paidAt: new Date('2026-03-20T10:00:00.000Z'),
       refunds: [],
-      payout: {
-        id: 'po-awaiting',
-        createdAt: new Date('2026-03-25T10:00:00.000Z'),
-        status: 'READY',
-        amount: 10000
-      }
+      sellerPayouts: []
     },
     {
       id: 'order-frozen',
@@ -67,7 +63,7 @@ const installPrismaMocks = () => {
       createdAt: new Date('2026-03-26T09:00:00.000Z'),
       paidAt: new Date('2026-03-26T10:00:00.000Z'),
       refunds: [],
-      payout: null
+      sellerPayouts: []
     },
     {
       id: 'order-paid-out',
@@ -83,12 +79,14 @@ const installPrismaMocks = () => {
       createdAt: new Date('2026-03-18T09:00:00.000Z'),
       paidAt: new Date('2026-03-18T10:00:00.000Z'),
       refunds: [],
-      payout: {
-        id: 'po-paid',
+      sellerPayouts: [{
+        id: 'sp-paid',
         createdAt: new Date('2026-03-27T10:00:00.000Z'),
-        status: 'PAID',
-        amount: 7000
-      }
+        succeededAt: new Date('2026-03-27T11:00:00.000Z'),
+        status: 'SUCCEEDED',
+        amountKopecks: 7000,
+        payoutMethod: { methodType: 'BANK_CARD', maskedLabel: 'Mir •••• 2537', cardLast4: '2537' }
+      }]
     },
     {
       id: 'order-blocked',
@@ -108,14 +106,29 @@ const installPrismaMocks = () => {
           id: 'refund-1',
           amount: 3000,
           status: 'SUCCEEDED',
-          reason: 'buyer_request',
           createdAt: new Date('2026-03-16T10:00:00.000Z')
         }
       ],
-      payout: null
+      sellerPayouts: []
     }
     ]);
   };
+
+  (prisma as any).sellerPayoutMethod = (prisma as any).sellerPayoutMethod ?? {};
+  (prisma as any).sellerPayoutMethod.findMany = async () => ([
+    {
+      id: 'method-1',
+      provider: 'YOOKASSA',
+      methodType: 'BANK_CARD',
+      status: 'ACTIVE',
+      isDefault: true,
+      maskedLabel: 'Mir •••• 2537',
+      cardLast4: '2537',
+      cardType: 'Mir',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-03-01T00:00:00.000Z')
+    }
+  ]);
 };
 
 test.beforeEach(() => {
@@ -126,6 +139,9 @@ test.beforeEach(() => {
 test.after(() => {
   (prisma.user.findUnique as any) = originalUserFindUnique;
   (prisma.order.findMany as any) = originalOrderFindMany;
+  if ((prisma as any).sellerPayoutMethod && originalSellerPayoutMethodFindMany) {
+    (prisma as any).sellerPayoutMethod.findMany = originalSellerPayoutMethodFindMany;
+  }
 });
 
 test('GET /seller/payments returns finance-oriented payload for seller accounting tab', async () => {
@@ -139,11 +155,13 @@ test('GET /seller/payments returns finance-oriented payload for seller accountin
     awaitingPayoutKopecks: 10000,
     frozenKopecks: 5000,
     paidOutKopecks: 7000,
-    blockedKopecks: 3000,
+    refundedKopecks: 3000,
+    blockedKopecks: 0,
     awaitingPayoutRubles: '100.00',
     frozenRubles: '50.00',
     paidOutRubles: '70.00',
-    blockedRubles: '30.00'
+    refundedRubles: '30.00',
+    blockedRubles: '0.00'
   });
 
   assert.deepEqual(response.body.data.nextPayout, {
@@ -154,16 +172,15 @@ test('GET /seller/payments returns finance-oriented payload for seller accountin
     payoutScheduleType: 'MANUAL'
   });
 
-  assert.equal(response.body.data.activeOrders.length, 2);
   assert.equal(response.body.data.payoutQueue.length, 2);
-  assert.equal(response.body.data.payoutHistory.length, 2);
-  assert.equal(response.body.data.activeOrders[0].publicNumber, 'PF-101');
+  assert.equal(response.body.data.payoutHistory.length, 1);
+  assert.equal(response.body.data.payoutQueue[0].publicNumber, 'PF-101');
 
-  const blockedAdjustments = response.body.data.adjustments.filter((item: any) => item.type === 'blocked');
+  const blockedAdjustments = response.body.data.adjustments.filter((item: any) => item.type === 'BLOCKED');
   assert.equal(blockedAdjustments.length, 1);
 
-  const refundAdjustments = response.body.data.adjustments.filter((item: any) => item.type === 'refund');
-  assert.ok(refundAdjustments.length >= 1);
+  const refundAdjustments = response.body.data.adjustments.filter((item: any) => item.type === 'REFUND');
+  assert.equal(refundAdjustments.length, 1);
 });
 
 test('GET /seller/payments supports search by public number', async () => {

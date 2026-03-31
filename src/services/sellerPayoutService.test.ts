@@ -1,0 +1,134 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { prisma } from '../lib/prisma';
+import { sellerPayoutService } from './sellerPayoutService';
+import { yookassaService } from './yookassaService';
+
+test('createPayoutMethod resets previous default method', async () => {
+  let resetCalled = 0;
+  let createdPayload: any = null;
+
+  (prisma.$transaction as any) = async (cb: any) =>
+    cb({
+      sellerPayoutMethod: {
+        updateMany: async () => {
+          resetCalled += 1;
+        },
+        create: async ({ data }: any) => {
+          createdPayload = data;
+          return { id: 'pm-1', ...data, createdAt: new Date(), updatedAt: new Date() };
+        },
+        findFirst: async () => ({ id: 'pm-1' }),
+        update: async ({ data }: any) => ({ id: 'pm-1', ...data })
+      }
+    });
+
+  const created = await sellerPayoutService.createPayoutMethod('seller-1', {
+    provider: 'YOOKASSA',
+    methodType: 'BANK_CARD',
+    payoutToken: 'ptok_1',
+    cardLast4: '2537',
+    cardType: 'Mir',
+    isDefault: true
+  });
+
+  assert.equal(resetCalled, 1);
+  assert.equal(createdPayload.isDefault, true);
+  assert.equal(createdPayload.maskedLabel, 'Mir •••• 2537');
+  assert.equal(created.id, 'pm-1');
+});
+
+test('createPayoutForOrder supports payout token and yoomoney destination', async () => {
+  const calls: any[] = [];
+  let currentMethodType: 'BANK_CARD' | 'YOOMONEY' = 'BANK_CARD';
+
+  (prisma.order.findFirst as any) = async () => ({
+    id: 'order-1',
+    publicNumber: 'PF-1',
+    paymentStatus: 'PAID',
+    yookassaDealId: 'deal-1',
+    currency: 'RUB',
+    total: 1000,
+    sellerNetAmountKopecks: 900,
+    sellerPayouts: []
+  });
+  (prisma.order.update as any) = async () => ({});
+  (prisma as any).sellerPayoutMethod = {
+    findFirst: async () =>
+      currentMethodType === 'BANK_CARD'
+        ? { id: 'pm-card', methodType: 'BANK_CARD', payoutToken: 'pt_1', status: 'ACTIVE' }
+        : { id: 'pm-yoomoney', methodType: 'YOOMONEY', yoomoneyAccountNumber: '4100111222333', status: 'ACTIVE' },
+    update: async () => ({})
+  };
+  (prisma as any).sellerPayout = {
+    create: async ({ data }: any) => ({ id: 'payout-1', ...data })
+  };
+  (yookassaService.createPayoutInDeal as any) = async (payload: any) => {
+    calls.push(payload);
+    return { id: `ext-${calls.length}`, status: 'pending' };
+  };
+
+  await sellerPayoutService.createPayoutForOrder('seller-1', 'order-1');
+  currentMethodType = 'YOOMONEY';
+  await sellerPayoutService.createPayoutForOrder('seller-1', 'order-1');
+
+  assert.equal(calls[0].payoutToken, 'pt_1');
+  assert.equal(calls[0].payoutDestinationData, undefined);
+  assert.equal(calls[1].payoutToken, undefined);
+  assert.deepEqual(calls[1].payoutDestinationData, { type: 'yoo_money', account_number: '4100111222333' });
+});
+
+test('buildFinanceView excludes HOLD from adjustments and builds payout history from seller payouts', async () => {
+  (prisma.order.findMany as any) = async () => ([
+    {
+      id: 'order-hold',
+      publicNumber: 'PF-11',
+      total: 5000,
+      grossAmountKopecks: 5000,
+      platformFeeKopecks: 500,
+      sellerNetAmountKopecks: 4500,
+      currency: 'RUB',
+      payoutStatus: 'HOLD',
+      paymentStatus: 'PAID',
+      status: 'PAID',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+      paidAt: new Date('2026-03-01T01:00:00.000Z'),
+      refunds: [],
+      sellerPayouts: []
+    },
+    {
+      id: 'order-paid',
+      publicNumber: 'PF-12',
+      total: 9000,
+      grossAmountKopecks: 9000,
+      platformFeeKopecks: 1000,
+      sellerNetAmountKopecks: 8000,
+      currency: 'RUB',
+      payoutStatus: 'PAID_OUT',
+      paymentStatus: 'PAID',
+      status: 'DELIVERED',
+      createdAt: new Date('2026-03-02T00:00:00.000Z'),
+      paidAt: new Date('2026-03-02T01:00:00.000Z'),
+      refunds: [],
+      sellerPayouts: [
+        {
+          id: 'sp-1',
+          status: 'SUCCEEDED',
+          amountKopecks: 8000,
+          createdAt: new Date('2026-03-04T00:00:00.000Z'),
+          succeededAt: new Date('2026-03-04T01:00:00.000Z'),
+          payoutMethod: { methodType: 'BANK_CARD', maskedLabel: 'Mir •••• 2537' }
+        }
+      ]
+    }
+  ]);
+  (prisma as any).sellerPayoutMethod = { findMany: async () => [] };
+
+  const data = await sellerPayoutService.buildFinanceView('seller-1');
+
+  assert.equal(data.adjustments.length, 0);
+  assert.equal(data.summary.frozenKopecks, 4500);
+  assert.equal(data.payoutHistory.length, 1);
+  assert.equal(data.payoutHistory[0].payoutId, 'sp-1');
+});
+
