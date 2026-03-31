@@ -162,16 +162,17 @@ exports.yookassaService = {
         };
     },
     async createPayoutInDeal(input) {
-        if (!input.payoutDestinationData) {
-            throw new Error('YOOKASSA_PAYOUT_DESTINATION_NOT_CONFIGURED');
+        if (!input.payoutDestinationData && !input.payoutToken) {
+            throw new Error('YOOKASSA_PAYOUT_DESTINATION_OR_TOKEN_NOT_CONFIGURED');
         }
-        const idempotenceKey = node_crypto_1.default.randomUUID();
+        const idempotenceKey = input.idempotenceKey ?? node_crypto_1.default.randomUUID();
         const body = {
             amount: {
                 value: money_1.money.toRublesString(input.sellerAmountKopecks),
                 currency: input.currency
             },
-            payout_destination_data: input.payoutDestinationData,
+            ...(input.payoutDestinationData ? { payout_destination_data: input.payoutDestinationData } : {}),
+            ...(input.payoutToken ? { payout_token: input.payoutToken } : {}),
             deal: {
                 id: input.dealId
             },
@@ -191,6 +192,16 @@ exports.yookassaService = {
             status: response.data.status,
             amountKopecks: input.sellerAmountKopecks,
             idempotenceKey
+        });
+        return response.data;
+    },
+    async getPayout(payoutId) {
+        const response = await axios_1.default.get(`${YOOKASSA_PAYOUTS_API_URL}/${payoutId}`, {
+            headers: {
+                Authorization: authHeader(),
+                'Content-Type': 'application/json'
+            },
+            timeout: 15000
         });
         return response.data;
     },

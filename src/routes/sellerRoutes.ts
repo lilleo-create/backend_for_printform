@@ -13,6 +13,7 @@ import { sellerProductCreateSchema, sellerProductUpdateSchema } from "./productR
 import { writeLimiter } from "../middleware/rateLimiters";
 import { sellerDeliveryProfileService } from "../services/sellerDeliveryProfileService";
 import { payoutService } from "../services/payoutService";
+import { sellerPayoutService } from "../services/sellerPayoutService";
 import { shipmentService } from "../services/shipmentService";
 import { sellerOrderDocumentsService } from "../services/sellerOrderDocumentsService";
 import { resolveRoleAfterSellerEnablement } from '../utils/accessControl';
@@ -1656,253 +1657,99 @@ sellerRoutes.patch('/orders/:id/preparation', writeLimiter, async (req: AuthRequ
 });
 
 // ------------------- Payments -------------------
+const payoutMethodCreateSchema = z.discriminatedUnion('methodType', [
+  z.object({
+    provider: z.literal('YOOKASSA'),
+    methodType: z.literal('BANK_CARD'),
+    payoutToken: z.string().trim().min(1),
+    cardFirst6: z.string().trim().regex(/^\d{6}$/).optional(),
+    cardLast4: z.string().trim().regex(/^\d{4}$/).optional(),
+    cardType: z.string().trim().min(1).optional(),
+    cardIssuerCountry: z.string().trim().min(2).max(2).optional(),
+    cardIssuerName: z.string().trim().min(1).optional(),
+    isDefault: z.boolean().optional()
+  }),
+  z.object({
+    provider: z.literal('YOOKASSA'),
+    methodType: z.literal('YOOMONEY'),
+    yoomoneyAccountNumber: z.string().trim().regex(/^\d{11,20}$/),
+    isDefault: z.boolean().optional()
+  })
+]);
+
+sellerRoutes.get('/payout-methods', async (req: AuthRequest, res, next) => {
+  try {
+    const sellerId = req.user!.userId;
+    const methods = await sellerPayoutService.listPayoutMethods(sellerId);
+    res.json({ data: methods });
+  } catch (error) {
+    next(error);
+  }
+});
+
+sellerRoutes.post('/payout-methods', writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const sellerId = req.user!.userId;
+    const payload = payoutMethodCreateSchema.parse(req.body);
+    const created = await sellerPayoutService.createPayoutMethod(sellerId, payload);
+    res.status(201).json({ data: created });
+  } catch (error) {
+    next(error);
+  }
+});
+
+sellerRoutes.patch('/payout-methods/:id/default', writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const method = await sellerPayoutService.setDefaultMethod(req.user!.userId, req.params.id);
+    if (!method) return res.status(404).json({ error: { code: 'PAYOUT_METHOD_NOT_FOUND' } });
+    res.json({ data: method });
+  } catch (error) {
+    next(error);
+  }
+});
+
+sellerRoutes.patch('/payout-methods/:id/revoke', writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const method = await sellerPayoutService.revokeMethod(req.user!.userId, req.params.id);
+    if (!method) return res.status(404).json({ error: { code: 'PAYOUT_METHOD_NOT_FOUND' } });
+    res.json({ data: method });
+  } catch (error) {
+    next(error);
+  }
+});
+
+sellerRoutes.post('/finance/payouts/:orderId', writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const payout = await sellerPayoutService.createPayoutForOrder(req.user!.userId, req.params.orderId);
+    res.status(201).json({ data: payout });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : 'PAYOUT_CREATE_FAILED';
+    if (['ORDER_NOT_FOUND', 'DEFAULT_PAYOUT_METHOD_NOT_FOUND'].includes(code)) {
+      return res.status(404).json({ error: { code } });
+    }
+    if (['SAFE_DEAL_REQUIRED', 'ORDER_NOT_PAID', 'ORDER_REFUND_IN_PROGRESS', 'PAYOUT_ALREADY_SUCCEEDED'].includes(code)) {
+      return res.status(400).json({ error: { code } });
+    }
+    next(error);
+  }
+});
+
+sellerRoutes.post('/finance/payouts/:payoutId/sync', writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const payout = await sellerPayoutService.syncPayoutStatus(req.user!.userId, req.params.payoutId);
+    res.json({ data: payout });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : 'PAYOUT_SYNC_FAILED';
+    if (code === 'PAYOUT_NOT_FOUND') return res.status(404).json({ error: { code } });
+    next(error);
+  }
+});
+
 sellerRoutes.get('/payments', async (req: AuthRequest, res, next) => {
   try {
     const query = z.object({ search: z.string().trim().min(1).optional() }).parse(req.query);
-    const search = query.search?.trim();
-    const searchDigits = search?.replace(/\D/g, '') ?? '';
     const sellerId = req.user!.userId;
-    const orders = await prisma.order.findMany({
-      where: {
-        items: { some: { product: { sellerId } } },
-        ...(search
-          ? {
-              OR: [
-                { publicNumber: { contains: search, mode: 'insensitive' } },
-                ...(searchDigits ? [{ publicNumber: { endsWith: searchDigits } }] : [])
-              ]
-            }
-          : {})
-      },
-      select: {
-        id: true,
-        publicNumber: true,
-        total: true,
-        grossAmountKopecks: true,
-        platformFeeKopecks: true,
-        sellerNetAmountKopecks: true,
-        currency: true,
-        payoutStatus: true,
-        paymentStatus: true,
-        status: true,
-        createdAt: true,
-        paidAt: true,
-        refunds: {
-          select: {
-            id: true,
-            amount: true,
-            status: true,
-            reason: true,
-            createdAt: true
-          },
-          orderBy: { createdAt: 'desc' }
-        },
-        payout: {
-          select: {
-            id: true,
-            createdAt: true,
-            status: true,
-            amount: true
-          }
-        }
-      },
-      orderBy: { createdAt: 'desc' }
-    });
-
-    const summary = {
-      awaitingPayoutKopecks: 0,
-      frozenKopecks: 0,
-      paidOutKopecks: 0,
-      blockedKopecks: 0
-    };
-
-    const activeOrderStatuses = new Set(['PAID', 'READY_FOR_SHIPMENT', 'PRINTING', 'HANDED_TO_DELIVERY', 'IN_TRANSIT']);
-    const blockedOrderStatuses = new Set(['CANCELLED', 'CANCELLED_REQUESTED', 'RETURNED', 'PAYMENT_FAILED', 'EXPIRED']);
-    const paidOutPayoutStatuses = new Set(['PAID', 'PAID_OUT']);
-    const awaitingPayoutStatuses = new Set(['RELEASED', 'PENDING', 'PENDING_PAYOUT', 'PROCESSING', 'READY']);
-    const queuePayoutStatuses = new Set(['HOLD', 'RELEASED', 'PENDING', 'PENDING_PAYOUT', 'PROCESSING', 'READY']);
-    const holdPeriodDays = 7;
-    const activeOrders: Array<Record<string, unknown>> = [];
-    const payoutQueue: Array<Record<string, unknown>> = [];
-    const adjustments: Array<Record<string, unknown>> = [];
-    const payoutHistory: Array<Record<string, unknown>> = [];
-
-    const withMoney = (kopecks: number) => ({
-      amountKopecks: kopecks,
-      amountRubles: money.toRublesString(kopecks)
-    });
-    const mapPayoutHistoryStatus = (status: string): 'PENDING' | 'SENT' | 'COMPLETED' | 'FAILED' => {
-      const normalized = status.toUpperCase();
-      if (['PAID', 'PAID_OUT', 'COMPLETED'].includes(normalized)) return 'COMPLETED';
-      if (['PROCESSING', 'SENT'].includes(normalized)) return 'SENT';
-      if (['FAILED', 'ERROR', 'CANCELED', 'CANCELLED'].includes(normalized)) return 'FAILED';
-      return 'PENDING';
-    };
-
-    for (const order of orders) {
-      const grossAmountKopecks = order.grossAmountKopecks ?? order.total;
-      const platformFeeKopecks = order.platformFeeKopecks ?? 0;
-      const sellerNetAmountKopecks = order.sellerNetAmountKopecks ?? Math.max(0, grossAmountKopecks - platformFeeKopecks);
-      const payoutStatus = String(order.payoutStatus ?? '').toUpperCase();
-      const paymentStatus = String(order.paymentStatus ?? '').toUpperCase();
-      const orderStatus = String(order.status ?? '').toUpperCase();
-
-      const isBlocked = payoutStatus === 'BLOCKED' || blockedOrderStatuses.has(orderStatus) || paymentStatus === 'REFUND_PENDING' || paymentStatus === 'REFUNDED';
-      const isPaidOut = paidOutPayoutStatuses.has(payoutStatus);
-      const isFrozen = payoutStatus === 'HOLD' || (paymentStatus === 'PAID' && !isPaidOut && !isBlocked && !awaitingPayoutStatuses.has(payoutStatus));
-
-      if (isBlocked) {
-        summary.blockedKopecks += sellerNetAmountKopecks;
-      } else if (isPaidOut) {
-        summary.paidOutKopecks += sellerNetAmountKopecks;
-      } else if (isFrozen) {
-        summary.frozenKopecks += sellerNetAmountKopecks;
-      } else if (awaitingPayoutStatuses.has(payoutStatus)) {
-        summary.awaitingPayoutKopecks += sellerNetAmountKopecks;
-      } else {
-        summary.frozenKopecks += sellerNetAmountKopecks;
-      }
-
-      if (activeOrderStatuses.has(orderStatus) && !isBlocked) {
-        activeOrders.push({
-          orderId: order.id,
-          publicNumber: order.publicNumber,
-          createdAt: order.createdAt.toISOString(),
-          paidAt: order.paidAt ? order.paidAt.toISOString() : null,
-          grossAmountKopecks,
-          grossAmountRubles: money.toRublesString(grossAmountKopecks),
-          platformFeeKopecks,
-          platformFeeRubles: money.toRublesString(platformFeeKopecks),
-          sellerNetAmountKopecks,
-          sellerNetAmountRubles: money.toRublesString(sellerNetAmountKopecks),
-          payoutStatus: payoutStatus || null,
-          paymentStatus: paymentStatus || null,
-          orderStatus: orderStatus || null
-        });
-      }
-
-      const queueAllowedByPaymentStatus = paymentStatus !== 'REFUNDED' && paymentStatus !== 'REFUND_PENDING' && paymentStatus !== 'CANCELLED';
-      if (!isBlocked && sellerNetAmountKopecks > 0 && queuePayoutStatuses.has(payoutStatus) && queueAllowedByPaymentStatus) {
-        const eligibleForPayoutAt = order.paidAt
-          ? new Date(order.paidAt.getTime() + holdPeriodDays * 24 * 60 * 60 * 1000)
-          : null;
-
-        payoutQueue.push({
-          orderId: order.id,
-          publicNumber: order.publicNumber,
-          eligibleForPayoutAt: eligibleForPayoutAt ? eligibleForPayoutAt.toISOString() : null,
-          grossAmountKopecks,
-          grossAmountRubles: money.toRublesString(grossAmountKopecks),
-          platformFeeKopecks,
-          platformFeeRubles: money.toRublesString(platformFeeKopecks),
-          sellerNetAmountKopecks,
-          sellerNetAmountRubles: money.toRublesString(sellerNetAmountKopecks),
-          payoutStatus: payoutStatus || null
-        });
-      }
-
-      if (order.paymentStatus === 'REFUND_PENDING') {
-        adjustments.push({
-          orderId: order.id,
-          publicNumber: order.publicNumber,
-          type: 'refund',
-          createdAt: order.paidAt?.toISOString() ?? order.createdAt.toISOString(),
-          ...withMoney(sellerNetAmountKopecks),
-          status: 'REFUND_PENDING',
-          description: 'Возврат покупателю'
-        });
-      }
-
-      if (order.paymentStatus === 'REFUNDED') {
-        adjustments.push({
-          orderId: order.id,
-          publicNumber: order.publicNumber,
-          type: 'refund',
-          createdAt: order.paidAt?.toISOString() ?? order.createdAt.toISOString(),
-          ...withMoney(sellerNetAmountKopecks),
-          status: 'REFUNDED',
-          description: 'Возврат покупателю'
-        });
-      }
-
-      if (payoutStatus === 'BLOCKED' || blockedOrderStatuses.has(orderStatus)) {
-        adjustments.push({
-          orderId: order.id,
-          publicNumber: order.publicNumber,
-          type: 'blocked',
-          createdAt: order.createdAt.toISOString(),
-          ...withMoney(sellerNetAmountKopecks),
-          status: payoutStatus || orderStatus,
-          description: 'Сумма заблокирована'
-        });
-      }
-
-      for (const refund of order.refunds) {
-        const reason = String(refund.reason ?? '').toLowerCase();
-        const isChargeback = reason.includes('chargeback');
-        const isCorrection = reason.includes('correction') || reason.includes('коррект');
-        adjustments.push({
-          orderId: order.id,
-          publicNumber: order.publicNumber,
-          type: isChargeback ? 'chargeback' : isCorrection ? 'correction' : 'refund',
-          createdAt: refund.createdAt.toISOString(),
-          ...withMoney(refund.amount),
-          status: refund.status,
-          description: isChargeback
-            ? 'Чарджбэк'
-            : isCorrection
-              ? 'Корректировка выплаты'
-              : 'Возврат покупателю'
-        });
-      }
-
-      if (order.payout) {
-        payoutHistory.push({
-          id: order.payout.id,
-          orderId: order.id,
-          publicNumber: order.publicNumber,
-          createdAt: order.payout.createdAt.toISOString(),
-          status: mapPayoutHistoryStatus(String(order.payout.status ?? 'PENDING')),
-          grossAmountKopecks,
-          grossAmountRubles: money.toRublesString(grossAmountKopecks),
-          platformFeeKopecks,
-          platformFeeRubles: money.toRublesString(platformFeeKopecks),
-          sellerNetAmountKopecks: order.payout.amount ?? sellerNetAmountKopecks,
-          sellerNetAmountRubles: money.toRublesString(order.payout.amount ?? sellerNetAmountKopecks),
-          orderCount: 1,
-          externalPayoutId: null
-        });
-      }
-    }
-
-    payoutQueue.sort((a, b) => {
-      const aTime = a.eligibleForPayoutAt ? Date.parse(String(a.eligibleForPayoutAt)) : Number.POSITIVE_INFINITY;
-      const bTime = b.eligibleForPayoutAt ? Date.parse(String(b.eligibleForPayoutAt)) : Number.POSITIVE_INFINITY;
-      return aTime - bTime;
-    });
-
-    const nextPayoutAmountKopecks = payoutQueue.reduce((acc, item) => acc + Number(item.sellerNetAmountKopecks ?? 0), 0);
-
-    const data = {
-      summary: {
-        ...summary,
-        awaitingPayoutRubles: money.toRublesString(summary.awaitingPayoutKopecks),
-        frozenRubles: money.toRublesString(summary.frozenKopecks),
-        paidOutRubles: money.toRublesString(summary.paidOutKopecks),
-        blockedRubles: money.toRublesString(summary.blockedKopecks)
-      },
-      nextPayout: {
-        scheduledAt: null,
-        amountKopecks: nextPayoutAmountKopecks,
-        amountRubles: money.toRublesString(nextPayoutAmountKopecks),
-        orderCount: payoutQueue.length,
-        payoutScheduleType: 'MANUAL' as const
-      },
-      activeOrders,
-      payoutQueue,
-      adjustments,
-      payoutHistory
-    };
+    const data = await sellerPayoutService.buildFinanceView(sellerId, query.search?.trim());
 
     res.json({ data });
   } catch (error) {

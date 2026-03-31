@@ -36,6 +36,8 @@ model User {
   reviewReplies          ReviewReply[]
   reviews                Review[]
   sellerDeliveryProfile  SellerDeliveryProfile?
+  sellerPayoutMethods    SellerPayoutMethod[]
+  sellerPayouts          SellerPayout[]
   reviewedKycSubmissions SellerKycSubmission[]  @relation("KycReviewer")
   sellerKycSubmissions   SellerKycSubmission[]
   sellerProfile          SellerProfile?
@@ -333,6 +335,7 @@ model Order {
   payments                 Payment[]
   refunds                  Refund[]
   payout                   Payout?
+  sellerPayouts            SellerPayout[]
   order_shipments          order_shipments?
 
   @@unique([buyerId, paymentAttemptKey])
@@ -357,6 +360,61 @@ model Payout {
   seller    User      @relation(fields: [sellerId], references: [id])
 
   @@index([sellerId, status])
+}
+
+model SellerPayoutMethod {
+  id                    String   @id @default(cuid())
+  sellerId              String
+  provider              String   @default("YOOKASSA")
+  methodType            String
+  payoutToken           String?
+  cardFirst6            String?
+  cardLast4             String?
+  cardType              String?
+  cardIssuerCountry     String?
+  cardIssuerName        String?
+  yoomoneyAccountNumber String?
+  maskedLabel           String?
+  status                String   @default("ACTIVE")
+  isDefault             Boolean  @default(false)
+  meta                  Json?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  seller                User     @relation(fields: [sellerId], references: [id])
+  payouts               SellerPayout[]
+
+  @@index([sellerId, isDefault])
+  @@index([sellerId, status])
+}
+
+model SellerPayout {
+  id                 String    @id @default(cuid())
+  sellerId           String
+  orderId            String
+  dealId             String?
+  payoutMethodId     String
+  provider           String    @default("YOOKASSA")
+  externalPayoutId   String?
+  amountKopecks      Int
+  currency           String    @default("RUB")
+  status             String    @default("PENDING")
+  cancellationParty  String?
+  cancellationReason String?
+  description        String?
+  idempotenceKey     String    @unique
+  requestedAt        DateTime?
+  succeededAt        DateTime?
+  canceledAt         DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  rawResponse        Json?
+  seller             User      @relation(fields: [sellerId], references: [id])
+  order              Order     @relation(fields: [orderId], references: [id])
+  payoutMethod       SellerPayoutMethod @relation(fields: [payoutMethodId], references: [id])
+
+  @@index([sellerId, status])
+  @@index([orderId, status])
+  @@index([externalPayoutId])
 }
 
 model SellerSettings {
