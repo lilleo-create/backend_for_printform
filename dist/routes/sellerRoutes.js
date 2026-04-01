@@ -1643,6 +1643,35 @@ exports.sellerRoutes.get('/payments', async (req, res, next) => {
         next(error);
     }
 });
+exports.sellerRoutes.get('/finance', async (req, res, next) => {
+    try {
+        const query = zod_1.z.object({ search: zod_1.z.string().trim().min(1).optional() }).parse(req.query);
+        const sellerId = req.user.userId;
+        const financeView = await sellerPayoutService_1.sellerPayoutService.buildFinanceView(sellerId, query.search?.trim());
+        const refundsAndHoldsMinor = Number(financeView.summary.refundedKopecks ?? 0) + Number(financeView.summary.blockedKopecks ?? 0);
+        res.json({
+            data: {
+                summary: {
+                    pendingPayoutMinor: Number(financeView.summary.awaitingPayoutKopecks ?? 0),
+                    frozenMinor: Number(financeView.summary.frozenKopecks ?? 0),
+                    paidOutMinor: Number(financeView.summary.paidOutKopecks ?? 0),
+                    refundsAndHoldsMinor
+                },
+                nextPayout: {
+                    availableAt: financeView.nextPayout.scheduledAt ?? null,
+                    ordersCount: Number(financeView.nextPayout.orderCount ?? 0),
+                    amountMinor: Number(financeView.nextPayout.amountKopecks ?? 0)
+                },
+                queue: financeView.payoutQueue ?? [],
+                holds: financeView.adjustments ?? [],
+                history: financeView.payoutHistory ?? []
+            }
+        });
+    }
+    catch (error) {
+        next(error);
+    }
+});
 // ------------------- Status updates -------------------
 exports.sellerRoutes.patch('/orders/:id/status', rateLimiters_1.writeLimiter, async (req, res, next) => {
     try {
