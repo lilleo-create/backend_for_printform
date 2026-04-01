@@ -43,8 +43,8 @@ const listSchema = zod_1.z.object({
     q: zod_1.z.string().optional(),
     category: zod_1.z.string().optional(),
     material: zod_1.z.string().optional(),
-    minPrice: zod_1.z.coerce.number().optional(),
-    maxPrice: zod_1.z.coerce.number().optional(),
+    minPrice: zod_1.z.coerce.number().int().optional(),
+    maxPrice: zod_1.z.coerce.number().int().optional(),
     sort: zod_1.z.enum(['createdAt', 'rating', 'price']).optional(),
     order: zod_1.z.enum(['asc', 'desc']).optional(),
     page: zod_1.z.coerce.number().int().positive().optional(),
@@ -103,7 +103,7 @@ const productSpecificationSchema = zod_1.z.object({
 exports.sellerProductCreateSchema = zod_1.z.object({
     title: zod_1.z.string().min(2),
     category: zod_1.z.string().min(2),
-    price: zod_1.z.preprocess((value) => (typeof value === 'string' && value.trim() !== '' ? Number(value) : value), zod_1.z.number({ invalid_type_error: 'PRICE_INVALID' }).min(1)),
+    price: zod_1.z.preprocess((value) => (typeof value === 'string' && value.trim() !== '' ? Number(value) : value), zod_1.z.number({ invalid_type_error: 'PRICE_INVALID' }).int('PRICE_MUST_BE_INTEGER_MINOR_UNITS').min(1)),
     image: mediaUrlSchema.optional(),
     imageUrls: zod_1.z.array(mediaUrlSchema).optional(),
     videoUrls: zod_1.z.array(mediaUrlSchema).optional(),
@@ -137,7 +137,7 @@ exports.sellerProductCreateSchema = zod_1.z.object({
     variants: zod_1.z
         .array(zod_1.z.object({
         sku: zod_1.z.string().min(3).optional(),
-        price: zod_1.z.number().positive().optional(),
+        price: zod_1.z.number().int('PRICE_MUST_BE_INTEGER_MINOR_UNITS').positive().optional(),
         color: zod_1.z.string().min(2).optional(),
         variantLabel: zod_1.z.string().min(1).max(120).optional(),
         variantSize: zod_1.z.string().min(1).max(64).optional(),

@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { prisma } from '../lib/prisma';
 import { money } from '../utils/money';
+import { env } from '../config/env';
 import { yookassaService } from './yookassaService';
 
 const PROVIDER = 'YOOKASSA';
@@ -31,6 +32,104 @@ const buildMethodMaskedLabel = (method: {
 };
 
 export const sellerPayoutService = {
+  async getYookassaPayoutDetails(sellerId: string) {
+    const method = await (prisma as any).sellerPayoutMethod.findFirst({
+      where: { sellerId, provider: PROVIDER, methodType: 'BANK_CARD', status: { in: ['ACTIVE', 'INVALID'] } },
+      orderBy: [{ isDefault: 'desc' }, { updatedAt: 'desc' }]
+    });
+
+    if (!method) return null;
+
+    return {
+      hasSavedCard: true,
+      card: {
+        cardType: method.cardType ?? null,
+        first6: method.cardFirst6 ?? null,
+        last4: method.cardLast4 ?? null,
+        issuerCountry: method.cardIssuerCountry ?? null,
+        issuerName: method.cardIssuerName ?? null,
+        tokenUpdatedAt: method.updatedAt?.toISOString?.() ?? null
+      }
+    };
+  },
+
+  async getYookassaWidgetConfig(sellerId: string) {
+    const payoutDetails = await this.getYookassaPayoutDetails(sellerId);
+    return {
+      enabled: true,
+      accountId: env.yookassaSafeDealAccountId,
+      hasSavedCard: Boolean(payoutDetails?.hasSavedCard),
+      card: payoutDetails?.card ?? null
+    };
+  },
+
+  async saveYookassaCardFromWidget(
+    sellerId: string,
+    payload: {
+      payoutToken: string;
+      first6?: string;
+      last4: string;
+      cardType?: string;
+      issuerCountry?: string;
+      issuerName?: string;
+    }
+  ) {
+    const methodData = {
+      sellerId,
+      provider: PROVIDER,
+      methodType: 'BANK_CARD',
+      payoutToken: payload.payoutToken,
+      cardFirst6: payload.first6 ?? null,
+      cardLast4: payload.last4,
+      cardType: payload.cardType ?? null,
+      cardIssuerCountry: payload.issuerCountry ?? null,
+      cardIssuerName: payload.issuerName ?? null,
+      maskedLabel: buildMethodMaskedLabel({
+        methodType: 'BANK_CARD',
+        cardType: payload.cardType ?? null,
+        cardLast4: payload.last4
+      }),
+      status: 'ACTIVE'
+    } as const;
+
+    await prisma.$transaction(async (tx) => {
+      const existing = await (tx as any).sellerPayoutMethod.findFirst({
+        where: { sellerId, provider: PROVIDER, methodType: 'BANK_CARD' },
+        orderBy: [{ isDefault: 'desc' }, { updatedAt: 'desc' }]
+      });
+
+      if (existing) {
+        await (tx as any).sellerPayoutMethod.updateMany({
+          where: { sellerId, isDefault: true },
+          data: { isDefault: false }
+        });
+        await (tx as any).sellerPayoutMethod.update({
+          where: { id: existing.id },
+          data: { ...methodData, isDefault: true }
+        });
+        await (tx as any).sellerPayoutMethod.updateMany({
+          where: { sellerId, methodType: 'BANK_CARD', NOT: { id: existing.id } },
+          data: { status: 'REVOKED', isDefault: false }
+        });
+      } else {
+        await (tx as any).sellerPayoutMethod.create({
+          data: {
+            ...methodData,
+            isDefault: true
+          }
+        });
+      }
+    });
+
+    return {
+      cardType: payload.cardType ?? null,
+      first6: payload.first6 ?? null,
+      last4: payload.last4,
+      issuerCountry: payload.issuerCountry ?? null,
+      issuerName: payload.issuerName ?? null
+    };
+  },
+
   async listPayoutMethods(sellerId: string) {
     const methods = await (prisma as any).sellerPayoutMethod.findMany({
       where: { sellerId },

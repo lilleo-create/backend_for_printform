@@ -1,16 +1,5 @@
 import { productRepository } from '../repositories/productRepository';
-import { rublesToKopecks } from '../utils/money';
-
-const withPriceInKopecks = <T extends { price?: number }>(payload: T): T => {
-  if (payload.price === undefined) {
-    return payload;
-  }
-
-  return {
-    ...payload,
-    price: rublesToKopecks(payload.price)
-  };
-};
+const withPriceMinorUnits = <T extends { price?: number }>(payload: T): T => payload;
 
 export const productUseCases = {
   list: (filters: {
@@ -30,21 +19,21 @@ export const productUseCases = {
   listVariants: (id: string) => productRepository.listVariants(id),
   getSellerProductWithVariants: (id: string, sellerId: string) => productRepository.findSellerProductWithVariants(id, sellerId),
   createVariant: (masterProductId: string, sellerId: string, data: Parameters<typeof productRepository.createVariant>[2]) =>
-    productRepository.createVariant(masterProductId, sellerId, withPriceInKopecks(data)),
+    productRepository.createVariant(masterProductId, sellerId, withPriceMinorUnits(data)),
   updateVariant: (
     masterProductId: string,
     variantId: string,
     sellerId: string,
     data: Parameters<typeof productRepository.updateVariant>[3]
-  ) => productRepository.updateVariant(masterProductId, variantId, sellerId, withPriceInKopecks(data)),
+  ) => productRepository.updateVariant(masterProductId, variantId, sellerId, withPriceMinorUnits(data)),
   removeVariant: (masterProductId: string, variantId: string, sellerId: string) =>
     productRepository.removeVariant(masterProductId, variantId, sellerId),
   create: (data: Parameters<typeof productRepository.create>[0]) =>
     productRepository.create({
-      ...withPriceInKopecks(data),
-      variants: data.variants?.map((variant) => withPriceInKopecks(variant))
+      ...withPriceMinorUnits(data),
+      variants: data.variants?.map((variant) => withPriceMinorUnits(variant))
     }),
   update: (id: string, data: Parameters<typeof productRepository.update>[1]) =>
-    productRepository.update(id, withPriceInKopecks(data)),
+    productRepository.update(id, withPriceMinorUnits(data)),
   remove: productRepository.remove
 };

@@ -88,6 +88,7 @@ const yookassaShopId = process.env.YOOKASSA_SHOP_ID ?? '';
 const yookassaSecretKey = process.env.YOOKASSA_SECRET_KEY ?? '';
 const yookassaReturnUrl = process.env.YOOKASSA_RETURN_URL ?? '';
 const yookassaSafeDealEnabled = (process.env.YOOKASSA_SAFE_DEAL_ENABLED ?? '').toLowerCase() === 'true';
+const yookassaSafeDealAccountId = process.env.YOOKASSA_SAFE_DEAL_ACCOUNT_ID ?? yookassaShopId;
 const yookassaPayoutDestinationDataJson = process.env.YOOKASSA_PAYOUT_DESTINATION_DATA_JSON ?? '';
 const platformFeeBps = Number(process.env.PLATFORM_FEE_BPS ?? 0);
 const acquiringFeeBps = Number(process.env.ACQUIRING_FEE_BPS ?? 0);
@@ -159,6 +160,7 @@ plusofonWebhookPublicUrl,
   yookassaSecretKey,
   yookassaReturnUrl,
   yookassaSafeDealEnabled,
+  yookassaSafeDealAccountId,
   yookassaPayoutDestinationDataJson,
   platformFeeBps,
   acquiringFeeBps
