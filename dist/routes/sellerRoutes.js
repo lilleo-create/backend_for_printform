@@ -10,6 +10,7 @@ const zod_1 = require("zod");
 const multer_1 = __importDefault(require("multer"));
 const path_1 = __importDefault(require("path"));
 const fs_1 = __importDefault(require("fs"));
+const env_1 = require("../config/env");
 const authMiddleware_1 = require("../middleware/authMiddleware");
 const prisma_1 = require("../lib/prisma");
 const productUseCases_1 = require("../usecases/productUseCases");
@@ -301,7 +302,7 @@ const sellerMediaUrlSchema = zod_1.z.string().refine((value) => {
 });
 const sellerVariantMutationSchema = zod_1.z.object({
     sku: zod_1.z.string().min(3).optional(),
-    price: zod_1.z.number().positive().optional(),
+    price: zod_1.z.number().int('PRICE_MUST_BE_INTEGER_MINOR_UNITS').positive().optional(),
     color: zod_1.z.string().min(2).optional(),
     variantLabel: zod_1.z.string().min(1).max(120).optional(),
     variantSize: zod_1.z.string().min(1).max(64).optional(),
@@ -1511,6 +1512,55 @@ const payoutMethodCreateSchema = zod_1.z.discriminatedUnion('methodType', [
         isDefault: zod_1.z.boolean().optional()
     })
 ]);
+const yookassaWidgetSuccessSchema = zod_1.z.object({
+    payoutToken: zod_1.z.string().trim().min(1),
+    first6: zod_1.z.string().trim().regex(/^\d{6}$/).optional(),
+    last4: zod_1.z.string().trim().regex(/^\d{4}$/),
+    cardType: zod_1.z.string().trim().min(1).optional(),
+    issuerCountry: zod_1.z.string().trim().min(2).max(2).optional(),
+    issuerName: zod_1.z.string().trim().min(1).optional()
+});
+exports.sellerRoutes.get('/payout-details/yookassa', async (req, res, next) => {
+    try {
+        const data = await sellerPayoutService_1.sellerPayoutService.getYookassaPayoutDetails(req.user.userId);
+        res.json({ data });
+    }
+    catch (error) {
+        next(error);
+    }
+});
+exports.sellerRoutes.get('/payout-widget/yookassa', async (req, res, next) => {
+    try {
+        if (!env_1.env.yookassaSafeDealEnabled || !env_1.env.yookassaSafeDealAccountId) {
+            return res.json({
+                data: {
+                    yooKassaPayouts: {
+                        enabled: false,
+                        reason: 'YOOKASSA_SAFE_DEAL_NOT_CONFIGURED',
+                        accountId: null,
+                        hasSavedCard: false,
+                        card: null
+                    }
+                }
+            });
+        }
+        const data = await sellerPayoutService_1.sellerPayoutService.getYookassaWidgetConfig(req.user.userId);
+        res.json({ data: { yooKassaPayouts: data } });
+    }
+    catch (error) {
+        next(error);
+    }
+});
+exports.sellerRoutes.post('/payout-details/yookassa', rateLimiters_1.writeLimiter, async (req, res, next) => {
+    try {
+        const payload = yookassaWidgetSuccessSchema.parse(req.body);
+        const card = await sellerPayoutService_1.sellerPayoutService.saveYookassaCardFromWidget(req.user.userId, payload);
+        res.status(201).json({ data: { saved: true, card } });
+    }
+    catch (error) {
+        next(error);
+    }
+});
 exports.sellerRoutes.get('/payout-methods', async (req, res, next) => {
     try {
         const sellerId = req.user.userId;

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { prisma } from '../lib/prisma';
 import { sellerPayoutService } from './sellerPayoutService';
 import { yookassaService } from './yookassaService';
+import { env } from '../config/env';
 
 test('createPayoutMethod resets previous default method', async () => {
   let resetCalled = 0;
@@ -132,3 +133,47 @@ test('buildFinanceView excludes HOLD from adjustments and builds payout history 
   assert.equal(data.payoutHistory[0].payoutId, 'sp-1');
 });
 
+test('getYookassaWidgetConfig returns account id and masked card data', async () => {
+  (env as any).yookassaSafeDealAccountId = 'shop-widget-1';
+  (prisma as any).sellerPayoutMethod = {
+    findFirst: async () => ({
+      cardType: 'Mir',
+      cardFirst6: '220220',
+      cardLast4: '2537',
+      cardIssuerCountry: 'RU',
+      cardIssuerName: 'Sberbank',
+      updatedAt: new Date('2026-03-30T10:00:00.000Z')
+    })
+  };
+
+  const data = await sellerPayoutService.getYookassaWidgetConfig('seller-1');
+  assert.equal(data.enabled, true);
+  assert.equal(data.accountId, 'shop-widget-1');
+  assert.equal(data.hasSavedCard, true);
+  assert.equal(data.card?.last4, '2537');
+});
+
+test('saveYookassaCardFromWidget upserts bank card token', async () => {
+  const calls: string[] = [];
+  (prisma.$transaction as any) = async (cb: any) =>
+    cb({
+      sellerPayoutMethod: {
+        findFirst: async () => ({ id: 'pm-1' }),
+        updateMany: async () => calls.push('updateMany'),
+        update: async ({ data }: any) => ({ id: 'pm-1', ...data }),
+        create: async ({ data }: any) => ({ id: 'pm-new', ...data })
+      }
+    });
+
+  const result = await sellerPayoutService.saveYookassaCardFromWidget('seller-1', {
+    payoutToken: 'pt_abc',
+    first6: '220220',
+    last4: '2537',
+    cardType: 'Mir',
+    issuerCountry: 'RU',
+    issuerName: 'Sberbank'
+  });
+
+  assert.deepEqual(calls, ['updateMany', 'updateMany']);
+  assert.equal(result.last4, '2537');
+});

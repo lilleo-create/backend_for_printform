@@ -7,6 +7,7 @@ exports.sellerPayoutService = void 0;
 const node_crypto_1 = __importDefault(require("node:crypto"));
 const prisma_1 = require("../lib/prisma");
 const money_1 = require("../utils/money");
+const env_1 = require("../config/env");
 const yookassaService_1 = require("./yookassaService");
 const PROVIDER = 'YOOKASSA';
 const PAYMENT_STATUS_REFUND_SET = new Set(['REFUND_PENDING', 'REFUNDED']);
@@ -27,6 +28,88 @@ const buildMethodMaskedLabel = (method) => {
     return `YooMoney •••• ${last4}`;
 };
 exports.sellerPayoutService = {
+    async getYookassaPayoutDetails(sellerId) {
+        const method = await prisma_1.prisma.sellerPayoutMethod.findFirst({
+            where: { sellerId, provider: PROVIDER, methodType: 'BANK_CARD', status: { in: ['ACTIVE', 'INVALID'] } },
+            orderBy: [{ isDefault: 'desc' }, { updatedAt: 'desc' }]
+        });
+        if (!method)
+            return null;
+        return {
+            hasSavedCard: true,
+            card: {
+                cardType: method.cardType ?? null,
+                first6: method.cardFirst6 ?? null,
+                last4: method.cardLast4 ?? null,
+                issuerCountry: method.cardIssuerCountry ?? null,
+                issuerName: method.cardIssuerName ?? null,
+                tokenUpdatedAt: method.updatedAt?.toISOString?.() ?? null
+            }
+        };
+    },
+    async getYookassaWidgetConfig(sellerId) {
+        const payoutDetails = await this.getYookassaPayoutDetails(sellerId);
+        return {
+            enabled: true,
+            accountId: env_1.env.yookassaSafeDealAccountId,
+            hasSavedCard: Boolean(payoutDetails?.hasSavedCard),
+            card: payoutDetails?.card ?? null
+        };
+    },
+    async saveYookassaCardFromWidget(sellerId, payload) {
+        const methodData = {
+            sellerId,
+            provider: PROVIDER,
+            methodType: 'BANK_CARD',
+            payoutToken: payload.payoutToken,
+            cardFirst6: payload.first6 ?? null,
+            cardLast4: payload.last4,
+            cardType: payload.cardType ?? null,
+            cardIssuerCountry: payload.issuerCountry ?? null,
+            cardIssuerName: payload.issuerName ?? null,
+            maskedLabel: buildMethodMaskedLabel({
+                methodType: 'BANK_CARD',
+                cardType: payload.cardType ?? null,
+                cardLast4: payload.last4
+            }),
+            status: 'ACTIVE'
+        };
+        await prisma_1.prisma.$transaction(async (tx) => {
+            const existing = await tx.sellerPayoutMethod.findFirst({
+                where: { sellerId, provider: PROVIDER, methodType: 'BANK_CARD' },
+                orderBy: [{ isDefault: 'desc' }, { updatedAt: 'desc' }]
+            });
+            if (existing) {
+                await tx.sellerPayoutMethod.updateMany({
+                    where: { sellerId, isDefault: true },
+                    data: { isDefault: false }
+                });
+                await tx.sellerPayoutMethod.update({
+                    where: { id: existing.id },
+                    data: { ...methodData, isDefault: true }
+                });
+                await tx.sellerPayoutMethod.updateMany({
+                    where: { sellerId, methodType: 'BANK_CARD', NOT: { id: existing.id } },
+                    data: { status: 'REVOKED', isDefault: false }
+                });
+            }
+            else {
+                await tx.sellerPayoutMethod.create({
+                    data: {
+                        ...methodData,
+                        isDefault: true
+                    }
+                });
+            }
+        });
+        return {
+            cardType: payload.cardType ?? null,
+            first6: payload.first6 ?? null,
+            last4: payload.last4,
+            issuerCountry: payload.issuerCountry ?? null,
+            issuerName: payload.issuerName ?? null
+        };
+    },
     async listPayoutMethods(sellerId) {
         const methods = await prisma_1.prisma.sellerPayoutMethod.findMany({
             where: { sellerId },

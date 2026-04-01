@@ -48,8 +48,8 @@ const listSchema = z.object({
   q: z.string().optional(),
   category: z.string().optional(),
   material: z.string().optional(),
-  minPrice: z.coerce.number().optional(),
-  maxPrice: z.coerce.number().optional(),
+  minPrice: z.coerce.number().int().optional(),
+  maxPrice: z.coerce.number().int().optional(),
   sort: z.enum(['createdAt', 'rating', 'price']).optional(),
   order: z.enum(['asc', 'desc']).optional(),
   page: z.coerce.number().int().positive().optional(),
@@ -112,7 +112,7 @@ export const sellerProductCreateSchema = z.object({
   category: z.string().min(2),
   price: z.preprocess(
     (value) => (typeof value === 'string' && value.trim() !== '' ? Number(value) : value),
-    z.number({ invalid_type_error: 'PRICE_INVALID' }).min(1)
+    z.number({ invalid_type_error: 'PRICE_INVALID' }).int('PRICE_MUST_BE_INTEGER_MINOR_UNITS').min(1)
   ),
   image: mediaUrlSchema.optional(),
   imageUrls: z.array(mediaUrlSchema).optional(),
@@ -150,7 +150,7 @@ export const sellerProductCreateSchema = z.object({
     .array(
       z.object({
         sku: z.string().min(3).optional(),
-        price: z.number().positive().optional(),
+        price: z.number().int('PRICE_MUST_BE_INTEGER_MINOR_UNITS').positive().optional(),
         color: z.string().min(2).optional(),
         variantLabel: z.string().min(1).max(120).optional(),
         variantSize: z.string().min(1).max(64).optional(),

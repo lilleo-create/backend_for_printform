@@ -4,6 +4,7 @@ import { z } from "zod";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import { env } from "../config/env";
 import { requireAuth, requireSeller, AuthRequest } from "../middleware/authMiddleware";
 import { OrderStatus, SellerType, type Prisma, type SellerKycSubmission, type SellerProfile } from "@prisma/client";
 import { prisma } from "../lib/prisma";
@@ -329,7 +330,7 @@ const sellerMediaUrlSchema = z.string().refine((value) => {
 
 const sellerVariantMutationSchema = z.object({
   sku: z.string().min(3).optional(),
-  price: z.number().positive().optional(),
+  price: z.number().int('PRICE_MUST_BE_INTEGER_MINOR_UNITS').positive().optional(),
   color: z.string().min(2).optional(),
   variantLabel: z.string().min(1).max(120).optional(),
   variantSize: z.string().min(1).max(64).optional(),
@@ -1676,6 +1677,57 @@ const payoutMethodCreateSchema = z.discriminatedUnion('methodType', [
     isDefault: z.boolean().optional()
   })
 ]);
+
+const yookassaWidgetSuccessSchema = z.object({
+  payoutToken: z.string().trim().min(1),
+  first6: z.string().trim().regex(/^\d{6}$/).optional(),
+  last4: z.string().trim().regex(/^\d{4}$/),
+  cardType: z.string().trim().min(1).optional(),
+  issuerCountry: z.string().trim().min(2).max(2).optional(),
+  issuerName: z.string().trim().min(1).optional()
+});
+
+sellerRoutes.get('/payout-details/yookassa', async (req: AuthRequest, res, next) => {
+  try {
+    const data = await sellerPayoutService.getYookassaPayoutDetails(req.user!.userId);
+    res.json({ data });
+  } catch (error) {
+    next(error);
+  }
+});
+
+sellerRoutes.get('/payout-widget/yookassa', async (req: AuthRequest, res, next) => {
+  try {
+    if (!env.yookassaSafeDealEnabled || !env.yookassaSafeDealAccountId) {
+      return res.json({
+        data: {
+          yooKassaPayouts: {
+            enabled: false,
+            reason: 'YOOKASSA_SAFE_DEAL_NOT_CONFIGURED',
+            accountId: null,
+            hasSavedCard: false,
+            card: null
+          }
+        }
+      });
+    }
+
+    const data = await sellerPayoutService.getYookassaWidgetConfig(req.user!.userId);
+    res.json({ data: { yooKassaPayouts: data } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+sellerRoutes.post('/payout-details/yookassa', writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const payload = yookassaWidgetSuccessSchema.parse(req.body);
+    const card = await sellerPayoutService.saveYookassaCardFromWidget(req.user!.userId, payload);
+    res.status(201).json({ data: { saved: true, card } });
+  } catch (error) {
+    next(error);
+  }
+});
 
 sellerRoutes.get('/payout-methods', async (req: AuthRequest, res, next) => {
   try {
