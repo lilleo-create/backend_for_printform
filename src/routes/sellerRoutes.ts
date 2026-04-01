@@ -1809,6 +1809,38 @@ sellerRoutes.get('/payments', async (req: AuthRequest, res, next) => {
   }
 });
 
+sellerRoutes.get('/finance', async (req: AuthRequest, res, next) => {
+  try {
+    const query = z.object({ search: z.string().trim().min(1).optional() }).parse(req.query);
+    const sellerId = req.user!.userId;
+    const financeView = await sellerPayoutService.buildFinanceView(sellerId, query.search?.trim());
+
+    const refundsAndHoldsMinor =
+      Number(financeView.summary.refundedKopecks ?? 0) + Number(financeView.summary.blockedKopecks ?? 0);
+
+    res.json({
+      data: {
+        summary: {
+          pendingPayoutMinor: Number(financeView.summary.awaitingPayoutKopecks ?? 0),
+          frozenMinor: Number(financeView.summary.frozenKopecks ?? 0),
+          paidOutMinor: Number(financeView.summary.paidOutKopecks ?? 0),
+          refundsAndHoldsMinor
+        },
+        nextPayout: {
+          availableAt: financeView.nextPayout.scheduledAt ?? null,
+          ordersCount: Number(financeView.nextPayout.orderCount ?? 0),
+          amountMinor: Number(financeView.nextPayout.amountKopecks ?? 0)
+        },
+        queue: financeView.payoutQueue ?? [],
+        holds: financeView.adjustments ?? [],
+        history: financeView.payoutHistory ?? []
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ------------------- Status updates -------------------
 sellerRoutes.patch('/orders/:id/status', writeLimiter, async (req: AuthRequest, res, next) => {
   try {
