@@ -192,3 +192,57 @@ test('GET /seller/payments supports search by public number', async () => {
   assert.equal(lastOrderFindManyArgs?.where?.OR?.[0]?.publicNumber?.contains, '#101');
   assert.equal(lastOrderFindManyArgs?.where?.OR?.[1]?.publicNumber?.endsWith, '101');
 });
+
+test('GET /seller/finance returns compatibility payload for accounting dashboard', async () => {
+  const response = await request(buildApp())
+    .get('/seller/finance')
+    .set('Authorization', `Bearer ${accessToken}`);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body.data.summary, {
+    pendingPayoutMinor: 10000,
+    frozenMinor: 5000,
+    paidOutMinor: 7000,
+    refundsAndHoldsMinor: 3000
+  });
+
+  assert.deepEqual(response.body.data.nextPayout, {
+    availableAt: null,
+    ordersCount: 2,
+    amountMinor: 15000
+  });
+
+  assert.equal(response.body.data.queue.length, 2);
+  assert.equal(response.body.data.holds.length, 2);
+  assert.equal(response.body.data.history.length, 1);
+});
+
+test('GET /seller/finance returns valid empty structure when seller has no finance data', async () => {
+  (prisma.order.findMany as unknown as (args: any) => Promise<any>) = async (args: any) => {
+    lastOrderFindManyArgs = args;
+    return [];
+  };
+  (prisma as any).sellerPayoutMethod.findMany = async () => [];
+
+  const response = await request(buildApp())
+    .get('/seller/finance')
+    .set('Authorization', `Bearer ${accessToken}`);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body.data, {
+    summary: {
+      pendingPayoutMinor: 0,
+      frozenMinor: 0,
+      paidOutMinor: 0,
+      refundsAndHoldsMinor: 0
+    },
+    nextPayout: {
+      availableAt: null,
+      ordersCount: 0,
+      amountMinor: 0
+    },
+    queue: [],
+    holds: [],
+    history: []
+  });
+});
