@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import axios from 'axios';
 import { prisma } from '../lib/prisma';
 import { money } from '../utils/money';
 import { yookassaService } from './yookassaService';
@@ -15,6 +16,7 @@ const MIN_PAYOUT_AMOUNT_KOPECKS = 100;
 const MAX_PAYOUT_AMOUNT_KOPECKS = 15_000_000;
 
 const normalizePayoutStatus = (status?: string | null) => String(status ?? '').toUpperCase();
+const DEFAULT_TEST_PAYOUT_DESCRIPTION = 'Тестовая выплата продавцу';
 
 class SellerPayoutError extends Error {
   code: string;
@@ -63,6 +65,170 @@ const buildMethodMaskedLabel = (method: {
 };
 
 export const sellerPayoutService = {
+  normalizePayoutAmountKopecks(amount: string | number) {
+    if (typeof amount === 'number') {
+      if (!Number.isFinite(amount)) throw new SellerPayoutError('SELLER_PAYOUT_AMOUNT_INVALID', 400, { message: 'Некорректная сумма выплаты.' });
+      return money.toKopecks(amount);
+    }
+
+    const normalized = amount.trim().replace(',', '.');
+    if (!normalized) throw new SellerPayoutError('SELLER_PAYOUT_AMOUNT_INVALID', 400, { message: 'Некорректная сумма выплаты.' });
+    const numeric = Number(normalized);
+    if (!Number.isFinite(numeric)) throw new SellerPayoutError('SELLER_PAYOUT_AMOUNT_INVALID', 400, { message: 'Некорректная сумма выплаты.' });
+    return money.toKopecks(numeric);
+  },
+
+  async resolveDealIdForPayout(sellerId: string, requestedDealId?: string) {
+    if (requestedDealId?.trim()) return requestedDealId.trim();
+    const orderWithDeal = await prisma.order.findFirst({
+      where: {
+        items: { some: { product: { sellerId } } },
+        yookassaDealId: { not: null },
+        paymentStatus: 'PAID'
+      },
+      orderBy: [{ paidAt: 'desc' }, { createdAt: 'desc' }],
+      select: { id: true, yookassaDealId: true, publicNumber: true }
+    });
+    return {
+      dealId: orderWithDeal?.yookassaDealId ?? null,
+      orderId: orderWithDeal?.id ?? null,
+      orderPublicNumber: orderWithDeal?.publicNumber ?? null
+    };
+  },
+
+  async triggerTestPayout({
+    sellerId,
+    amount,
+    description,
+    metadata,
+    dealId
+  }: {
+    sellerId: string;
+    amount: string | number;
+    description?: string;
+    metadata?: Record<string, string>;
+    dealId?: string;
+  }) {
+    console.log('[trigger payout] sellerId', sellerId);
+    console.log('[trigger payout] amount raw', amount);
+    if (!process.env.YOOKASSA_SHOP_ID || !process.env.YOOKASSA_SECRET_KEY || !process.env.YOOKASSA_MODE) {
+      throw new SellerPayoutError('SELLER_PAYOUT_CONFIG_ERROR', 500, { message: 'Не настроены параметры YooKassa для выплат.' });
+    }
+
+    const payoutMethod = await (prisma as any).sellerPayoutMethod.findFirst({
+      where: { sellerId, provider: PROVIDER, methodType: 'BANK_CARD', status: 'ACTIVE' },
+      orderBy: [{ isDefault: 'desc' }, { updatedAt: 'desc' }]
+    });
+    console.log('[trigger payout] payout method found', payoutMethod?.id);
+    console.log('[trigger payout] payout token exists', Boolean(payoutMethod?.payoutToken));
+    if (!payoutMethod || payoutMethod.status === 'REVOKED') {
+      throw new SellerPayoutError('SELLER_PAYOUT_METHOD_NOT_FOUND', 404, { message: 'У продавца нет активного способа выплаты.' });
+    }
+    if (!payoutMethod.payoutToken) {
+      throw new SellerPayoutError('SELLER_PAYOUT_TOKEN_MISSING', 400, { message: 'Для выбранного способа выплаты не найден payout token.' });
+    }
+
+    const amountKopecks = this.normalizePayoutAmountKopecks(amount);
+    const normalizedAmount = money.toRublesString(amountKopecks);
+    console.log('[trigger payout] normalized amount', normalizedAmount);
+    if (amountKopecks <= 0) {
+      throw new SellerPayoutError('SELLER_PAYOUT_AMOUNT_INVALID', 400, { message: 'Некорректная сумма выплаты.' });
+    }
+    if (amountKopecks < MIN_PAYOUT_AMOUNT_KOPECKS) {
+      throw new SellerPayoutError('SELLER_PAYOUT_AMOUNT_TOO_SMALL', 400, { message: 'Минимальная сумма выплаты — 1 ₽.' });
+    }
+    if (amountKopecks > MAX_PAYOUT_AMOUNT_KOPECKS) {
+      throw new SellerPayoutError('SELLER_PAYOUT_AMOUNT_TOO_LARGE', 400, { message: 'Максимальная сумма выплаты на карту — 150 000 ₽.' });
+    }
+
+    const availableKopecks = await this.calculateAvailableBalanceKopecks(sellerId);
+    if (amountKopecks > availableKopecks) {
+      throw new SellerPayoutError('SELLER_PAYOUT_AMOUNT_EXCEEDS_AVAILABLE', 400, { message: 'Сумма выплаты превышает доступный баланс.' });
+    }
+
+    const resolvedDeal = await this.resolveDealIdForPayout(sellerId, dealId);
+    const resolvedDealId = typeof resolvedDeal === 'string' ? resolvedDeal : resolvedDeal.dealId;
+    const resolvedOrderId = typeof resolvedDeal === 'string' ? null : resolvedDeal.orderId;
+    const resolvedOrderPublicNumber = typeof resolvedDeal === 'string' ? null : resolvedDeal.orderPublicNumber;
+    console.log('[trigger payout] dealId', resolvedDealId);
+    if (!resolvedDealId) {
+      throw new SellerPayoutError('SELLER_PAYOUT_DEAL_NOT_FOUND', 400, { message: 'Не найден deal.id для создания выплаты.' });
+    }
+
+    const idempotenceKey = crypto.randomUUID();
+    const payoutDescription = description?.trim() || DEFAULT_TEST_PAYOUT_DESCRIPTION;
+    const requestBody = {
+      amount: { value: normalizedAmount, currency: 'RUB' },
+      payout_token: payoutMethod.payoutToken,
+      description: payoutDescription,
+      metadata: { source: 'seller-dashboard', mode: 'test', ...(metadata ?? {}) },
+      deal: { id: resolvedDealId }
+    };
+    console.log('[trigger payout] request body', requestBody);
+
+    let externalPayout: any;
+    try {
+      externalPayout = await yookassaService.createPayoutInDeal({
+        orderId: resolvedOrderId ?? `seller-${sellerId}-trigger-test`,
+        dealId: resolvedDealId,
+        sellerAmountKopecks: amountKopecks,
+        currency: 'RUB',
+        payoutToken: payoutMethod.payoutToken,
+        idempotenceKey,
+        description: payoutDescription,
+        metadata: requestBody.metadata
+      });
+      console.log('[trigger payout] yookassa response', externalPayout);
+    } catch (error) {
+      console.error('[trigger payout] failed', error);
+      const providerMessage = axios.isAxiosError(error)
+        ? String((error.response?.data as any)?.description ?? error.message)
+        : String(error);
+      throw new SellerPayoutError('SELLER_PAYOUT_PROVIDER_ERROR', 502, {
+        message: 'Не удалось создать выплату в YooKassa.',
+        providerMessage
+      });
+    }
+
+    const now = new Date();
+    const mappedStatus = externalPayout.status === 'succeeded' ? 'SUCCEEDED' : externalPayout.status === 'canceled' ? 'CANCELED' : 'PENDING';
+    const created = await (prisma as any).sellerPayout.create({
+      data: {
+        sellerId,
+        orderId: resolvedOrderId,
+        dealId: resolvedDealId,
+        payoutMethodId: payoutMethod.id,
+        provider: PROVIDER,
+        externalPayoutId: externalPayout.id,
+        amountKopecks,
+        currency: 'RUB',
+        status: mappedStatus,
+        externalStatus: externalPayout.status ?? null,
+        description: payoutDescription,
+        metadata: requestBody.metadata,
+        idempotenceKey,
+        requestedAt: now,
+        succeededAt: mappedStatus === 'SUCCEEDED' ? now : null,
+        canceledAt: mappedStatus === 'CANCELED' ? now : null,
+        rawResponse: externalPayout
+      }
+    });
+
+    return {
+      id: created.externalPayoutId ?? created.id,
+      status: String(externalPayout.status ?? 'pending').toLowerCase(),
+      amount: {
+        value: normalizedAmount,
+        currency: 'RUB'
+      },
+      description: created.description,
+      createdAt: created.createdAt,
+      dealId: resolvedDealId,
+      test: true,
+      orderPublicNumber: resolvedOrderPublicNumber
+    };
+  },
+
   getSafeDealShopId() {
     const shopId = process.env.YOOKASSA_SHOP_ID?.trim() || null;
     return shopId;

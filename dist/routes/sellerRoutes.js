@@ -1536,11 +1536,22 @@ const parseYookassaWidgetSuccessPayload = (body) => {
         issuerName: payload.issuerName ?? payload.issuer_name ?? cardPayload?.issuerName ?? cardPayload?.issuer_name
     });
 };
+const saveYooKassaWidgetCard = async (sellerId, rawPayload) => {
+    console.log('[widget success payload]', rawPayload);
+    const payload = parseYookassaWidgetSuccessPayload(rawPayload);
+    return sellerPayoutService_1.sellerPayoutService.saveYookassaCardFromWidget(sellerId, payload);
+};
 const sellerCreatePayoutSchema = zod_1.z.object({
     amount: zod_1.z.string().trim().regex(/^\d+(\.\d{1,2})?$/),
     description: zod_1.z.string().trim().min(1).max(255).optional(),
     orderId: zod_1.z.string().trim().min(1).optional(),
     mode: zod_1.z.enum(['live', 'test']).optional()
+});
+const sellerTriggerPayoutSchema = zod_1.z.object({
+    amount: zod_1.z.union([zod_1.z.string().trim().min(1), zod_1.z.number()]),
+    description: zod_1.z.string().trim().max(128).optional(),
+    metadata: zod_1.z.record(zod_1.z.string()).optional(),
+    dealId: zod_1.z.string().trim().min(1).optional()
 });
 const sellerPayoutListQuerySchema = zod_1.z.object({
     sync: zod_1.z.coerce.boolean().optional()
@@ -1579,9 +1590,7 @@ exports.sellerRoutes.get('/payout-widget/yookassa', async (req, res, next) => {
 });
 exports.sellerRoutes.post('/payout-details/yookassa', rateLimiters_1.writeLimiter, async (req, res, next) => {
     try {
-        console.log('[widget success payload]', req.body);
-        const payload = parseYookassaWidgetSuccessPayload(req.body);
-        const card = await sellerPayoutService_1.sellerPayoutService.saveYookassaCardFromWidget(req.user.userId, payload);
+        const card = await saveYooKassaWidgetCard(req.user.userId, req.body);
         res.status(201).json({ data: { saved: true, card } });
     }
     catch (error) {
@@ -1590,9 +1599,7 @@ exports.sellerRoutes.post('/payout-details/yookassa', rateLimiters_1.writeLimite
 });
 exports.sellerRoutes.post('/payout-methods/yookassa/card', rateLimiters_1.writeLimiter, async (req, res, next) => {
     try {
-        console.log('[widget success payload]', req.body);
-        const payload = parseYookassaWidgetSuccessPayload(req.body);
-        const card = await sellerPayoutService_1.sellerPayoutService.saveYookassaCardFromWidget(req.user.userId, payload);
+        const card = await saveYooKassaWidgetCard(req.user.userId, req.body);
         res.status(201).json({ data: { saved: true, card } });
     }
     catch (error) {
@@ -1666,6 +1673,32 @@ exports.sellerRoutes.post('/payouts/dev-test', rateLimiters_1.writeLimiter, asyn
     catch (error) {
         if (sellerPayoutService_1.sellerPayoutService.isSellerPayoutError(error)) {
             return res.status(error.httpStatus).json({ error: { code: error.code, details: error.details ?? null } });
+        }
+        next(error);
+    }
+});
+exports.sellerRoutes.post('/payouts/trigger', rateLimiters_1.writeLimiter, async (req, res, next) => {
+    try {
+        const sellerId = req.user.userId;
+        const payload = sellerTriggerPayoutSchema.parse(req.body);
+        const payout = await sellerPayoutService_1.sellerPayoutService.triggerTestPayout({
+            sellerId,
+            amount: payload.amount,
+            description: payload.description,
+            metadata: payload.metadata,
+            dealId: payload.dealId
+        });
+        res.status(200).json({ data: payout });
+    }
+    catch (error) {
+        if (sellerPayoutService_1.sellerPayoutService.isSellerPayoutError(error)) {
+            return res.status(error.httpStatus).json({
+                error: {
+                    code: error.code,
+                    message: error.details?.message ?? error.code,
+                    details: error.details ?? null
+                }
+            });
         }
         next(error);
     }

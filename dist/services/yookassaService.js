@@ -173,12 +173,14 @@ exports.yookassaService = {
             },
             ...(input.payoutDestinationData ? { payout_destination_data: input.payoutDestinationData } : {}),
             ...(input.payoutToken ? { payout_token: input.payoutToken } : {}),
+            ...(input.description ? { description: input.description } : {}),
             deal: {
                 id: input.dealId
             },
             metadata: {
                 orderId: input.orderId,
-                dealId: input.dealId
+                dealId: input.dealId,
+                ...(input.metadata ?? {})
             }
         };
         const response = await axios_1.default.post(YOOKASSA_PAYOUTS_API_URL, body, {
