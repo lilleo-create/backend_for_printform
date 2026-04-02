@@ -152,7 +152,7 @@ class CdekService {
   }
 
   private looksLikeCdekPvz(code?: string) {
-    return typeof code === "string" && /^[A-Z]{3}\d{2,6}$/.test(code.trim());
+    return typeof code === "string" && /^[A-Z0-9]{3,20}$/.test(code.trim().toUpperCase());
   }
 
   private extractOrderUuid(resp: CdekOrderResponse): string {

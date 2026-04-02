@@ -19,7 +19,10 @@ export type LabelPdfResolveResult =
   | { status: 'invalid'; reason?: string };
 
 const FINAL_STATUSES: ShipmentInternalStatus[] = ['DELIVERED', 'CANCELLED', 'FAILED'];
-const CDEK_PVZ_CODE_REGEX = /^[A-Z]{3}\d{2,6}$/;
+const CDEK_PVZ_CODE_REGEX = /^[A-Z0-9]{3,20}$/;
+
+export const normalizeCdekPvzCode = (value: unknown) => String(value ?? '').trim().toUpperCase();
+export const isValidCdekPvzCode = (value: unknown) => CDEK_PVZ_CODE_REGEX.test(normalizeCdekPvzCode(value));
 
 export const mapExternalStatusToInternal = (status?: string | null): ShipmentInternalStatus => {
   const normalized = (status ?? '').toUpperCase();
@@ -51,10 +54,10 @@ const parsePvzProvider = (meta: unknown) => String(safeRecord(meta).provider ?? 
 
 export const normalizePvzProvider = async <T extends Pick<Order, 'id' | 'carrier' | 'buyerPickupPvzId' | 'buyerPickupPvzMeta'>>(order: T) => {
   const carrier = String(order.carrier ?? '').toUpperCase();
-  const pvzId = String(order.buyerPickupPvzId ?? '').trim().toUpperCase();
+  const pvzId = normalizeCdekPvzCode(order.buyerPickupPvzId);
   const currentProvider = parsePvzProvider(order.buyerPickupPvzMeta);
 
-  if (carrier !== 'CDEK' || !CDEK_PVZ_CODE_REGEX.test(pvzId) || currentProvider === 'CDEK') {
+  if (carrier !== 'CDEK' || !isValidCdekPvzCode(pvzId) || currentProvider === 'CDEK') {
     return order;
   }
 
@@ -205,8 +208,10 @@ const loadOrderForCdekShipment = async (orderId: string, sellerId?: string) => {
     throw makeError('FULFILLMENT_STEPS_INCOMPLETE', 'Перед отгрузкой отметьте: Упаковка.');
   }
 
-  const fromPvzCode = String(order.sellerDropoffPvzId ?? '').trim();
-  const toPvzCode = String(order.buyerPickupPvzId ?? '').trim();
+  const fromPvzCodeRaw = String(order.sellerDropoffPvzId ?? '');
+  const toPvzCodeRaw = String(order.buyerPickupPvzId ?? '');
+  const fromPvzCode = normalizeCdekPvzCode(fromPvzCodeRaw);
+  const toPvzCode = normalizeCdekPvzCode(toPvzCodeRaw);
   if (!fromPvzCode) throw makeError('CDEK_DROPOFF_PVZ_NOT_SET');
   if (!toPvzCode) throw makeError('CDEK_DESTINATION_PVZ_MISSING');
 
@@ -232,6 +237,8 @@ const loadOrderForCdekShipment = async (orderId: string, sellerId?: string) => {
 
   return {
     order,
+    fromPvzCodeRaw,
+    toPvzCodeRaw,
     fromPvzCode,
     toPvzCode,
     recipientName,
@@ -245,6 +252,8 @@ const loadOrderForCdekShipment = async (orderId: string, sellerId?: string) => {
 export const createShipmentCdek = async (orderId: string, sellerId?: string) => {
   const {
     order,
+    fromPvzCodeRaw,
+    toPvzCodeRaw,
     fromPvzCode,
     toPvzCode,
     recipientName,
@@ -271,8 +280,24 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
   const now = new Date();
 
   try {
-    if (!CDEK_PVZ_CODE_REGEX.test(fromPvzCode)) throw makeError('CDEK_DROPOFF_PVZ_INVALID_FORMAT');
-    if (!CDEK_PVZ_CODE_REGEX.test(toPvzCode)) throw makeError('CDEK_DESTINATION_PVZ_INVALID_FORMAT');
+    if (!isValidCdekPvzCode(fromPvzCode)) {
+      console.warn('[CDEK][createShipmentCdek] invalid dropoff pvz code', {
+        orderId: order.id,
+        field: 'sellerDropoffPvzId',
+        dropoffPvzCodeRaw: fromPvzCodeRaw,
+        dropoffPvzCodeNormalized: fromPvzCode
+      });
+      throw makeError('CDEK_DROPOFF_PVZ_INVALID_FORMAT');
+    }
+    if (!isValidCdekPvzCode(toPvzCode)) {
+      console.warn('[CDEK][createShipmentCdek] invalid destination pvz code', {
+        orderId: order.id,
+        field: 'buyerPickupPvzId',
+        destinationPvzCodeRaw: toPvzCodeRaw,
+        destinationPvzCodeNormalized: toPvzCode
+      });
+      throw makeError('CDEK_DESTINATION_PVZ_INVALID_FORMAT');
+    }
 
     const created = await cdekService.createOrderFromMarketplaceOrder({
       orderId: order.id,

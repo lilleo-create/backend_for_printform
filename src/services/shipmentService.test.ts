@@ -2,7 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { prisma } from '../lib/prisma';
 import { cdekService } from './cdekService';
-import { mapExternalStatusToInternal, normalizePvzProvider, shipmentService } from './shipmentService';
+import {
+  isValidCdekPvzCode,
+  mapExternalStatusToInternal,
+  normalizeCdekPvzCode,
+  normalizePvzProvider,
+  shipmentService
+} from './shipmentService';
 
 test('mapExternalStatusToInternal maps CDEK statuses', () => {
   assert.equal(mapExternalStatusToInternal('ACCEPTED'), 'READY_TO_SHIP');
@@ -30,6 +36,22 @@ test('normalizePvzProvider upgrades legacy provider to CDEK when pvz code matche
 
   assert.equal(updated, true);
   assert.equal((normalized as any).buyerPickupPvzMeta.provider, 'CDEK');
+});
+
+test('CDEK PVZ validator accepts real alphanumeric codes and normalizes case/whitespace', () => {
+  assert.equal(normalizeCdekPvzCode('  spb123 '), 'SPB123');
+  assert.equal(normalizeCdekPvzCode('  abc123  '), 'ABC123');
+  assert.equal(isValidCdekPvzCode('TRTS13'), true);
+  assert.equal(isValidCdekPvzCode('MSK664'), true);
+  assert.equal(isValidCdekPvzCode('  spb123 '), true);
+  assert.equal(isValidCdekPvzCode('  ABC123  '), true);
+});
+
+test('CDEK PVZ validator rejects empty and obviously invalid values', () => {
+  assert.equal(isValidCdekPvzCode(''), false);
+  assert.equal(isValidCdekPvzCode('   '), false);
+  assert.equal(isValidCdekPvzCode('@@@'), false);
+  assert.equal(isValidCdekPvzCode('abc 123'), false);
 });
 
 
