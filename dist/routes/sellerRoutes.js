@@ -1536,7 +1536,8 @@ const parseYookassaWidgetSuccessPayload = (body) => {
 const sellerCreatePayoutSchema = zod_1.z.object({
     amount: zod_1.z.string().trim().regex(/^\d+(\.\d{1,2})?$/),
     description: zod_1.z.string().trim().min(1).max(255).optional(),
-    orderId: zod_1.z.string().trim().min(1).optional()
+    orderId: zod_1.z.string().trim().min(1).optional(),
+    mode: zod_1.z.enum(['live', 'test']).optional()
 });
 const sellerPayoutListQuerySchema = zod_1.z.object({
     sync: zod_1.z.coerce.boolean().optional()
@@ -1620,6 +1621,30 @@ exports.sellerRoutes.post('/payouts', rateLimiters_1.writeLimiter, async (req, r
     try {
         const payload = sellerCreatePayoutSchema.parse(req.body);
         const payout = await sellerPayoutService_1.sellerPayoutService.createSellerPayout(req.user.userId, payload);
+        res.status(201).json({
+            data: {
+                id: payout.id,
+                status: String(payout.status ?? '').toLowerCase(),
+                amount: {
+                    value: money_1.money.toRublesString(payout.amountKopecks),
+                    currency: payout.currency
+                },
+                description: payout.description ?? null,
+                createdAt: payout.createdAt
+            }
+        });
+    }
+    catch (error) {
+        if (sellerPayoutService_1.sellerPayoutService.isSellerPayoutError(error)) {
+            return res.status(error.httpStatus).json({ error: { code: error.code, details: error.details ?? null } });
+        }
+        next(error);
+    }
+});
+exports.sellerRoutes.post('/payouts/dev-test', rateLimiters_1.writeLimiter, async (req, res, next) => {
+    try {
+        const payload = sellerCreatePayoutSchema.omit({ mode: true }).parse(req.body);
+        const payout = await sellerPayoutService_1.sellerPayoutService.createSellerPayout(req.user.userId, { ...payload, mode: 'test' });
         res.status(201).json({
             data: {
                 id: payout.id,
