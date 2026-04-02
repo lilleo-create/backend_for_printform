@@ -389,13 +389,12 @@ exports.sellerPayoutService = {
             return { ...method, status: 'REVOKED', isDefault: false };
         });
     },
-    async getEligibleOrdersForPayout(tx, sellerId) {
+    async getEligibleOrdersForPayout(tx, sellerId, options) {
         const orders = await tx.order.findMany({
             where: {
                 items: { some: { product: { sellerId } } },
                 paymentStatus: 'PAID',
                 payoutStatus: { in: ['RELEASED', 'AWAITING_PAYOUT'] },
-                yookassaDealId: { not: null }
             },
             select: {
                 id: true,
@@ -428,7 +427,7 @@ exports.sellerPayoutService = {
         for (const row of allocationRows) {
             allocatedByOrder.set(row.orderId, (allocatedByOrder.get(row.orderId) ?? 0) + Number(row.amountKopecks ?? 0));
         }
-        return orders
+        const rawEligible = orders
             .map((order) => {
             const netAmount = Number(order.sellerNetAmountKopecks ?? order.total ?? 0);
             const allocated = allocatedByOrder.get(order.id) ?? 0;
@@ -436,7 +435,7 @@ exports.sellerPayoutService = {
             return {
                 orderId: order.id,
                 publicNumber: order.publicNumber,
-                dealId: String(order.yookassaDealId),
+                dealId: order.yookassaDealId ?? null,
                 currency: order.currency,
                 availableToPayoutKopecks,
                 createdAt: order.createdAt,
@@ -444,6 +443,34 @@ exports.sellerPayoutService = {
             };
         })
             .filter((item) => item.availableToPayoutKopecks > 0);
+        if (options?.debug) {
+            const missingDealOrders = rawEligible.filter((item) => !item.dealId);
+            const eligibleWithDeal = rawEligible.filter((item) => Boolean(item.dealId));
+            const totalAvailable = rawEligible.reduce((acc, item) => acc + item.availableToPayoutKopecks, 0);
+            const totalAvailableWithDeal = eligibleWithDeal.reduce((acc, item) => acc + item.availableToPayoutKopecks, 0);
+            const label = options.debugLabel ?? 'createFinancePayoutByAmount';
+            console.info(`[seller payout][${label}] eligible summary`, {
+                sellerId,
+                ordersChecked: orders.length,
+                eligibleOrders: rawEligible.length,
+                eligibleOrderIds: rawEligible.map((item) => item.orderId),
+                totalAvailableKopecks: totalAvailable,
+                eligibleWithDealOrders: eligibleWithDeal.length,
+                eligibleWithDealOrderIds: eligibleWithDeal.map((item) => item.orderId),
+                totalAvailableWithDealKopecks: totalAvailableWithDeal,
+                filteredOutReasons: {
+                    zeroAvailableAfterAllocations: orders.length - rawEligible.length,
+                    missingDealId: missingDealOrders.length
+                },
+                filteredOutOrders: missingDealOrders.map((item) => ({
+                    orderId: item.orderId,
+                    publicNumber: item.publicNumber,
+                    availableToPayoutKopecks: item.availableToPayoutKopecks,
+                    dealId: item.dealId
+                }))
+            });
+        }
+        return rawEligible;
     },
     async calculateAvailableBalanceKopecks(sellerId) {
         const eligible = await this.getEligibleOrdersForPayout(prisma_1.prisma, sellerId);
@@ -597,7 +624,10 @@ exports.sellerPayoutService = {
             if (inProgressPayout) {
                 throw new SellerPayoutError('PAYOUT_ALREADY_IN_PROGRESS', 409);
             }
-            const eligibleOrders = await this.getEligibleOrdersForPayout(tx, sellerId);
+            const eligibleOrders = await this.getEligibleOrdersForPayout(tx, sellerId, {
+                debug: true,
+                debugLabel: 'finance-payout'
+            });
             if (!eligibleOrders.length) {
                 throw new SellerPayoutError('NO_FUNDS_AVAILABLE_FOR_PAYOUT', 400);
             }
@@ -608,8 +638,14 @@ exports.sellerPayoutService = {
                     available: money_1.money.toRublesString(totalAvailable)
                 });
             }
-            const primaryDealId = eligibleOrders[0].dealId;
-            const primaryDealAvailable = eligibleOrders
+            const eligibleOrdersWithDeal = eligibleOrders.filter((item) => Boolean(item.dealId));
+            if (!eligibleOrdersWithDeal.length) {
+                throw new SellerPayoutError('SELLER_PAYOUT_DEAL_NOT_FOUND', 400, {
+                    message: 'Для доступных средств не найден deal.id'
+                });
+            }
+            const primaryDealId = String(eligibleOrdersWithDeal[0].dealId);
+            const primaryDealAvailable = eligibleOrdersWithDeal
                 .filter((item) => item.dealId === primaryDealId)
                 .reduce((acc, item) => acc + item.availableToPayoutKopecks, 0);
             if (amountKopecks > primaryDealAvailable) {
