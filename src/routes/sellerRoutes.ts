@@ -1733,7 +1733,26 @@ sellerRoutes.get('/payout-methods', async (req: AuthRequest, res, next) => {
   try {
     const sellerId = req.user!.userId;
     const methods = await sellerPayoutService.listPayoutMethods(sellerId);
-    res.json({ data: methods });
+    const widgetConfigBase = await sellerPayoutService.getYookassaWidgetConfig(sellerId);
+    const widgetConfig = widgetConfigBase.enabled
+      ? widgetConfigBase
+      : {
+          ...widgetConfigBase,
+          reason: 'YooKassa Safe Deal is not configured on backend'
+        };
+
+    res.json({
+      data: {
+        methods: methods
+          .filter((method) => method.status === 'ACTIVE')
+          .map((method) => ({
+            provider: String(method.provider ?? '').toLowerCase(),
+            type: String(method.methodType ?? '').toLowerCase(),
+            active: method.status === 'ACTIVE'
+          })),
+        widgetConfig
+      }
+    });
   } catch (error) {
     next(error);
   }
