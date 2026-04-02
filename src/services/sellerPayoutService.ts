@@ -32,6 +32,10 @@ const buildMethodMaskedLabel = (method: {
 };
 
 export const sellerPayoutService = {
+  getSafeDealShopId() {
+    return env.yookassaShopId || env.yookassaSafeDealAccountId || null;
+  },
+
   async getYookassaPayoutDetails(sellerId: string) {
     const method = await (prisma as any).sellerPayoutMethod.findFirst({
       where: { sellerId, provider: PROVIDER, methodType: 'BANK_CARD', status: { in: ['ACTIVE', 'INVALID'] } },
@@ -55,9 +59,11 @@ export const sellerPayoutService = {
 
   async getYookassaWidgetConfig(sellerId: string) {
     const payoutDetails = await this.getYookassaPayoutDetails(sellerId);
+    const accountId = this.getSafeDealShopId();
     return {
-      enabled: true,
-      accountId: env.yookassaSafeDealAccountId,
+      enabled: Boolean(env.yookassaSafeDealEnabled && accountId),
+      type: 'safedeal' as const,
+      accountId,
       hasSavedCard: Boolean(payoutDetails?.hasSavedCard),
       card: payoutDetails?.card ?? null
     };

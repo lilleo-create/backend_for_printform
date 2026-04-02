@@ -22,6 +22,7 @@ const accessToken = jwt.sign({ userId, role: 'SELLER', scope: 'access' }, env.jw
 const originalUserFindUnique = prisma.user.findUnique;
 const originalOrderFindMany = prisma.order.findMany;
 const originalSellerPayoutMethodFindMany = (prisma as any).sellerPayoutMethod?.findMany;
+const originalSellerPayoutMethodFindFirst = (prisma as any).sellerPayoutMethod?.findFirst;
 let lastOrderFindManyArgs: any = null;
 
 const installPrismaMocks = () => {
@@ -129,6 +130,19 @@ const installPrismaMocks = () => {
       updatedAt: new Date('2026-03-01T00:00:00.000Z')
     }
   ]);
+  (prisma as any).sellerPayoutMethod.findFirst = async () => ({
+    id: 'method-1',
+    provider: 'YOOKASSA',
+    methodType: 'BANK_CARD',
+    status: 'ACTIVE',
+    isDefault: true,
+    cardFirst6: '220220',
+    cardLast4: '2537',
+    cardType: 'Mir',
+    cardIssuerCountry: 'RU',
+    cardIssuerName: 'Sberbank Of Russia',
+    updatedAt: new Date('2026-03-01T00:00:00.000Z')
+  });
 };
 
 test.beforeEach(() => {
@@ -141,6 +155,9 @@ test.after(() => {
   (prisma.order.findMany as any) = originalOrderFindMany;
   if ((prisma as any).sellerPayoutMethod && originalSellerPayoutMethodFindMany) {
     (prisma as any).sellerPayoutMethod.findMany = originalSellerPayoutMethodFindMany;
+  }
+  if ((prisma as any).sellerPayoutMethod && originalSellerPayoutMethodFindFirst) {
+    (prisma as any).sellerPayoutMethod.findFirst = originalSellerPayoutMethodFindFirst;
   }
 });
 
@@ -245,4 +262,35 @@ test('GET /seller/finance returns valid empty structure when seller has no finan
     holds: [],
     history: []
   });
+});
+
+test('GET /seller/payout-methods returns widget config for Safe Deal', async () => {
+  (env as any).yookassaSafeDealEnabled = true;
+  (env as any).yookassaShopId = 'shop-123';
+
+  const response = await request(buildApp())
+    .get('/seller/payout-methods')
+    .set('Authorization', `Bearer ${accessToken}`);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body.data.methods, [{ provider: 'yookassa', type: 'bank_card', active: true }]);
+  assert.equal(response.body.data.widgetConfig.enabled, true);
+  assert.equal(response.body.data.widgetConfig.type, 'safedeal');
+  assert.equal(response.body.data.widgetConfig.accountId, 'shop-123');
+  assert.equal(response.body.data.widgetConfig.hasSavedCard, true);
+  assert.equal(response.body.data.widgetConfig.card.last4, '2537');
+});
+
+test('GET /seller/payout-methods returns disabled widget reason when Safe Deal is not configured', async () => {
+  (env as any).yookassaSafeDealEnabled = false;
+  (env as any).yookassaShopId = '';
+
+  const response = await request(buildApp())
+    .get('/seller/payout-methods')
+    .set('Authorization', `Bearer ${accessToken}`);
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.data.widgetConfig.enabled, false);
+  assert.equal(response.body.data.widgetConfig.accountId, null);
+  assert.equal(response.body.data.widgetConfig.reason, 'YooKassa Safe Deal is not configured on backend');
 });

@@ -134,6 +134,8 @@ test('buildFinanceView excludes HOLD from adjustments and builds payout history 
 });
 
 test('getYookassaWidgetConfig returns account id and masked card data', async () => {
+  (env as any).yookassaSafeDealEnabled = true;
+  (env as any).yookassaShopId = 'shop-widget-1';
   (env as any).yookassaSafeDealAccountId = 'shop-widget-1';
   (prisma as any).sellerPayoutMethod = {
     findFirst: async () => ({
@@ -149,6 +151,7 @@ test('getYookassaWidgetConfig returns account id and masked card data', async ()
   const data = await sellerPayoutService.getYookassaWidgetConfig('seller-1');
   assert.equal(data.enabled, true);
   assert.equal(data.accountId, 'shop-widget-1');
+  assert.equal(data.type, 'safedeal');
   assert.equal(data.hasSavedCard, true);
   assert.equal(data.card?.last4, '2537');
 });
