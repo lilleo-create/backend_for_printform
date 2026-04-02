@@ -4,9 +4,9 @@ import express from 'express';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import { sellerRoutes } from './sellerRoutes';
+import { env } from '../config/env';
 import { errorHandler } from '../middleware/errorHandler';
 import { prisma } from '../lib/prisma';
-import { env } from '../config/env';
 
 const buildApp = () => {
   const app = express();
@@ -283,8 +283,7 @@ test('GET /seller/finance returns valid empty structure when seller has no finan
 });
 
 test('GET /seller/payout-methods returns widget config for Safe Deal', async () => {
-  (env as any).yookassaSafeDealEnabled = true;
-  (env as any).yookassaShopId = 'shop-123';
+  process.env.YOOKASSA_SHOP_ID = 'shop-123';
 
   const response = await request(buildApp())
     .get('/seller/payout-methods')
@@ -300,9 +299,7 @@ test('GET /seller/payout-methods returns widget config for Safe Deal', async () 
 });
 
 test('GET /seller/payout-methods returns disabled widget reason when Safe Deal is not configured', async () => {
-  (env as any).yookassaSafeDealEnabled = false;
-  (env as any).yookassaShopId = '';
-  (env as any).yookassaSafeDealAccountId = '';
+  process.env.YOOKASSA_SHOP_ID = '';
 
   const response = await request(buildApp())
     .get('/seller/payout-methods')
@@ -311,14 +308,11 @@ test('GET /seller/payout-methods returns disabled widget reason when Safe Deal i
   assert.equal(response.status, 200);
   assert.equal(response.body.data.widgetConfig.enabled, false);
   assert.equal(response.body.data.widgetConfig.accountId, null);
-  assert.equal(response.body.data.widgetConfig.reason, 'YooKassa Safe Deal is not configured on backend');
+  assert.equal(response.body.data.widgetConfig.reason, 'YOOKASSA_SHOP_ID is not configured');
 });
 
 test('GET /seller/payout-methods enables Safe Deal widget with shop credentials even without explicit flag', async () => {
-  (env as any).yookassaSafeDealEnabled = false;
-  (env as any).yookassaShopId = '1316134';
-  (env as any).yookassaSafeDealAccountId = '1316134';
-  (env as any).yookassaSecretKey = 'test_secret';
+  process.env.YOOKASSA_SHOP_ID = '1316134';
 
   const response = await request(buildApp())
     .get('/seller/payout-methods')

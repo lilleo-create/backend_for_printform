@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import { prisma } from '../lib/prisma';
 import { money } from '../utils/money';
-import { env } from '../config/env';
 import { yookassaService } from './yookassaService';
 
 const PROVIDER = 'YOOKASSA';
@@ -14,6 +13,23 @@ const PAYOUT_PENDING_STATUSES = new Set(['PAYOUT_PENDING', 'PROCESSING']);
 const SUCCESS_PAYOUT_STATUSES = new Set(['PAID', 'PAID_OUT']);
 
 const normalizePayoutStatus = (status?: string | null) => String(status ?? '').toUpperCase();
+
+
+type YooKassaWidgetConfig = {
+  enabled: boolean;
+  type: 'safedeal';
+  accountId: string | null;
+  hasSavedCard: boolean;
+  card: {
+    cardType: string | null;
+    first6: string | null;
+    last4: string | null;
+    issuerCountry: string | null;
+    issuerName: string | null;
+    tokenUpdatedAt: string | null;
+  } | null;
+  reason?: string;
+};
 const buildMethodMaskedLabel = (method: {
   methodType: string;
   cardType?: string | null;
@@ -32,15 +48,9 @@ const buildMethodMaskedLabel = (method: {
 };
 
 export const sellerPayoutService = {
-  isSafeDealWidgetConfigured() {
-    const hasAccountId = Boolean(this.getSafeDealShopId());
-    const hasCredentials = Boolean(env.yookassaShopId && env.yookassaSecretKey);
-    return hasAccountId && (env.yookassaSafeDealEnabled || hasCredentials);
-  },
-
   getSafeDealShopId() {
-    const accountId = env.yookassaSafeDealAccountId || env.yookassaShopId;
-    return accountId ? String(accountId).trim() : null;
+    const shopId = process.env.YOOKASSA_SHOP_ID?.trim() || null;
+    return shopId;
   },
 
   async getYookassaPayoutDetails(sellerId: string) {
@@ -64,18 +74,35 @@ export const sellerPayoutService = {
     };
   },
 
-  async getYookassaWidgetConfig(sellerId: string) {
+  async getYooKassaWidgetConfig(sellerId: string): Promise<YooKassaWidgetConfig> {
+    const shopId = this.getSafeDealShopId();
+
+    if (!shopId) {
+      return {
+        enabled: false,
+        type: 'safedeal',
+        accountId: null,
+        hasSavedCard: false,
+        card: null,
+        reason: 'YOOKASSA_SHOP_ID is not configured'
+      };
+    }
+
     const payoutDetails = await this.getYookassaPayoutDetails(sellerId);
-    const accountId = this.getSafeDealShopId();
+
     return {
-      enabled: this.isSafeDealWidgetConfigured(),
-      type: 'safedeal' as const,
-      accountId,
+      enabled: true,
+      type: 'safedeal',
+      accountId: shopId,
       hasSavedCard: Boolean(payoutDetails?.hasSavedCard),
       card: payoutDetails?.card ?? null
     };
   },
 
+
+  async getYookassaWidgetConfig(sellerId: string): Promise<YooKassaWidgetConfig> {
+    return this.getYooKassaWidgetConfig(sellerId);
+  },
   async saveYookassaCardFromWidget(
     sellerId: string,
     payload: {
