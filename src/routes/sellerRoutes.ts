@@ -1854,6 +1854,9 @@ sellerRoutes.post('/payouts/dev-test', writeLimiter, async (req: AuthRequest, re
 
 sellerRoutes.post('/payouts/trigger', writeLimiter, async (req: AuthRequest, res, next) => {
   try {
+    if (process.env.NODE_ENV === 'production') {
+      return res.status(403).json({ error: { code: 'TEST_PAYOUT_DISABLED_IN_PRODUCTION' } });
+    }
     const sellerId = req.user!.userId;
     const payload = sellerTriggerPayoutSchema.parse(req.body);
     const payout = await sellerPayoutService.triggerTestPayout({
@@ -2026,7 +2029,8 @@ sellerRoutes.get('/finance', async (req: AuthRequest, res, next) => {
           pendingPayoutMinor: Number(financeView.summary.awaitingPayoutKopecks ?? 0),
           frozenMinor: Number(financeView.summary.frozenKopecks ?? 0),
           paidOutMinor: Number(financeView.summary.paidOutKopecks ?? 0),
-          refundsAndHoldsMinor
+          refundsAndHoldsMinor,
+          availableToPayoutMinor: Number(financeView.summary.awaitingPayoutKopecks ?? 0)
         },
         nextPayout: {
           availableAt: financeView.nextPayout.scheduledAt ?? null,
@@ -2036,6 +2040,81 @@ sellerRoutes.get('/finance', async (req: AuthRequest, res, next) => {
         queue: financeView.payoutQueue ?? [],
         holds: financeView.adjustments ?? [],
         history: financeView.payoutHistory ?? []
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+sellerRoutes.post('/orders/:id/mark-received', writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const sellerId = req.user!.userId;
+    const updated = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      const order = await tx.order.findFirst({
+        where: { id: req.params.id, items: { some: { product: { sellerId } } } },
+        include: { items: { where: { product: { sellerId } }, include: { product: { select: { sellerId: true } } } } }
+      });
+      if (!order) return null;
+      if (['CANCELLED', 'RETURNED'].includes(order.status)) {
+        const error = new Error('ORDER_NOT_COMPLETABLE');
+        (error as any).status = 400;
+        throw error;
+      }
+
+      const nextStatus = order.status === 'DELIVERED' ? order.status : 'DELIVERED';
+      const completedAt = order.completedAt ?? new Date();
+      await tx.order.update({
+        where: { id: order.id },
+        data: { status: nextStatus, statusUpdatedAt: new Date(), completedAt }
+      });
+
+      const releaseResult = await payoutService.releaseFundsForCompletedOrder(order.id, tx);
+      const reloaded = await tx.order.findUnique({ where: { id: order.id } });
+      if (!reloaded) {
+        const error = new Error('ORDER_NOT_FOUND');
+        (error as any).status = 404;
+        throw error;
+      }
+
+      const breakdown = payoutService.buildOrderFinanceBreakdown(reloaded);
+      const financeView = await sellerPayoutService.buildFinanceView(sellerId);
+
+      return {
+        order: reloaded,
+        releaseResult,
+        breakdown,
+        financeSnapshot: {
+          pendingPayoutMinor: Number(financeView.summary.awaitingPayoutKopecks ?? 0),
+          frozenMinor: Number(financeView.summary.frozenKopecks ?? 0),
+          paidOutMinor: Number(financeView.summary.paidOutKopecks ?? 0),
+          refundsAndHoldsMinor: Number(financeView.summary.refundedKopecks ?? 0) + Number(financeView.summary.blockedKopecks ?? 0),
+          availableToPayoutMinor: Number(financeView.summary.awaitingPayoutKopecks ?? 0)
+        }
+      };
+    });
+
+    if (!updated) return res.status(404).json({ error: { code: 'ORDER_NOT_FOUND' } });
+
+    res.json({
+      data: {
+        order: {
+          id: updated.order.id,
+          status: 'completed',
+          completedAt: updated.order.completedAt,
+          fundsReleasedAt: updated.order.fundsReleasedAt
+        },
+        finance: {
+          grossAmountMinor: updated.breakdown.grossAmountMinor,
+          serviceFeeMinor: updated.breakdown.serviceFeeMinor,
+          platformFeeMinor: updated.breakdown.platformFeeMinor,
+          providerFeeMinor: updated.breakdown.providerFeeMinor,
+          sellerNetAmountMinor: updated.breakdown.sellerNetAmountMinor,
+          frozenMinorAfter: updated.financeSnapshot.frozenMinor,
+          availableToPayoutMinorAfter: updated.financeSnapshot.availableToPayoutMinor
+        },
+        snapshot: updated.financeSnapshot,
+        idempotent: updated.releaseResult?.skipped === 'ALREADY_RELEASED'
       }
     });
   } catch (error) {
@@ -2077,7 +2156,13 @@ sellerRoutes.patch('/orders/:id/status', writeLimiter, async (req: AuthRequest, 
     const updated = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const nextOrder = await tx.order.update({
         where: { id: order.id },
-        data: { status: payload.status, statusUpdatedAt: new Date(), trackingNumber, carrier },
+        data: {
+          status: payload.status,
+          statusUpdatedAt: new Date(),
+          trackingNumber,
+          carrier,
+          ...(payload.status === 'DELIVERED' ? { completedAt: order.completedAt ?? new Date() } : {})
+        },
         include: {
           items: { where: { product: { sellerId: req.user!.userId } }, include: { product: true, variant: true } },
           contact: true,
@@ -2087,11 +2172,17 @@ sellerRoutes.patch('/orders/:id/status', writeLimiter, async (req: AuthRequest, 
       });
 
       if (payload.status === 'DELIVERED') {
-        await orderCompletionService.completeOrderFromDeliveryReceipt(order.id, 'manual_test', tx);
+        await orderCompletionService.completeOrderFromDeliveryReceipt(
+          order.id,
+          'manual_test',
+          tx
+        );
         await orderCompletionService.releaseFundsForCompletedOrder(order.id, tx);
       }
+
       return nextOrder;
     });
+
 
     res.json({ data: updated });
   } catch (error) {

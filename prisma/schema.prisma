@@ -38,6 +38,7 @@ model User {
   sellerDeliveryProfile  SellerDeliveryProfile?
   sellerPayoutMethods    SellerPayoutMethod[]
   sellerPayouts          SellerPayout[]
+  sellerBalanceLedger    SellerBalanceLedgerEntry[]
   reviewedKycSubmissions SellerKycSubmission[]  @relation("KycReviewer")
   sellerKycSubmissions   SellerKycSubmission[]
   sellerProfile          SellerProfile?
@@ -264,95 +265,96 @@ model ReviewReply {
   @@index([authorId])
   @@index([reviewId, moderationStatus, createdAt])
 }
-
 model Order {
-  id                       String               @id @default(cuid())
-  publicNumber             String               @unique
-  buyerId                  String
-  status                   OrderStatus          @default(CREATED)
-  statusUpdatedAt          DateTime             @default(now())
-  total                    Int
-  currency                 String               @default("RUB")
-  createdAt                DateTime             @default(now())
-  updatedAt                DateTime             @updatedAt
-  contactId                String?
-  shippingAddressId        String?
-  trackingNumber           String?
-  carrier                  String?
-  buyerPickupPvzId         String?
-  buyerPickupPvzMeta       Json?
-  sellerDropoffPvzId       String?
-  sellerDropoffPvzMeta     Json?
-  yandexOfferId            String?
-  yandexRequestId          String?
-  yandexStatus             String?
-  yandexSharingUrl         String?
-  yandexCourierOrderId     String?
-  yandexSelfPickupCode     Json?
-  yandexActualInfo         Json?
-  cdekOrderId              String?
-  cdekOrderUuid            String?
-  cdekNumber               String?
-  deliveryProvider         String?
-  deliveryStatus           String?
-  deliveryStatusCode       String?
-  deliveryStatusRaw        Json?
-  deliveryStatusUpdatedAt  DateTime?
+  id                         String               @id @default(cuid())
+  publicNumber               String               @unique
+  buyerId                    String
+  status                     OrderStatus          @default(CREATED)
+  statusUpdatedAt            DateTime             @default(now())
+  total                      Int
+  currency                   String               @default("RUB")
+  createdAt                  DateTime             @default(now())
+  updatedAt                  DateTime             @updatedAt
+  contactId                  String?
+  shippingAddressId          String?
+  trackingNumber             String?
+  carrier                    String?
+  buyerPickupPvzId           String?
+  buyerPickupPvzMeta         Json?
+  sellerDropoffPvzId         String?
+  sellerDropoffPvzMeta       Json?
+  yandexOfferId              String?
+  yandexRequestId            String?
+  yandexStatus               String?
+  yandexSharingUrl           String?
+  yandexCourierOrderId       String?
+  yandexSelfPickupCode       Json?
+  yandexActualInfo           Json?
+  cdekOrderId                String?
+  cdekOrderUuid              String?
+  cdekNumber                 String?
+  deliveryProvider           String?
+  deliveryStatus             String?
+  deliveryStatusCode         String?
+  deliveryStatusRaw          Json?
+  deliveryStatusUpdatedAt    DateTime?
   deliveryReceiptConfirmedAt DateTime?
-  deliveredToRecipientAt   DateTime?
-  completedAt              DateTime?
-  fundsReleasedAt          DateTime?
-  cdekStatus               String?
-  payoutStatus             String               @default("HOLD")
-  deliveryDaysMin          Int?
-  deliveryDaysMax          Int?
-  deliveryEtaText          String?
-  estimatedDeliveryDateMin DateTime?
-  estimatedDeliveryDateMax DateTime?
-  deliveryTariffCode       Int?
-  deliveryCalculatedAt     DateTime?
-  readyForShipmentAt       DateTime?
-  isPacked                 Boolean              @default(false)
-  isLabelPrinted           Boolean              @default(false)
-  isActPrinted             Boolean              @default(false)
-  fulfillmentUpdatedAt     DateTime?
-  dropoffDeadlineAt        DateTime?
-  paymentAttemptKey        String?
-  paymentProvider          String?
-  paymentId                String?
-  paymentStatus            OrderPaymentStatus   @default(PENDING_PAYMENT)
-  paymentExpiresAt         DateTime?
-  paidAt                   DateTime?
-  expiredAt                DateTime?
-  yookassaDealId           String?
-  yookassaDealStatus       String?
-  yookassaPayoutId         String?
-  yookassaRefundId         String?
-  grossAmountKopecks       Int?
-  platformFeeKopecks       Int?
-  acquiringFeeKopecks      Int?
-  sellerNetAmountKopecks   Int?
-  grossAmountMinor         Int?
-  platformFeeMinor         Int?
-  providerFeeMinor         Int?
-  serviceFeeMinor          Int?
-  sellerNetAmountMinor     Int?
-  recipientName            String?
-  recipientPhone           String?
-  recipientEmail           String?
-  packagesCount            Int                  @default(1)
-  orderLabels              Json?
-  buyer                    User                 @relation(fields: [buyerId], references: [id])
-  contact                  Contact?             @relation("OrderContact", fields: [contactId], references: [id])
-  shippingAddress          Address?             @relation("OrderShippingAddress", fields: [shippingAddressId], references: [id])
-  deliveryEvents           OrderDeliveryEvent[]
-  items                    OrderItem[]
-  shipment                 OrderShipment?
-  payments                 Payment[]
-  refunds                  Refund[]
-  payout                   Payout?
-  sellerPayouts            SellerPayout[]
-  order_shipments          order_shipments?
+  deliveredToRecipientAt     DateTime?
+  completedAt                DateTime?
+  fundsReleasedAt            DateTime?
+  cdekStatus                 String?
+  payoutStatus               String               @default("HOLD")
+  deliveryDaysMin            Int?
+  deliveryDaysMax            Int?
+  deliveryEtaText            String?
+  estimatedDeliveryDateMin   DateTime?
+  estimatedDeliveryDateMax   DateTime?
+  deliveryTariffCode         Int?
+  deliveryCalculatedAt       DateTime?
+  readyForShipmentAt         DateTime?
+  isPacked                   Boolean              @default(false)
+  isLabelPrinted             Boolean              @default(false)
+  isActPrinted               Boolean              @default(false)
+  fulfillmentUpdatedAt       DateTime?
+  dropoffDeadlineAt          DateTime?
+  paymentAttemptKey          String?
+  paymentProvider            String?
+  paymentId                  String?
+  paymentStatus              OrderPaymentStatus   @default(PENDING_PAYMENT)
+  paymentExpiresAt           DateTime?
+  paidAt                     DateTime?
+  expiredAt                  DateTime?
+  yookassaDealId             String?
+  yookassaDealStatus         String?
+  yookassaPayoutId           String?
+  yookassaRefundId           String?
+  grossAmountKopecks         Int?
+  serviceFeeKopecks          Int?
+  platformFeeKopecks         Int?
+  acquiringFeeKopecks        Int?
+  sellerNetAmountKopecks     Int?
+  grossAmountMinor           Int?
+  platformFeeMinor           Int?
+  providerFeeMinor           Int?
+  serviceFeeMinor            Int?
+  sellerNetAmountMinor       Int?
+  recipientName              String?
+  recipientPhone             String?
+  recipientEmail             String?
+  packagesCount              Int                  @default(1)
+  orderLabels                Json?
+  buyer                      User                 @relation(fields: [buyerId], references: [id])
+  contact                    Contact?             @relation("OrderContact", fields: [contactId], references: [id])
+  shippingAddress            Address?             @relation("OrderShippingAddress", fields: [shippingAddressId], references: [id])
+  deliveryEvents             OrderDeliveryEvent[]
+  items                      OrderItem[]
+  shipment                   OrderShipment?
+  payments                   Payment[]
+  refunds                    Refund[]
+  payout                     Payout?
+  sellerPayouts              SellerPayout[]
+  balanceLedgerEntries       SellerBalanceLedgerEntry[]
+  order_shipments            order_shipments?
 
   @@unique([buyerId, paymentAttemptKey])
 }
@@ -433,6 +435,22 @@ model SellerPayout {
   @@index([sellerId, status])
   @@index([orderId, status])
   @@index([externalPayoutId])
+}
+
+
+model SellerBalanceLedgerEntry {
+  id            String   @id @default(cuid())
+  sellerId      String
+  orderId       String
+  entryType     String
+  amountKopecks Int
+  metadata      Json?
+  createdAt     DateTime @default(now())
+  seller        User     @relation(fields: [sellerId], references: [id])
+  order         Order    @relation(fields: [orderId], references: [id])
+
+  @@unique([orderId, entryType])
+  @@index([sellerId, createdAt])
 }
 
 model SellerSettings {

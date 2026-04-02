@@ -432,14 +432,15 @@ exports.sellerPayoutService = {
             throw new SellerPayoutError('SELLER_PAYOUT_METHOD_NOT_FOUND', 404);
         if (!payoutMethod.payoutToken)
             throw new SellerPayoutError('SELLER_PAYOUT_TOKEN_MISSING', 400);
+        const mode = payload.mode === 'test' ? 'test' : 'live';
+        const allowTestBypass = mode === 'test' && process.env.NODE_ENV !== 'production';
         const availableKopecks = await this.calculateAvailableBalanceKopecks(sellerId);
-        if (amountKopecks > availableKopecks) {
+        if (!allowTestBypass && amountKopecks > availableKopecks) {
             throw new SellerPayoutError('SELLER_PAYOUT_AMOUNT_EXCEEDS_AVAILABLE', 400, {
                 requested: money_1.money.toRublesString(amountKopecks),
                 available: money_1.money.toRublesString(availableKopecks)
             });
         }
-        const mode = payload.mode === 'test' ? 'test' : 'live';
         const orderForDeal = payload.orderId
             ? await prisma_1.prisma.order.findFirst({
                 where: { id: payload.orderId, items: { some: { product: { sellerId } } }, yookassaDealId: { not: null } },
@@ -504,7 +505,8 @@ exports.sellerPayoutService = {
                 metadata: {
                     orderId: orderForDeal?.id ?? null,
                     orderPublicNumber: orderForDeal?.publicNumber ?? null,
-                    mode
+                    mode,
+                    availableBalanceBypass: allowTestBypass || undefined
                 },
                 idempotenceKey,
                 requestedAt: now,
@@ -652,7 +654,9 @@ exports.sellerPayoutService = {
                 publicNumber: true,
                 total: true,
                 grossAmountKopecks: true,
+                serviceFeeKopecks: true,
                 platformFeeKopecks: true,
+                acquiringFeeKopecks: true,
                 sellerNetAmountKopecks: true,
                 currency: true,
                 payoutStatus: true,
@@ -682,8 +686,10 @@ exports.sellerPayoutService = {
         const seenAdjustments = new Set();
         for (const order of orders) {
             const gross = order.grossAmountKopecks ?? order.total;
-            const fee = order.platformFeeKopecks ?? 0;
-            const net = order.sellerNetAmountKopecks ?? Math.max(0, gross - fee);
+            const platformFee = order.platformFeeKopecks ?? 0;
+            const providerFee = order.acquiringFeeKopecks ?? 0;
+            const serviceFee = order.serviceFeeKopecks ?? platformFee + providerFee;
+            const net = order.sellerNetAmountKopecks ?? Math.max(0, gross - serviceFee);
             const payoutStatus = normalizePayoutStatus(order.payoutStatus);
             const paymentStatus = normalizePayoutStatus(order.paymentStatus);
             if (PAYMENT_STATUS_REFUND_SET.has(paymentStatus))
@@ -707,8 +713,12 @@ exports.sellerPayoutService = {
                     eligibleForPayoutAt: eligibleForPayoutAt?.toISOString() ?? null,
                     grossAmountKopecks: gross,
                     grossAmountRubles: money_1.money.toRublesString(gross),
-                    platformFeeKopecks: fee,
-                    platformFeeRubles: money_1.money.toRublesString(fee),
+                    serviceFeeKopecks: serviceFee,
+                    serviceFeeRubles: money_1.money.toRublesString(serviceFee),
+                    platformFeeKopecks: platformFee,
+                    platformFeeRubles: money_1.money.toRublesString(platformFee),
+                    providerFeeKopecks: providerFee,
+                    providerFeeRubles: money_1.money.toRublesString(providerFee),
                     sellerNetAmountKopecks: net,
                     sellerNetAmountRubles: money_1.money.toRublesString(net),
                     payoutStatus: payoutStatus || null,
@@ -761,8 +771,12 @@ exports.sellerPayoutService = {
                     amountRubles: money_1.money.toRublesString(payout.amountKopecks),
                     grossAmountKopecks: gross,
                     grossAmountRubles: money_1.money.toRublesString(gross),
-                    platformFeeKopecks: fee,
-                    platformFeeRubles: money_1.money.toRublesString(fee),
+                    serviceFeeKopecks: serviceFee,
+                    serviceFeeRubles: money_1.money.toRublesString(serviceFee),
+                    platformFeeKopecks: platformFee,
+                    platformFeeRubles: money_1.money.toRublesString(platformFee),
+                    providerFeeKopecks: providerFee,
+                    providerFeeRubles: money_1.money.toRublesString(providerFee),
                     sellerNetAmountKopecks: net,
                     sellerNetAmountRubles: money_1.money.toRublesString(net),
                     payoutMethodSummary: payout.payoutMethod?.maskedLabel ?? payout.payoutMethod?.methodType ?? null,
