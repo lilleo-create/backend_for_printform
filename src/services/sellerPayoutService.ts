@@ -667,9 +667,17 @@ export const sellerPayoutService = {
 
   async createFinancePayoutByAmount(
     sellerId: string,
-    payload: { amount: string; description?: string }
+    payload: { amount: string | number; description?: string }
   ) {
-    const amountKopecks = this.normalizePayoutAmountKopecks(payload.amount);
+    let amountKopecks: number;
+    try {
+      amountKopecks = this.normalizePayoutAmountKopecks(payload.amount);
+    } catch (error) {
+      if (this.isSellerPayoutError(error) && error.code === 'SELLER_PAYOUT_AMOUNT_INVALID') {
+        throw new SellerPayoutError('INVALID_PAYOUT_AMOUNT', 400);
+      }
+      throw error;
+    }
     if (amountKopecks <= 0) {
       throw new SellerPayoutError('INVALID_PAYOUT_AMOUNT', 400);
     }
@@ -774,6 +782,8 @@ export const sellerPayoutService = {
       });
 
       return { payout: created, allocations, dealId: primaryDealId };
+    }, {
+      isolationLevel: 'Serializable'
     });
 
     let externalPayout: any;

@@ -1718,7 +1718,10 @@ const sellerCreatePayoutSchema = z.object({
   mode: z.enum(['live', 'test']).optional()
 });
 const sellerFinancePayoutSchema = z.object({
-  amount: z.string().trim().regex(/^\d+([.,]\d{1,2})?$/),
+  amount: z.union([
+    z.string().trim().regex(/^\d+([.,]\d{1,2})?$/),
+    z.number().finite().positive()
+  ]),
   description: z.string().trim().min(1).max(255).optional()
 });
 const sellerTriggerPayoutSchema = z.object({
@@ -1992,6 +1995,7 @@ sellerRoutes.post('/finance/payouts', writeLimiter, async (req: AuthRequest, res
           value: money.toRublesString(result.payout.amountKopecks),
           currency: result.payout.currency
         },
+        description: result.payout.description ?? null,
         allocations: result.allocations.map((allocation) => ({
           orderId: allocation.orderId,
           publicNumber: allocation.publicNumber,
