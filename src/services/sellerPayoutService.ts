@@ -322,31 +322,41 @@ export const sellerPayoutService = {
 
   async createSellerPayout(
     sellerId: string,
-    payload: { amount: string; description?: string; orderId?: string | null }
+    payload: { amount: string; description?: string; orderId?: string | null; mode?: 'live' | 'test' }
   ) {
-    const amountKopecks = money.toKopecks(Number(payload.amount));
+    const amountRubles = Number(payload.amount);
+    if (!Number.isFinite(amountRubles) || amountRubles <= 0) {
+      throw new SellerPayoutError('SELLER_PAYOUT_AMOUNT_INVALID', 400);
+    }
+
+    const amountKopecks = money.toKopecks(amountRubles);
     if (amountKopecks < MIN_PAYOUT_AMOUNT_KOPECKS) {
-      throw new SellerPayoutError('PAYOUT_AMOUNT_BELOW_MINIMUM', 400, { min: money.toRublesString(MIN_PAYOUT_AMOUNT_KOPECKS) });
+      throw new SellerPayoutError('SELLER_PAYOUT_AMOUNT_INVALID', 400, {
+        min: money.toRublesString(MIN_PAYOUT_AMOUNT_KOPECKS)
+      });
     }
     if (amountKopecks > MAX_PAYOUT_AMOUNT_KOPECKS) {
-      throw new SellerPayoutError('PAYOUT_AMOUNT_ABOVE_LIMIT', 400, { max: money.toRublesString(MAX_PAYOUT_AMOUNT_KOPECKS) });
+      throw new SellerPayoutError('SELLER_PAYOUT_LIMIT_EXCEEDED', 400, {
+        max: money.toRublesString(MAX_PAYOUT_AMOUNT_KOPECKS)
+      });
     }
 
     const payoutMethod = await (prisma as any).sellerPayoutMethod.findFirst({
       where: { sellerId, provider: PROVIDER, methodType: 'BANK_CARD', status: 'ACTIVE' },
       orderBy: [{ isDefault: 'desc' }, { updatedAt: 'desc' }]
     });
-    if (!payoutMethod) throw new SellerPayoutError('PAYOUT_METHOD_NOT_FOUND', 404);
-    if (!payoutMethod.payoutToken) throw new SellerPayoutError('PAYOUT_TOKEN_MISSING', 400);
+    if (!payoutMethod) throw new SellerPayoutError('SELLER_PAYOUT_METHOD_NOT_FOUND', 404);
+    if (!payoutMethod.payoutToken) throw new SellerPayoutError('SELLER_PAYOUT_TOKEN_MISSING', 400);
 
     const availableKopecks = await this.calculateAvailableBalanceKopecks(sellerId);
     if (amountKopecks > availableKopecks) {
-      throw new SellerPayoutError('INSUFFICIENT_AVAILABLE_BALANCE', 400, {
+      throw new SellerPayoutError('SELLER_PAYOUT_AMOUNT_EXCEEDS_AVAILABLE', 400, {
         requested: money.toRublesString(amountKopecks),
         available: money.toRublesString(availableKopecks)
       });
     }
 
+    const mode = payload.mode === 'test' ? 'test' : 'live';
     const orderForDeal = payload.orderId
       ? await prisma.order.findFirst({
           where: { id: payload.orderId, items: { some: { product: { sellerId } } }, yookassaDealId: { not: null } },
@@ -362,12 +372,22 @@ export const sellerPayoutService = {
           select: { id: true, publicNumber: true, yookassaDealId: true }
         });
 
-    if (!orderForDeal?.yookassaDealId) throw new SellerPayoutError('DEAL_ID_NOT_FOUND', 400);
+    const fallbackTestDealId = process.env.YOOKASSA_TEST_DEAL_ID?.trim() || null;
+    const dealId = orderForDeal?.yookassaDealId ?? (mode === 'test' ? fallbackTestDealId : null);
+    if (!dealId) {
+      throw new SellerPayoutError('SELLER_PAYOUT_DEAL_NOT_FOUND', 400, {
+        mode,
+        orderId: payload.orderId ?? null,
+        hint: mode === 'test' ? 'Set YOOKASSA_TEST_DEAL_ID or create paid order with yookassaDealId' : null
+      });
+    }
+
+    const referenceOrderId = orderForDeal?.id ?? payload.orderId ?? `seller-${sellerId}-test`;
 
     const idempotenceKey = this.buildStableIdempotenceKey([
       'seller',
       sellerId,
-      orderForDeal.id,
+      referenceOrderId,
       payoutMethod.id,
       String(amountKopecks),
       String(Date.now())
@@ -376,15 +396,15 @@ export const sellerPayoutService = {
     let externalPayout: any;
     try {
       externalPayout = await yookassaService.createPayoutInDeal({
-        orderId: orderForDeal.id,
-        dealId: orderForDeal.yookassaDealId,
+        orderId: referenceOrderId,
+        dealId,
         sellerAmountKopecks: amountKopecks,
         currency: 'RUB',
         payoutToken: payoutMethod.payoutToken,
         idempotenceKey
       });
     } catch (error) {
-      throw new SellerPayoutError('YOOKASSA_PAYOUT_CREATE_FAILED', 502, { cause: String(error) });
+      throw new SellerPayoutError('SELLER_PAYOUT_PROVIDER_ERROR', 502, { cause: String(error) });
     }
 
     const now = new Date();
@@ -392,8 +412,8 @@ export const sellerPayoutService = {
     const created = await (prisma as any).sellerPayout.create({
       data: {
         sellerId,
-        orderId: orderForDeal.id,
-        dealId: orderForDeal.yookassaDealId,
+        orderId: orderForDeal?.id ?? null,
+        dealId,
         payoutMethodId: payoutMethod.id,
         provider: PROVIDER,
         externalPayoutId: externalPayout.id,
@@ -403,8 +423,9 @@ export const sellerPayoutService = {
         externalStatus: externalPayout.status ?? null,
         description: payload.description?.trim() || 'Выплата продавцу',
         metadata: {
-          orderId: orderForDeal.id,
-          orderPublicNumber: orderForDeal.publicNumber
+          orderId: orderForDeal?.id ?? null,
+          orderPublicNumber: orderForDeal?.publicNumber ?? null,
+          mode
         },
         idempotenceKey,
         requestedAt: now,

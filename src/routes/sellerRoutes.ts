@@ -1703,7 +1703,8 @@ const parseYookassaWidgetSuccessPayload = (body: unknown) => {
 const sellerCreatePayoutSchema = z.object({
   amount: z.string().trim().regex(/^\d+(\.\d{1,2})?$/),
   description: z.string().trim().min(1).max(255).optional(),
-  orderId: z.string().trim().min(1).optional()
+  orderId: z.string().trim().min(1).optional(),
+  mode: z.enum(['live', 'test']).optional()
 });
 
 const sellerPayoutListQuerySchema = z.object({
@@ -1791,6 +1792,31 @@ sellerRoutes.post('/payouts', writeLimiter, async (req: AuthRequest, res, next) 
   try {
     const payload = sellerCreatePayoutSchema.parse(req.body);
     const payout = await sellerPayoutService.createSellerPayout(req.user!.userId, payload);
+    res.status(201).json({
+      data: {
+        id: payout.id,
+        status: String(payout.status ?? '').toLowerCase(),
+        amount: {
+          value: money.toRublesString(payout.amountKopecks),
+          currency: payout.currency
+        },
+        description: payout.description ?? null,
+        createdAt: payout.createdAt
+      }
+    });
+  } catch (error) {
+    if (sellerPayoutService.isSellerPayoutError(error)) {
+      return res.status(error.httpStatus).json({ error: { code: error.code, details: error.details ?? null } });
+    }
+    next(error);
+  }
+});
+
+
+sellerRoutes.post('/payouts/dev-test', writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const payload = sellerCreatePayoutSchema.omit({ mode: true }).parse(req.body);
+    const payout = await sellerPayoutService.createSellerPayout(req.user!.userId, { ...payload, mode: 'test' });
     res.status(201).json({
       data: {
         id: payout.id,
