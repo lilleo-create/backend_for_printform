@@ -1548,6 +1548,10 @@ const sellerCreatePayoutSchema = zod_1.z.object({
     orderId: zod_1.z.string().trim().min(1).optional(),
     mode: zod_1.z.enum(['live', 'test']).optional()
 });
+const sellerFinancePayoutSchema = zod_1.z.object({
+    amount: zod_1.z.string().trim().regex(/^\d+([.,]\d{1,2})?$/),
+    description: zod_1.z.string().trim().min(1).max(255).optional()
+});
 const sellerTriggerPayoutSchema = zod_1.z.object({
     amount: zod_1.z.union([zod_1.z.string().trim().min(1), zod_1.z.number()]),
     description: zod_1.z.string().trim().max(128).optional(),
@@ -1799,6 +1803,35 @@ exports.sellerRoutes.patch('/payout-methods/:id/revoke', rateLimiters_1.writeLim
         res.json({ data: method });
     }
     catch (error) {
+        next(error);
+    }
+});
+exports.sellerRoutes.post('/finance/payouts', rateLimiters_1.writeLimiter, async (req, res, next) => {
+    try {
+        const payload = sellerFinancePayoutSchema.parse(req.body);
+        const result = await sellerPayoutService_1.sellerPayoutService.createFinancePayoutByAmount(req.user.userId, payload);
+        res.status(201).json({
+            data: {
+                id: result.payout.id,
+                externalId: result.payout.externalPayoutId ?? null,
+                status: String(result.payout.status ?? '').toLowerCase(),
+                amount: {
+                    value: money_1.money.toRublesString(result.payout.amountKopecks),
+                    currency: result.payout.currency
+                },
+                allocations: result.allocations.map((allocation) => ({
+                    orderId: allocation.orderId,
+                    publicNumber: allocation.publicNumber,
+                    amount: money_1.money.toRublesString(allocation.amountKopecks)
+                })),
+                createdAt: result.payout.createdAt
+            }
+        });
+    }
+    catch (error) {
+        if (sellerPayoutService_1.sellerPayoutService.isSellerPayoutError(error)) {
+            return res.status(error.httpStatus).json({ error: { code: error.code, details: error.details ?? null } });
+        }
         next(error);
     }
 });

@@ -353,6 +353,7 @@ model Order {
   refunds                    Refund[]
   payout                     Payout?
   sellerPayouts              SellerPayout[]
+  sellerPayoutAllocations    SellerPayoutAllocation[]
   balanceLedgerEntries       SellerBalanceLedgerEntry[]
   order_shipments            order_shipments?
 
@@ -431,10 +432,24 @@ model SellerPayout {
   seller             User      @relation(fields: [sellerId], references: [id])
   order              Order?    @relation(fields: [orderId], references: [id])
   payoutMethod       SellerPayoutMethod @relation(fields: [payoutMethodId], references: [id])
+  allocations        SellerPayoutAllocation[]
 
   @@index([sellerId, status])
   @@index([orderId, status])
   @@index([externalPayoutId])
+}
+
+model SellerPayoutAllocation {
+  id           String       @id @default(cuid())
+  payoutId     String
+  orderId      String
+  amountKopecks Int
+  createdAt    DateTime     @default(now())
+  payout       SellerPayout @relation(fields: [payoutId], references: [id])
+  order        Order        @relation(fields: [orderId], references: [id])
+
+  @@index([orderId, createdAt])
+  @@index([payoutId])
 }
 
 
