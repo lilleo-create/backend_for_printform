@@ -351,8 +351,8 @@ test('POST /seller/payout-methods/yookassa/card accepts snake_case payload from 
     .set('Authorization', `Bearer ${accessToken}`)
     .send({
       payout_token: 'pt_test_123',
-      first6: '220220',
-      last4: '2537',
+      first_6: '220220',
+      last_4: '2537',
       issuer_name: 'Sberbank Of Russia',
       issuer_country: 'RU',
       card_type: 'Mir'
@@ -361,7 +361,10 @@ test('POST /seller/payout-methods/yookassa/card accepts snake_case payload from 
   assert.equal(response.status, 201);
   assert.equal(response.body.data.saved, true);
   assert.equal(response.body.data.card.last4, '2537');
+  assert.equal(response.body.data.card.first6, '220220');
   assert.equal(response.body.data.card.cardType, 'Mir');
+  assert.equal(response.body.data.card.issuerName, 'Sberbank Of Russia');
+  assert.equal(response.body.data.card.issuerCountry, 'RU');
 });
 
 test('POST /seller/payouts creates seller payout from saved card', async () => {
