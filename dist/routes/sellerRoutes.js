@@ -1524,13 +1524,16 @@ const parseYookassaWidgetSuccessPayload = (body) => {
     if (!body || typeof body !== 'object' || Array.isArray(body))
         return yookassaWidgetSuccessSchema.parse(body);
     const payload = body;
+    const cardPayload = payload.card && typeof payload.card === 'object' && !Array.isArray(payload.card)
+        ? payload.card
+        : null;
     return yookassaWidgetSuccessSchema.parse({
         payoutToken: payload.payoutToken ?? payload.payout_token,
-        first6: payload.first6,
-        last4: payload.last4,
-        cardType: payload.cardType ?? payload.card_type,
-        issuerCountry: payload.issuerCountry ?? payload.issuer_country,
-        issuerName: payload.issuerName ?? payload.issuer_name
+        first6: payload.first6 ?? payload.first_6 ?? cardPayload?.first6 ?? cardPayload?.first_6,
+        last4: payload.last4 ?? payload.last_4 ?? cardPayload?.last4 ?? cardPayload?.last_4,
+        cardType: payload.cardType ?? payload.card_type ?? cardPayload?.cardType ?? cardPayload?.card_type,
+        issuerCountry: payload.issuerCountry ?? payload.issuer_country ?? cardPayload?.issuerCountry ?? cardPayload?.issuer_country,
+        issuerName: payload.issuerName ?? payload.issuer_name ?? cardPayload?.issuerName ?? cardPayload?.issuer_name
     });
 };
 const sellerCreatePayoutSchema = zod_1.z.object({
@@ -1576,6 +1579,7 @@ exports.sellerRoutes.get('/payout-widget/yookassa', async (req, res, next) => {
 });
 exports.sellerRoutes.post('/payout-details/yookassa', rateLimiters_1.writeLimiter, async (req, res, next) => {
     try {
+        console.log('[widget success payload]', req.body);
         const payload = parseYookassaWidgetSuccessPayload(req.body);
         const card = await sellerPayoutService_1.sellerPayoutService.saveYookassaCardFromWidget(req.user.userId, payload);
         res.status(201).json({ data: { saved: true, card } });
@@ -1586,6 +1590,7 @@ exports.sellerRoutes.post('/payout-details/yookassa', rateLimiters_1.writeLimite
 });
 exports.sellerRoutes.post('/payout-methods/yookassa/card', rateLimiters_1.writeLimiter, async (req, res, next) => {
     try {
+        console.log('[widget success payload]', req.body);
         const payload = parseYookassaWidgetSuccessPayload(req.body);
         const card = await sellerPayoutService_1.sellerPayoutService.saveYookassaCardFromWidget(req.user.userId, payload);
         res.status(201).json({ data: { saved: true, card } });

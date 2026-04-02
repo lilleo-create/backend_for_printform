@@ -149,16 +149,7 @@ export const sellerPayoutService = {
       status: 'ACTIVE'
     } as const;
 
-    console.log('[saved payout method data]', {
-      payoutToken,
-      first6,
-      last4,
-      issuerName,
-      issuerCountry,
-      cardType
-    });
-
-    await prisma.$transaction(async (tx) => {
+    const savedMethod = await prisma.$transaction(async (tx) => {
       const existing = await (tx as any).sellerPayoutMethod.findFirst({
         where: { sellerId, provider: PROVIDER, methodType: 'BANK_CARD' },
         orderBy: [{ isDefault: 'desc' }, { updatedAt: 'desc' }]
@@ -169,7 +160,7 @@ export const sellerPayoutService = {
           where: { sellerId, isDefault: true },
           data: { isDefault: false }
         });
-        await (tx as any).sellerPayoutMethod.update({
+        const updated = await (tx as any).sellerPayoutMethod.update({
           where: { id: existing.id },
           data: { ...methodData, isDefault: true }
         });
@@ -177,8 +168,9 @@ export const sellerPayoutService = {
           where: { sellerId, methodType: 'BANK_CARD', NOT: { id: existing.id } },
           data: { status: 'REVOKED', isDefault: false }
         });
+        return updated;
       } else {
-        await (tx as any).sellerPayoutMethod.create({
+        return (tx as any).sellerPayoutMethod.create({
           data: {
             ...methodData,
             isDefault: true
@@ -186,6 +178,7 @@ export const sellerPayoutService = {
         });
       }
     });
+    console.log('[saved payout method]', savedMethod);
 
     return {
       cardType: cardType ?? null,

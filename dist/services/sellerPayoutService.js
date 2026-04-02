@@ -85,24 +85,25 @@ exports.sellerPayoutService = {
         return this.getYooKassaWidgetConfig(sellerId);
     },
     async saveYookassaCardFromWidget(sellerId, payload) {
+        const { payoutToken, first6, last4, issuerName, issuerCountry, cardType } = payload;
         const methodData = {
             sellerId,
             provider: PROVIDER,
             methodType: 'BANK_CARD',
-            payoutToken: payload.payoutToken,
-            cardFirst6: payload.first6 ?? null,
-            cardLast4: payload.last4,
-            cardType: payload.cardType ?? null,
-            cardIssuerCountry: payload.issuerCountry ?? null,
-            cardIssuerName: payload.issuerName ?? null,
+            payoutToken,
+            cardFirst6: first6 ?? null,
+            cardLast4: last4,
+            cardType: cardType ?? null,
+            cardIssuerCountry: issuerCountry ?? null,
+            cardIssuerName: issuerName ?? null,
             maskedLabel: buildMethodMaskedLabel({
                 methodType: 'BANK_CARD',
-                cardType: payload.cardType ?? null,
-                cardLast4: payload.last4
+                cardType: cardType ?? null,
+                cardLast4: last4
             }),
             status: 'ACTIVE'
         };
-        await prisma_1.prisma.$transaction(async (tx) => {
+        const savedMethod = await prisma_1.prisma.$transaction(async (tx) => {
             const existing = await tx.sellerPayoutMethod.findFirst({
                 where: { sellerId, provider: PROVIDER, methodType: 'BANK_CARD' },
                 orderBy: [{ isDefault: 'desc' }, { updatedAt: 'desc' }]
@@ -112,7 +113,7 @@ exports.sellerPayoutService = {
                     where: { sellerId, isDefault: true },
                     data: { isDefault: false }
                 });
-                await tx.sellerPayoutMethod.update({
+                const updated = await tx.sellerPayoutMethod.update({
                     where: { id: existing.id },
                     data: { ...methodData, isDefault: true }
                 });
@@ -120,9 +121,10 @@ exports.sellerPayoutService = {
                     where: { sellerId, methodType: 'BANK_CARD', NOT: { id: existing.id } },
                     data: { status: 'REVOKED', isDefault: false }
                 });
+                return updated;
             }
             else {
-                await tx.sellerPayoutMethod.create({
+                return await tx.sellerPayoutMethod.create({
                     data: {
                         ...methodData,
                         isDefault: true
@@ -130,12 +132,13 @@ exports.sellerPayoutService = {
                 });
             }
         });
+        console.log('[saved payout method]', savedMethod);
         return {
-            cardType: payload.cardType ?? null,
-            first6: payload.first6 ?? null,
-            last4: payload.last4,
-            issuerCountry: payload.issuerCountry ?? null,
-            issuerName: payload.issuerName ?? null
+            cardType: cardType ?? null,
+            first6: first6 ?? null,
+            last4,
+            issuerCountry: issuerCountry ?? null,
+            issuerName: issuerName ?? null
         };
     },
     async listPayoutMethods(sellerId) {
