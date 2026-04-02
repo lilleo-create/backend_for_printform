@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { prisma } from '../lib/prisma';
 import { sellerPayoutService } from './sellerPayoutService';
 import { yookassaService } from './yookassaService';
-import { env } from '../config/env';
 
 test('createPayoutMethod resets previous default method', async () => {
   let resetCalled = 0;
@@ -134,9 +133,7 @@ test('buildFinanceView excludes HOLD from adjustments and builds payout history 
 });
 
 test('getYookassaWidgetConfig returns account id and masked card data', async () => {
-  (env as any).yookassaSafeDealEnabled = true;
-  (env as any).yookassaShopId = 'shop-widget-1';
-  (env as any).yookassaSafeDealAccountId = 'shop-widget-1';
+  process.env.YOOKASSA_SHOP_ID = 'shop-widget-1';
   (prisma as any).sellerPayoutMethod = {
     findFirst: async () => ({
       cardType: 'Mir',

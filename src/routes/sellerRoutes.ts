@@ -1755,16 +1755,10 @@ sellerRoutes.post('/payout-methods/yookassa/card', writeLimiter, async (req: Aut
 sellerRoutes.get('/payout-methods', async (req: AuthRequest, res, next) => {
   try {
     const sellerId = req.user!.userId;
-    const methods = await sellerPayoutService.listPayoutMethods(sellerId);
-    const widgetConfigBase = await sellerPayoutService.getYookassaWidgetConfig(sellerId);
-    const widgetConfig = widgetConfigBase.enabled
-      ? widgetConfigBase
-      : {
-          ...widgetConfigBase,
-          reason: 'YooKassa Safe Deal is not configured on backend'
-        };
 
-    res.json({
+    const methods = await sellerPayoutService.listPayoutMethods(sellerId);
+    const widgetConfig = await sellerPayoutService.getYooKassaWidgetConfig(sellerId);
+    const responsePayload = {
       data: {
         methods: methods
           .filter((method) => method.status === 'ACTIVE')
@@ -1775,7 +1769,15 @@ sellerRoutes.get('/payout-methods', async (req: AuthRequest, res, next) => {
           })),
         widgetConfig
       }
-    });
+    };
+
+    console.log('[payout-methods] sellerId', sellerId);
+    console.log('[payout-methods] YOOKASSA_SHOP_ID', process.env.YOOKASSA_SHOP_ID);
+    console.log('[payout-methods] methods', responsePayload.data.methods);
+    console.log('[payout-methods] widgetConfig', widgetConfig);
+    console.log('[payout-methods] response', responsePayload);
+
+    res.json(responsePayload);
   } catch (error) {
     next(error);
   }
