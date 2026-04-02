@@ -11,10 +11,12 @@ const fromBps = (amountKopecks: number, bps: number) => Math.round((amountKopeck
 export const calculateOrderEconomics = (grossAmountKopecks: number) => {
   const platformFeeKopecks = fromBps(grossAmountKopecks, platformFeeBps());
   const acquiringFeeKopecks = fromBps(grossAmountKopecks, acquiringFeeBps());
-  const sellerNetAmountKopecks = Math.max(0, grossAmountKopecks - platformFeeKopecks);
+  const serviceFeeKopecks = platformFeeKopecks + acquiringFeeKopecks;
+  const sellerNetAmountKopecks = Math.max(0, grossAmountKopecks - serviceFeeKopecks);
 
   return {
     grossAmountKopecks,
+    serviceFeeKopecks,
     platformFeeKopecks,
     acquiringFeeKopecks,
     sellerNetAmountKopecks

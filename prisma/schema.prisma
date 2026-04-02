@@ -38,6 +38,7 @@ model User {
   sellerDeliveryProfile  SellerDeliveryProfile?
   sellerPayoutMethods    SellerPayoutMethod[]
   sellerPayouts          SellerPayout[]
+  sellerBalanceLedger    SellerBalanceLedgerEntry[]
   reviewedKycSubmissions SellerKycSubmission[]  @relation("KycReviewer")
   sellerKycSubmissions   SellerKycSubmission[]
   sellerProfile          SellerProfile?
@@ -318,9 +319,12 @@ model Order {
   yookassaPayoutId         String?
   yookassaRefundId         String?
   grossAmountKopecks       Int?
+  serviceFeeKopecks        Int?
   platformFeeKopecks       Int?
   acquiringFeeKopecks      Int?
   sellerNetAmountKopecks   Int?
+  completedAt              DateTime?
+  fundsReleasedAt          DateTime?
   recipientName            String?
   recipientPhone           String?
   recipientEmail           String?
@@ -336,6 +340,7 @@ model Order {
   refunds                  Refund[]
   payout                   Payout?
   sellerPayouts            SellerPayout[]
+  balanceLedgerEntries     SellerBalanceLedgerEntry[]
   order_shipments          order_shipments?
 
   @@unique([buyerId, paymentAttemptKey])
@@ -417,6 +422,22 @@ model SellerPayout {
   @@index([sellerId, status])
   @@index([orderId, status])
   @@index([externalPayoutId])
+}
+
+
+model SellerBalanceLedgerEntry {
+  id            String   @id @default(cuid())
+  sellerId      String
+  orderId       String
+  entryType     String
+  amountKopecks Int
+  metadata      Json?
+  createdAt     DateTime @default(now())
+  seller        User     @relation(fields: [sellerId], references: [id])
+  order         Order    @relation(fields: [orderId], references: [id])
+
+  @@unique([orderId, entryType])
+  @@index([sellerId, createdAt])
 }
 
 model SellerSettings {

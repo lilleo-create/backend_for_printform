@@ -259,7 +259,8 @@ test('GET /seller/finance returns compatibility payload for accounting dashboard
     pendingPayoutMinor: 10000,
     frozenMinor: 5000,
     paidOutMinor: 7000,
-    refundsAndHoldsMinor: 3000
+    refundsAndHoldsMinor: 3000,
+    availableToPayoutMinor: 10000
   });
 
   assert.deepEqual(response.body.data.nextPayout, {
@@ -290,7 +291,8 @@ test('GET /seller/finance returns valid empty structure when seller has no finan
       pendingPayoutMinor: 0,
       frozenMinor: 0,
       paidOutMinor: 0,
-      refundsAndHoldsMinor: 0
+      refundsAndHoldsMinor: 0,
+      availableToPayoutMinor: 0
     },
     nextPayout: {
       availableAt: null,

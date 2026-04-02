@@ -1679,6 +1679,9 @@ exports.sellerRoutes.post('/payouts/dev-test', rateLimiters_1.writeLimiter, asyn
 });
 exports.sellerRoutes.post('/payouts/trigger', rateLimiters_1.writeLimiter, async (req, res, next) => {
     try {
+        if (process.env.NODE_ENV === 'production') {
+            return res.status(403).json({ error: { code: 'TEST_PAYOUT_DISABLED_IN_PRODUCTION' } });
+        }
         const sellerId = req.user.userId;
         const payload = sellerTriggerPayoutSchema.parse(req.body);
         const payout = await sellerPayoutService_1.sellerPayoutService.triggerTestPayout({
@@ -1849,7 +1852,8 @@ exports.sellerRoutes.get('/finance', async (req, res, next) => {
                     pendingPayoutMinor: Number(financeView.summary.awaitingPayoutKopecks ?? 0),
                     frozenMinor: Number(financeView.summary.frozenKopecks ?? 0),
                     paidOutMinor: Number(financeView.summary.paidOutKopecks ?? 0),
-                    refundsAndHoldsMinor
+                    refundsAndHoldsMinor,
+                    availableToPayoutMinor: Number(financeView.summary.awaitingPayoutKopecks ?? 0)
                 },
                 nextPayout: {
                     availableAt: financeView.nextPayout.scheduledAt ?? null,
@@ -1859,6 +1863,77 @@ exports.sellerRoutes.get('/finance', async (req, res, next) => {
                 queue: financeView.payoutQueue ?? [],
                 holds: financeView.adjustments ?? [],
                 history: financeView.payoutHistory ?? []
+            }
+        });
+    }
+    catch (error) {
+        next(error);
+    }
+});
+exports.sellerRoutes.post('/orders/:id/mark-received', rateLimiters_1.writeLimiter, async (req, res, next) => {
+    try {
+        const sellerId = req.user.userId;
+        const updated = await prisma_1.prisma.$transaction(async (tx) => {
+            const order = await tx.order.findFirst({
+                where: { id: req.params.id, items: { some: { product: { sellerId } } } },
+                include: { items: { where: { product: { sellerId } }, include: { product: { select: { sellerId: true } } } } }
+            });
+            if (!order)
+                return null;
+            if (['CANCELLED', 'RETURNED'].includes(order.status)) {
+                const error = new Error('ORDER_NOT_COMPLETABLE');
+                error.status = 400;
+                throw error;
+            }
+            const nextStatus = order.status === 'DELIVERED' ? order.status : 'DELIVERED';
+            const completedAt = order.completedAt ?? new Date();
+            await tx.order.update({
+                where: { id: order.id },
+                data: { status: nextStatus, statusUpdatedAt: new Date(), completedAt }
+            });
+            const releaseResult = await payoutService_1.payoutService.releaseFundsForCompletedOrder(order.id, tx);
+            const reloaded = await tx.order.findUnique({ where: { id: order.id } });
+            if (!reloaded) {
+                const error = new Error('ORDER_NOT_FOUND');
+                error.status = 404;
+                throw error;
+            }
+            const breakdown = payoutService_1.payoutService.buildOrderFinanceBreakdown(reloaded);
+            const financeView = await sellerPayoutService_1.sellerPayoutService.buildFinanceView(sellerId);
+            return {
+                order: reloaded,
+                releaseResult,
+                breakdown,
+                financeSnapshot: {
+                    pendingPayoutMinor: Number(financeView.summary.awaitingPayoutKopecks ?? 0),
+                    frozenMinor: Number(financeView.summary.frozenKopecks ?? 0),
+                    paidOutMinor: Number(financeView.summary.paidOutKopecks ?? 0),
+                    refundsAndHoldsMinor: Number(financeView.summary.refundedKopecks ?? 0) + Number(financeView.summary.blockedKopecks ?? 0),
+                    availableToPayoutMinor: Number(financeView.summary.awaitingPayoutKopecks ?? 0)
+                }
+            };
+        });
+        if (!updated)
+            return res.status(404).json({ error: { code: 'ORDER_NOT_FOUND' } });
+        res.json({
+            data: {
+                order: {
+                    id: updated.order.id,
+                    status: 'completed',
+                    completedAt: updated.order.completedAt,
+                    fundsReleasedAt: updated.order.fundsReleasedAt
+                },
+                finance: {
+                    grossAmountMinor: updated.breakdown.grossAmountMinor,
+                    serviceFeeMinor: updated.breakdown.serviceFeeMinor,
+                    platformFeeMinor: updated.breakdown.platformFeeMinor,
+                    providerFeeMinor: updated.breakdown.providerFeeMinor,
+                    sellerNetAmountMinor: updated.breakdown.sellerNetAmountMinor,
+                    frozenMinorAfter: updated.financeSnapshot.frozenMinor,
+                    availableToPayoutMinorAfter: updated.financeSnapshot.availableToPayoutMinor
+                },
+                snapshot: updated.financeSnapshot,
+                idempotent: updated.releaseResult?.skipped === 'ALREADY_RELEASED'
             }
         });
     }
@@ -1899,7 +1974,13 @@ exports.sellerRoutes.patch('/orders/:id/status', rateLimiters_1.writeLimiter, as
         const updated = await prisma_1.prisma.$transaction(async (tx) => {
             const nextOrder = await tx.order.update({
                 where: { id: order.id },
-                data: { status: payload.status, statusUpdatedAt: new Date(), trackingNumber, carrier },
+                data: {
+                    status: payload.status,
+                    statusUpdatedAt: new Date(),
+                    trackingNumber,
+                    carrier,
+                    ...(payload.status === 'DELIVERED' ? { completedAt: order.completedAt ?? new Date() } : {})
+                },
                 include: {
                     items: { where: { product: { sellerId: req.user.userId } }, include: { product: true, variant: true } },
                     contact: true,
@@ -1908,7 +1989,7 @@ exports.sellerRoutes.patch('/orders/:id/status', rateLimiters_1.writeLimiter, as
                 }
             });
             if (payload.status === 'DELIVERED') {
-                await payoutService_1.payoutService.releaseForDeliveredOrder(order.id, tx);
+                await payoutService_1.payoutService.releaseFundsForCompletedOrder(order.id, tx);
             }
             return nextOrder;
         });

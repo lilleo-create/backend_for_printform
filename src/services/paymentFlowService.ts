@@ -307,7 +307,9 @@ export const paymentFlowService = {
               data: {
                 yookassaDealId: deal.id,
                 yookassaDealStatus: deal.status,
-                sellerNetAmountKopecks: lockedOrder.sellerNetAmountKopecks ?? lockedOrder.total - (lockedOrder.platformFeeKopecks ?? 0)
+                sellerNetAmountKopecks:
+                  lockedOrder.sellerNetAmountKopecks ??
+                  Math.max(0, lockedOrder.total - ((lockedOrder.platformFeeKopecks ?? 0) + (lockedOrder.acquiringFeeKopecks ?? 0)))
               }
             });
           }
