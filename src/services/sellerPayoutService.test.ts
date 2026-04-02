@@ -177,3 +177,44 @@ test('saveYookassaCardFromWidget upserts bank card token', async () => {
   assert.deepEqual(calls, ['updateMany', 'updateMany']);
   assert.equal(result.last4, '2537');
 });
+
+test('createSellerPayout validates balance and creates YooKassa payout', async () => {
+  (prisma as any).sellerPayoutMethod = {
+    findFirst: async () => ({ id: 'pm-card', payoutToken: 'pt_1', status: 'ACTIVE' })
+  };
+  (prisma.order.findMany as any) = async () => ([
+    { id: 'order-1', sellerNetAmountKopecks: 50000, total: 50000 }
+  ]);
+  (prisma.order.findFirst as any) = async () => ({
+    id: 'order-1',
+    publicNumber: 'PF-1',
+    yookassaDealId: 'deal-1'
+  });
+  (prisma as any).sellerPayout = {
+    findMany: async () => [],
+    create: async ({ data }: any) => ({ id: 'payout-1', createdAt: new Date(), ...data })
+  };
+  (yookassaService.createPayoutInDeal as any) = async () => ({ id: 'ext-1', status: 'pending' });
+
+  const payout = await sellerPayoutService.createSellerPayout('seller-1', { amount: '100.00', description: 'Тест' });
+  assert.equal(payout.id, 'payout-1');
+  assert.equal(payout.dealId, 'deal-1');
+  assert.equal(payout.status, 'PENDING');
+});
+
+test('createSellerPayout rejects when amount is above available balance', async () => {
+  (prisma as any).sellerPayoutMethod = {
+    findFirst: async () => ({ id: 'pm-card', payoutToken: 'pt_1', status: 'ACTIVE' })
+  };
+  (prisma.order.findMany as any) = async () => ([
+    { id: 'order-1', sellerNetAmountKopecks: 5000, total: 5000 }
+  ]);
+  (prisma as any).sellerPayout = {
+    findMany: async () => []
+  };
+
+  await assert.rejects(
+    () => sellerPayoutService.createSellerPayout('seller-1', { amount: '100.00' }),
+    (error: any) => error?.code === 'INSUFFICIENT_AVAILABLE_BALANCE'
+  );
+});

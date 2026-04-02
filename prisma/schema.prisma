@@ -390,7 +390,7 @@ model SellerPayoutMethod {
 model SellerPayout {
   id                 String    @id @default(cuid())
   sellerId           String
-  orderId            String
+  orderId            String?
   dealId             String?
   payoutMethodId     String
   provider           String    @default("YOOKASSA")
@@ -398,9 +398,11 @@ model SellerPayout {
   amountKopecks      Int
   currency           String    @default("RUB")
   status             String    @default("PENDING")
+  externalStatus     String?
   cancellationParty  String?
   cancellationReason String?
   description        String?
+  metadata           Json?
   idempotenceKey     String    @unique
   requestedAt        DateTime?
   succeededAt        DateTime?
@@ -409,7 +411,7 @@ model SellerPayout {
   updatedAt          DateTime  @updatedAt
   rawResponse        Json?
   seller             User      @relation(fields: [sellerId], references: [id])
-  order              Order     @relation(fields: [orderId], references: [id])
+  order              Order?    @relation(fields: [orderId], references: [id])
   payoutMethod       SellerPayoutMethod @relation(fields: [payoutMethodId], references: [id])
 
   @@index([sellerId, status])

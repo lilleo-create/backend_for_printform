@@ -7,6 +7,7 @@ import { sellerRoutes } from './sellerRoutes';
 import { env } from '../config/env';
 import { errorHandler } from '../middleware/errorHandler';
 import { prisma } from '../lib/prisma';
+import { yookassaService } from '../services/yookassaService';
 
 const buildApp = () => {
   const app = express();
@@ -27,6 +28,10 @@ const originalSellerPayoutMethodUpdateMany = (prisma as any).sellerPayoutMethod?
 const originalSellerPayoutMethodUpdate = (prisma as any).sellerPayoutMethod?.update;
 const originalSellerPayoutMethodCreate = (prisma as any).sellerPayoutMethod?.create;
 const originalPrismaTransaction = prisma.$transaction;
+const originalCreatePayoutInDeal = yookassaService.createPayoutInDeal;
+const originalSellerPayoutFindMany = (prisma as any).sellerPayout?.findMany;
+const originalSellerPayoutFindFirst = (prisma as any).sellerPayout?.findFirst;
+const originalSellerPayoutCreate = (prisma as any).sellerPayout?.create;
 let lastOrderFindManyArgs: any = null;
 
 const installPrismaMocks = () => {
@@ -138,6 +143,7 @@ const installPrismaMocks = () => {
     id: 'method-1',
     provider: 'YOOKASSA',
     methodType: 'BANK_CARD',
+    payoutToken: 'pt_test_123',
     status: 'ACTIVE',
     isDefault: true,
     cardFirst6: '220220',
@@ -151,6 +157,11 @@ const installPrismaMocks = () => {
   (prisma as any).sellerPayoutMethod.update = async (_args: any) => ({ id: 'method-1' });
   (prisma as any).sellerPayoutMethod.create = async (_args: any) => ({ id: 'method-1' });
   (prisma.$transaction as any) = async (callback: any) => callback(prisma as any);
+  (prisma as any).sellerPayout = (prisma as any).sellerPayout ?? {};
+  (prisma as any).sellerPayout.findMany = async () => [];
+  (prisma as any).sellerPayout.findFirst = async () => null;
+  (prisma as any).sellerPayout.create = async ({ data }: any) => ({ id: 'payout-1', createdAt: new Date(), updatedAt: new Date(), ...data });
+  (yookassaService.createPayoutInDeal as any) = async () => ({ id: 'ext-payout-1', status: 'pending' });
 };
 
 test.beforeEach(() => {
@@ -176,6 +187,16 @@ test.after(() => {
   if ((prisma as any).sellerPayoutMethod && originalSellerPayoutMethodCreate) {
     (prisma as any).sellerPayoutMethod.create = originalSellerPayoutMethodCreate;
   }
+  if ((prisma as any).sellerPayout && originalSellerPayoutFindMany) {
+    (prisma as any).sellerPayout.findMany = originalSellerPayoutFindMany;
+  }
+  if ((prisma as any).sellerPayout && originalSellerPayoutFindFirst) {
+    (prisma as any).sellerPayout.findFirst = originalSellerPayoutFindFirst;
+  }
+  if ((prisma as any).sellerPayout && originalSellerPayoutCreate) {
+    (prisma as any).sellerPayout.create = originalSellerPayoutCreate;
+  }
+  (yookassaService.createPayoutInDeal as any) = originalCreatePayoutInDeal;
   (prisma.$transaction as any) = originalPrismaTransaction;
 });
 
@@ -341,4 +362,19 @@ test('POST /seller/payout-methods/yookassa/card accepts snake_case payload from 
   assert.equal(response.body.data.saved, true);
   assert.equal(response.body.data.card.last4, '2537');
   assert.equal(response.body.data.card.cardType, 'Mir');
+});
+
+test('POST /seller/payouts creates seller payout from saved card', async () => {
+  (prisma.order.findFirst as any) = async () => ({ id: 'order-1', publicNumber: 'PF-101', yookassaDealId: 'deal-1' });
+  (prisma.order.findMany as any) = async () => ([{ id: 'order-1', sellerNetAmountKopecks: 100000, total: 100000 }]);
+  (prisma as any).sellerPayout.findMany = async () => [];
+
+  const response = await request(buildApp())
+    .post('/seller/payouts')
+    .set('Authorization', `Bearer ${accessToken}`)
+    .send({ amount: '1000.00', description: 'Выплата продавцу' });
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.data.status, 'pending');
+  assert.equal(response.body.data.amount.value, '1000.00');
 });
