@@ -251,6 +251,8 @@ export const yookassaService = {
     payoutToken?: string;
     payoutDestinationData?: Record<string, unknown>;
     idempotenceKey?: string;
+    description?: string;
+    metadata?: Record<string, string>;
   }) {
     if (!input.payoutDestinationData && !input.payoutToken) {
       throw new Error('YOOKASSA_PAYOUT_DESTINATION_OR_TOKEN_NOT_CONFIGURED');
@@ -264,12 +266,14 @@ export const yookassaService = {
       },
       ...(input.payoutDestinationData ? { payout_destination_data: input.payoutDestinationData } : {}),
       ...(input.payoutToken ? { payout_token: input.payoutToken } : {}),
+      ...(input.description ? { description: input.description } : {}),
       deal: {
         id: input.dealId
       },
       metadata: {
         orderId: input.orderId,
-        dealId: input.dealId
+        dealId: input.dealId,
+        ...(input.metadata ?? {})
       }
     };
 

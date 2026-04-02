@@ -1717,6 +1717,12 @@ const sellerCreatePayoutSchema = z.object({
   orderId: z.string().trim().min(1).optional(),
   mode: z.enum(['live', 'test']).optional()
 });
+const sellerTriggerPayoutSchema = z.object({
+  amount: z.union([z.string().trim().min(1), z.number()]),
+  description: z.string().trim().max(128).optional(),
+  metadata: z.record(z.string()).optional(),
+  dealId: z.string().trim().min(1).optional()
+});
 
 const sellerPayoutListQuerySchema = z.object({
   sync: z.coerce.boolean().optional()
@@ -1841,6 +1847,33 @@ sellerRoutes.post('/payouts/dev-test', writeLimiter, async (req: AuthRequest, re
   } catch (error) {
     if (sellerPayoutService.isSellerPayoutError(error)) {
       return res.status(error.httpStatus).json({ error: { code: error.code, details: error.details ?? null } });
+    }
+    next(error);
+  }
+});
+
+sellerRoutes.post('/payouts/trigger', writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const sellerId = req.user!.userId;
+    const payload = sellerTriggerPayoutSchema.parse(req.body);
+    const payout = await sellerPayoutService.triggerTestPayout({
+      sellerId,
+      amount: payload.amount,
+      description: payload.description,
+      metadata: payload.metadata,
+      dealId: payload.dealId
+    });
+
+    res.status(200).json({ data: payout });
+  } catch (error) {
+    if (sellerPayoutService.isSellerPayoutError(error)) {
+      return res.status(error.httpStatus).json({
+        error: {
+          code: error.code,
+          message: (error.details?.message as string | undefined) ?? error.code,
+          details: error.details ?? null
+        }
+      });
     }
     next(error);
   }
