@@ -28,6 +28,15 @@ const buildMethodMaskedLabel = (method) => {
     return `YooMoney •••• ${last4}`;
 };
 exports.sellerPayoutService = {
+    isSafeDealWidgetConfigured() {
+        const hasAccountId = Boolean(this.getSafeDealShopId());
+        const hasCredentials = Boolean(env_1.env.yookassaShopId && env_1.env.yookassaSecretKey);
+        return hasAccountId && (env_1.env.yookassaSafeDealEnabled || hasCredentials);
+    },
+    getSafeDealShopId() {
+        const accountId = env_1.env.yookassaSafeDealAccountId || env_1.env.yookassaShopId;
+        return accountId ? String(accountId).trim() : null;
+    },
     async getYookassaPayoutDetails(sellerId) {
         const method = await prisma_1.prisma.sellerPayoutMethod.findFirst({
             where: { sellerId, provider: PROVIDER, methodType: 'BANK_CARD', status: { in: ['ACTIVE', 'INVALID'] } },
@@ -49,9 +58,11 @@ exports.sellerPayoutService = {
     },
     async getYookassaWidgetConfig(sellerId) {
         const payoutDetails = await this.getYookassaPayoutDetails(sellerId);
+        const accountId = this.getSafeDealShopId();
         return {
-            enabled: true,
-            accountId: env_1.env.yookassaSafeDealAccountId,
+            enabled: this.isSafeDealWidgetConfigured(),
+            type: 'safedeal',
+            accountId,
             hasSavedCard: Boolean(payoutDetails?.hasSavedCard),
             card: payoutDetails?.card ?? null
         };

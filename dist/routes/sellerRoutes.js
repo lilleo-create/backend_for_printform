@@ -10,7 +10,6 @@ const zod_1 = require("zod");
 const multer_1 = __importDefault(require("multer"));
 const path_1 = __importDefault(require("path"));
 const fs_1 = __importDefault(require("fs"));
-const env_1 = require("../config/env");
 const authMiddleware_1 = require("../middleware/authMiddleware");
 const prisma_1 = require("../lib/prisma");
 const productUseCases_1 = require("../usecases/productUseCases");
@@ -1520,6 +1519,19 @@ const yookassaWidgetSuccessSchema = zod_1.z.object({
     issuerCountry: zod_1.z.string().trim().min(2).max(2).optional(),
     issuerName: zod_1.z.string().trim().min(1).optional()
 });
+const parseYookassaWidgetSuccessPayload = (body) => {
+    if (!body || typeof body !== 'object' || Array.isArray(body))
+        return yookassaWidgetSuccessSchema.parse(body);
+    const payload = body;
+    return yookassaWidgetSuccessSchema.parse({
+        payoutToken: payload.payoutToken ?? payload.payout_token,
+        first6: payload.first6,
+        last4: payload.last4,
+        cardType: payload.cardType ?? payload.card_type,
+        issuerCountry: payload.issuerCountry ?? payload.issuer_country,
+        issuerName: payload.issuerName ?? payload.issuer_name
+    });
+};
 exports.sellerRoutes.get('/payout-details/yookassa', async (req, res, next) => {
     try {
         const data = await sellerPayoutService_1.sellerPayoutService.getYookassaPayoutDetails(req.user.userId);
@@ -1531,12 +1543,14 @@ exports.sellerRoutes.get('/payout-details/yookassa', async (req, res, next) => {
 });
 exports.sellerRoutes.get('/payout-widget/yookassa', async (req, res, next) => {
     try {
-        if (!env_1.env.yookassaSafeDealEnabled || !env_1.env.yookassaSafeDealAccountId) {
+        const data = await sellerPayoutService_1.sellerPayoutService.getYookassaWidgetConfig(req.user.userId);
+        if (!data.enabled) {
             return res.json({
                 data: {
                     yooKassaPayouts: {
                         enabled: false,
-                        reason: 'YOOKASSA_SAFE_DEAL_NOT_CONFIGURED',
+                        type: 'safedeal',
+                        reason: 'YooKassa Safe Deal is not configured on backend',
                         accountId: null,
                         hasSavedCard: false,
                         card: null
@@ -1544,7 +1558,6 @@ exports.sellerRoutes.get('/payout-widget/yookassa', async (req, res, next) => {
                 }
             });
         }
-        const data = await sellerPayoutService_1.sellerPayoutService.getYookassaWidgetConfig(req.user.userId);
         res.json({ data: { yooKassaPayouts: data } });
     }
     catch (error) {
@@ -1553,7 +1566,17 @@ exports.sellerRoutes.get('/payout-widget/yookassa', async (req, res, next) => {
 });
 exports.sellerRoutes.post('/payout-details/yookassa', rateLimiters_1.writeLimiter, async (req, res, next) => {
     try {
-        const payload = yookassaWidgetSuccessSchema.parse(req.body);
+        const payload = parseYookassaWidgetSuccessPayload(req.body);
+        const card = await sellerPayoutService_1.sellerPayoutService.saveYookassaCardFromWidget(req.user.userId, payload);
+        res.status(201).json({ data: { saved: true, card } });
+    }
+    catch (error) {
+        next(error);
+    }
+});
+exports.sellerRoutes.post('/payout-methods/yookassa/card', rateLimiters_1.writeLimiter, async (req, res, next) => {
+    try {
+        const payload = parseYookassaWidgetSuccessPayload(req.body);
         const card = await sellerPayoutService_1.sellerPayoutService.saveYookassaCardFromWidget(req.user.userId, payload);
         res.status(201).json({ data: { saved: true, card } });
     }
@@ -1565,7 +1588,25 @@ exports.sellerRoutes.get('/payout-methods', async (req, res, next) => {
     try {
         const sellerId = req.user.userId;
         const methods = await sellerPayoutService_1.sellerPayoutService.listPayoutMethods(sellerId);
-        res.json({ data: methods });
+        const widgetConfigBase = await sellerPayoutService_1.sellerPayoutService.getYookassaWidgetConfig(sellerId);
+        const widgetConfig = widgetConfigBase.enabled
+            ? widgetConfigBase
+            : {
+                ...widgetConfigBase,
+                reason: 'YooKassa Safe Deal is not configured on backend'
+            };
+        res.json({
+            data: {
+                methods: methods
+                    .filter((method) => method.status === 'ACTIVE')
+                    .map((method) => ({
+                    provider: String(method.provider ?? '').toLowerCase(),
+                    type: String(method.methodType ?? '').toLowerCase(),
+                    active: method.status === 'ACTIVE'
+                })),
+                widgetConfig
+            }
+        });
     }
     catch (error) {
         next(error);

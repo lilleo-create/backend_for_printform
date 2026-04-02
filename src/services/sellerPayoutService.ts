@@ -32,8 +32,15 @@ const buildMethodMaskedLabel = (method: {
 };
 
 export const sellerPayoutService = {
+  isSafeDealWidgetConfigured() {
+    const hasAccountId = Boolean(this.getSafeDealShopId());
+    const hasCredentials = Boolean(env.yookassaShopId && env.yookassaSecretKey);
+    return hasAccountId && (env.yookassaSafeDealEnabled || hasCredentials);
+  },
+
   getSafeDealShopId() {
-    return env.yookassaShopId || env.yookassaSafeDealAccountId || null;
+    const accountId = env.yookassaSafeDealAccountId || env.yookassaShopId;
+    return accountId ? String(accountId).trim() : null;
   },
 
   async getYookassaPayoutDetails(sellerId: string) {
@@ -61,7 +68,7 @@ export const sellerPayoutService = {
     const payoutDetails = await this.getYookassaPayoutDetails(sellerId);
     const accountId = this.getSafeDealShopId();
     return {
-      enabled: Boolean(env.yookassaSafeDealEnabled && accountId),
+      enabled: this.isSafeDealWidgetConfigured(),
       type: 'safedeal' as const,
       accountId,
       hasSavedCard: Boolean(payoutDetails?.hasSavedCard),
