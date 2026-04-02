@@ -155,12 +155,16 @@ test('getYookassaWidgetConfig returns account id and masked card data', async ()
 
 test('saveYookassaCardFromWidget upserts bank card token', async () => {
   const calls: string[] = [];
+  let updatedData: any = null;
   (prisma.$transaction as any) = async (cb: any) =>
     cb({
       sellerPayoutMethod: {
         findFirst: async () => ({ id: 'pm-1' }),
         updateMany: async () => calls.push('updateMany'),
-        update: async ({ data }: any) => ({ id: 'pm-1', ...data }),
+        update: async ({ data }: any) => {
+          updatedData = data;
+          return { id: 'pm-1', ...data };
+        },
         create: async ({ data }: any) => ({ id: 'pm-new', ...data })
       }
     });
@@ -176,6 +180,15 @@ test('saveYookassaCardFromWidget upserts bank card token', async () => {
 
   assert.deepEqual(calls, ['updateMany', 'updateMany']);
   assert.equal(result.last4, '2537');
+  assert.equal(result.first6, '220220');
+  assert.equal(result.cardType, 'Mir');
+  assert.equal(result.issuerCountry, 'RU');
+  assert.equal(result.issuerName, 'Sberbank');
+  assert.equal(updatedData.cardFirst6, '220220');
+  assert.equal(updatedData.cardLast4, '2537');
+  assert.equal(updatedData.cardType, 'Mir');
+  assert.equal(updatedData.cardIssuerCountry, 'RU');
+  assert.equal(updatedData.cardIssuerName, 'Sberbank');
 });
 
 test('createSellerPayout validates balance and creates YooKassa payout', async () => {

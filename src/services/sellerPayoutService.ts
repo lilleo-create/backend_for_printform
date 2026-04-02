@@ -129,23 +129,34 @@ export const sellerPayoutService = {
       issuerName?: string;
     }
   ) {
+    const { payoutToken, first6, last4, issuerName, issuerCountry, cardType } = payload;
+
     const methodData = {
       sellerId,
       provider: PROVIDER,
       methodType: 'BANK_CARD',
-      payoutToken: payload.payoutToken,
-      cardFirst6: payload.first6 ?? null,
-      cardLast4: payload.last4,
-      cardType: payload.cardType ?? null,
-      cardIssuerCountry: payload.issuerCountry ?? null,
-      cardIssuerName: payload.issuerName ?? null,
+      payoutToken,
+      cardFirst6: first6 ?? null,
+      cardLast4: last4,
+      cardType: cardType ?? null,
+      cardIssuerCountry: issuerCountry ?? null,
+      cardIssuerName: issuerName ?? null,
       maskedLabel: buildMethodMaskedLabel({
         methodType: 'BANK_CARD',
-        cardType: payload.cardType ?? null,
-        cardLast4: payload.last4
+        cardType: cardType ?? null,
+        cardLast4: last4
       }),
       status: 'ACTIVE'
     } as const;
+
+    console.log('[saved payout method data]', {
+      payoutToken,
+      first6,
+      last4,
+      issuerName,
+      issuerCountry,
+      cardType
+    });
 
     await prisma.$transaction(async (tx) => {
       const existing = await (tx as any).sellerPayoutMethod.findFirst({
@@ -177,11 +188,11 @@ export const sellerPayoutService = {
     });
 
     return {
-      cardType: payload.cardType ?? null,
-      first6: payload.first6 ?? null,
-      last4: payload.last4,
-      issuerCountry: payload.issuerCountry ?? null,
-      issuerName: payload.issuerName ?? null
+      cardType: cardType ?? null,
+      first6: first6 ?? null,
+      last4,
+      issuerCountry: issuerCountry ?? null,
+      issuerName: issuerName ?? null
     };
   },
 

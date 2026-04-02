@@ -1690,14 +1690,25 @@ const yookassaWidgetSuccessSchema = z.object({
 const parseYookassaWidgetSuccessPayload = (body: unknown) => {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return yookassaWidgetSuccessSchema.parse(body);
   const payload = body as Record<string, unknown>;
+  const cardPayload = payload.card && typeof payload.card === 'object' && !Array.isArray(payload.card)
+    ? (payload.card as Record<string, unknown>)
+    : null;
+
   return yookassaWidgetSuccessSchema.parse({
     payoutToken: payload.payoutToken ?? payload.payout_token,
-    first6: payload.first6,
-    last4: payload.last4,
-    cardType: payload.cardType ?? payload.card_type,
-    issuerCountry: payload.issuerCountry ?? payload.issuer_country,
-    issuerName: payload.issuerName ?? payload.issuer_name
+    first6: payload.first6 ?? payload.first_6 ?? cardPayload?.first6 ?? cardPayload?.first_6,
+    last4: payload.last4 ?? payload.last_4 ?? cardPayload?.last4 ?? cardPayload?.last_4,
+    cardType: payload.cardType ?? payload.card_type ?? cardPayload?.cardType ?? cardPayload?.card_type,
+    issuerCountry:
+      payload.issuerCountry ?? payload.issuer_country ?? cardPayload?.issuerCountry ?? cardPayload?.issuer_country,
+    issuerName: payload.issuerName ?? payload.issuer_name ?? cardPayload?.issuerName ?? cardPayload?.issuer_name
   });
+};
+
+const saveYooKassaWidgetCard = async (sellerId: string, rawPayload: unknown) => {
+  console.log('[widget success payload]', rawPayload);
+  const payload = parseYookassaWidgetSuccessPayload(rawPayload);
+  return sellerPayoutService.saveYookassaCardFromWidget(sellerId, payload);
 };
 
 const sellerCreatePayoutSchema = z.object({
@@ -1745,8 +1756,7 @@ sellerRoutes.get('/payout-widget/yookassa', async (req: AuthRequest, res, next) 
 
 sellerRoutes.post('/payout-details/yookassa', writeLimiter, async (req: AuthRequest, res, next) => {
   try {
-    const payload = parseYookassaWidgetSuccessPayload(req.body);
-    const card = await sellerPayoutService.saveYookassaCardFromWidget(req.user!.userId, payload);
+    const card = await saveYooKassaWidgetCard(req.user!.userId, req.body);
     res.status(201).json({ data: { saved: true, card } });
   } catch (error) {
     next(error);
@@ -1755,8 +1765,7 @@ sellerRoutes.post('/payout-details/yookassa', writeLimiter, async (req: AuthRequ
 
 sellerRoutes.post('/payout-methods/yookassa/card', writeLimiter, async (req: AuthRequest, res, next) => {
   try {
-    const payload = parseYookassaWidgetSuccessPayload(req.body);
-    const card = await sellerPayoutService.saveYookassaCardFromWidget(req.user!.userId, payload);
+    const card = await saveYooKassaWidgetCard(req.user!.userId, req.body);
     res.status(201).json({ data: { saved: true, card } });
   } catch (error) {
     next(error);
