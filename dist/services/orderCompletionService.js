@@ -6,6 +6,9 @@ const payoutService_1 = require("./payoutService");
 const terminalOrderStatuses = new Set(['CANCELLED', 'RETURNED', 'EXPIRED']);
 const toDb = (tx) => (tx ?? prisma_1.prisma);
 exports.orderCompletionService = {
+    buildOrderFinanceBreakdown(order) {
+        return payoutService_1.payoutService.buildOrderFinanceBreakdown(order);
+    },
     async completeOrderFromDeliveryReceipt(orderId, source, tx) {
         const db = toDb(tx);
         const order = await db.order.findUnique({ where: { id: orderId } });
