@@ -1717,6 +1717,10 @@ const sellerCreatePayoutSchema = z.object({
   orderId: z.string().trim().min(1).optional(),
   mode: z.enum(['live', 'test']).optional()
 });
+const sellerFinancePayoutSchema = z.object({
+  amount: z.string().trim().regex(/^\d+([.,]\d{1,2})?$/),
+  description: z.string().trim().min(1).max(255).optional()
+});
 const sellerTriggerPayoutSchema = z.object({
   amount: z.union([z.string().trim().min(1), z.number()]),
   description: z.string().trim().max(128).optional(),
@@ -1971,6 +1975,35 @@ sellerRoutes.patch('/payout-methods/:id/revoke', writeLimiter, async (req: AuthR
     if (!method) return res.status(404).json({ error: { code: 'PAYOUT_METHOD_NOT_FOUND' } });
     res.json({ data: method });
   } catch (error) {
+    next(error);
+  }
+});
+
+sellerRoutes.post('/finance/payouts', writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const payload = sellerFinancePayoutSchema.parse(req.body);
+    const result = await sellerPayoutService.createFinancePayoutByAmount(req.user!.userId, payload);
+    res.status(201).json({
+      data: {
+        id: result.payout.id,
+        externalId: result.payout.externalPayoutId ?? null,
+        status: String(result.payout.status ?? '').toLowerCase(),
+        amount: {
+          value: money.toRublesString(result.payout.amountKopecks),
+          currency: result.payout.currency
+        },
+        allocations: result.allocations.map((allocation) => ({
+          orderId: allocation.orderId,
+          publicNumber: allocation.publicNumber,
+          amount: money.toRublesString(allocation.amountKopecks)
+        })),
+        createdAt: result.payout.createdAt
+      }
+    });
+  } catch (error) {
+    if (sellerPayoutService.isSellerPayoutError(error)) {
+      return res.status(error.httpStatus).json({ error: { code: error.code, details: error.details ?? null } });
+    }
     next(error);
   }
 });
