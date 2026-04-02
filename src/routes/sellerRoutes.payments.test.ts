@@ -23,6 +23,10 @@ const originalUserFindUnique = prisma.user.findUnique;
 const originalOrderFindMany = prisma.order.findMany;
 const originalSellerPayoutMethodFindMany = (prisma as any).sellerPayoutMethod?.findMany;
 const originalSellerPayoutMethodFindFirst = (prisma as any).sellerPayoutMethod?.findFirst;
+const originalSellerPayoutMethodUpdateMany = (prisma as any).sellerPayoutMethod?.updateMany;
+const originalSellerPayoutMethodUpdate = (prisma as any).sellerPayoutMethod?.update;
+const originalSellerPayoutMethodCreate = (prisma as any).sellerPayoutMethod?.create;
+const originalPrismaTransaction = prisma.$transaction;
 let lastOrderFindManyArgs: any = null;
 
 const installPrismaMocks = () => {
@@ -143,6 +147,10 @@ const installPrismaMocks = () => {
     cardIssuerName: 'Sberbank Of Russia',
     updatedAt: new Date('2026-03-01T00:00:00.000Z')
   });
+  (prisma as any).sellerPayoutMethod.updateMany = async () => ({ count: 1 });
+  (prisma as any).sellerPayoutMethod.update = async (_args: any) => ({ id: 'method-1' });
+  (prisma as any).sellerPayoutMethod.create = async (_args: any) => ({ id: 'method-1' });
+  (prisma.$transaction as any) = async (callback: any) => callback(prisma as any);
 };
 
 test.beforeEach(() => {
@@ -159,6 +167,16 @@ test.after(() => {
   if ((prisma as any).sellerPayoutMethod && originalSellerPayoutMethodFindFirst) {
     (prisma as any).sellerPayoutMethod.findFirst = originalSellerPayoutMethodFindFirst;
   }
+  if ((prisma as any).sellerPayoutMethod && originalSellerPayoutMethodUpdateMany) {
+    (prisma as any).sellerPayoutMethod.updateMany = originalSellerPayoutMethodUpdateMany;
+  }
+  if ((prisma as any).sellerPayoutMethod && originalSellerPayoutMethodUpdate) {
+    (prisma as any).sellerPayoutMethod.update = originalSellerPayoutMethodUpdate;
+  }
+  if ((prisma as any).sellerPayoutMethod && originalSellerPayoutMethodCreate) {
+    (prisma as any).sellerPayoutMethod.create = originalSellerPayoutMethodCreate;
+  }
+  (prisma.$transaction as any) = originalPrismaTransaction;
 });
 
 test('GET /seller/payments returns finance-oriented payload for seller accounting tab', async () => {
@@ -284,6 +302,7 @@ test('GET /seller/payout-methods returns widget config for Safe Deal', async () 
 test('GET /seller/payout-methods returns disabled widget reason when Safe Deal is not configured', async () => {
   (env as any).yookassaSafeDealEnabled = false;
   (env as any).yookassaShopId = '';
+  (env as any).yookassaSafeDealAccountId = '';
 
   const response = await request(buildApp())
     .get('/seller/payout-methods')
@@ -293,4 +312,39 @@ test('GET /seller/payout-methods returns disabled widget reason when Safe Deal i
   assert.equal(response.body.data.widgetConfig.enabled, false);
   assert.equal(response.body.data.widgetConfig.accountId, null);
   assert.equal(response.body.data.widgetConfig.reason, 'YooKassa Safe Deal is not configured on backend');
+});
+
+test('GET /seller/payout-methods enables Safe Deal widget with shop credentials even without explicit flag', async () => {
+  (env as any).yookassaSafeDealEnabled = false;
+  (env as any).yookassaShopId = '1316134';
+  (env as any).yookassaSafeDealAccountId = '1316134';
+  (env as any).yookassaSecretKey = 'test_secret';
+
+  const response = await request(buildApp())
+    .get('/seller/payout-methods')
+    .set('Authorization', `Bearer ${accessToken}`);
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.data.widgetConfig.enabled, true);
+  assert.equal(response.body.data.widgetConfig.accountId, '1316134');
+  assert.equal(response.body.data.widgetConfig.type, 'safedeal');
+});
+
+test('POST /seller/payout-methods/yookassa/card accepts snake_case payload from widget', async () => {
+  const response = await request(buildApp())
+    .post('/seller/payout-methods/yookassa/card')
+    .set('Authorization', `Bearer ${accessToken}`)
+    .send({
+      payout_token: 'pt_test_123',
+      first6: '220220',
+      last4: '2537',
+      issuer_name: 'Sberbank Of Russia',
+      issuer_country: 'RU',
+      card_type: 'Mir'
+    });
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.data.saved, true);
+  assert.equal(response.body.data.card.last4, '2537');
+  assert.equal(response.body.data.card.cardType, 'Mir');
 });

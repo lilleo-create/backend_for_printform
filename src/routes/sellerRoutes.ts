@@ -1687,6 +1687,19 @@ const yookassaWidgetSuccessSchema = z.object({
   issuerName: z.string().trim().min(1).optional()
 });
 
+const parseYookassaWidgetSuccessPayload = (body: unknown) => {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return yookassaWidgetSuccessSchema.parse(body);
+  const payload = body as Record<string, unknown>;
+  return yookassaWidgetSuccessSchema.parse({
+    payoutToken: payload.payoutToken ?? payload.payout_token,
+    first6: payload.first6,
+    last4: payload.last4,
+    cardType: payload.cardType ?? payload.card_type,
+    issuerCountry: payload.issuerCountry ?? payload.issuer_country,
+    issuerName: payload.issuerName ?? payload.issuer_name
+  });
+};
+
 sellerRoutes.get('/payout-details/yookassa', async (req: AuthRequest, res, next) => {
   try {
     const data = await sellerPayoutService.getYookassaPayoutDetails(req.user!.userId);
@@ -1698,12 +1711,14 @@ sellerRoutes.get('/payout-details/yookassa', async (req: AuthRequest, res, next)
 
 sellerRoutes.get('/payout-widget/yookassa', async (req: AuthRequest, res, next) => {
   try {
-    if (!env.yookassaSafeDealEnabled || !env.yookassaSafeDealAccountId) {
+    const data = await sellerPayoutService.getYookassaWidgetConfig(req.user!.userId);
+    if (!data.enabled) {
       return res.json({
         data: {
           yooKassaPayouts: {
             enabled: false,
-            reason: 'YOOKASSA_SAFE_DEAL_NOT_CONFIGURED',
+            type: 'safedeal',
+            reason: 'YooKassa Safe Deal is not configured on backend',
             accountId: null,
             hasSavedCard: false,
             card: null
@@ -1711,8 +1726,6 @@ sellerRoutes.get('/payout-widget/yookassa', async (req: AuthRequest, res, next) 
         }
       });
     }
-
-    const data = await sellerPayoutService.getYookassaWidgetConfig(req.user!.userId);
     res.json({ data: { yooKassaPayouts: data } });
   } catch (error) {
     next(error);
@@ -1721,7 +1734,17 @@ sellerRoutes.get('/payout-widget/yookassa', async (req: AuthRequest, res, next) 
 
 sellerRoutes.post('/payout-details/yookassa', writeLimiter, async (req: AuthRequest, res, next) => {
   try {
-    const payload = yookassaWidgetSuccessSchema.parse(req.body);
+    const payload = parseYookassaWidgetSuccessPayload(req.body);
+    const card = await sellerPayoutService.saveYookassaCardFromWidget(req.user!.userId, payload);
+    res.status(201).json({ data: { saved: true, card } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+sellerRoutes.post('/payout-methods/yookassa/card', writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const payload = parseYookassaWidgetSuccessPayload(req.body);
     const card = await sellerPayoutService.saveYookassaCardFromWidget(req.user!.userId, payload);
     res.status(201).json({ data: { saved: true, card } });
   } catch (error) {
