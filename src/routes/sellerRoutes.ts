@@ -2069,7 +2069,7 @@ sellerRoutes.post('/orders/:id/mark-received', writeLimiter, async (req: AuthReq
         data: { status: nextStatus, statusUpdatedAt: new Date(), completedAt }
       });
 
-      const releaseResult = await payoutService.releaseFundsForCompletedOrder(order.id, tx);
+      const releaseResult = await orderCompletionService.releaseFundsForCompletedOrder(order.id, tx);
       const reloaded = await tx.order.findUnique({ where: { id: order.id } });
       if (!reloaded) {
         const error = new Error('ORDER_NOT_FOUND');
@@ -2077,7 +2077,7 @@ sellerRoutes.post('/orders/:id/mark-received', writeLimiter, async (req: AuthReq
         throw error;
       }
 
-      const breakdown = payoutService.buildOrderFinanceBreakdown(reloaded);
+      const breakdown = orderCompletionService.buildOrderFinanceBreakdown(reloaded);
       const financeView = await sellerPayoutService.buildFinanceView(sellerId);
 
       return {
@@ -2114,7 +2114,7 @@ sellerRoutes.post('/orders/:id/mark-received', writeLimiter, async (req: AuthReq
           availableToPayoutMinorAfter: updated.financeSnapshot.availableToPayoutMinor
         },
         snapshot: updated.financeSnapshot,
-        idempotent: updated.releaseResult?.skipped === 'ALREADY_RELEASED'
+        idempotent: updated.releaseResult?.reason === 'ALREADY_RELEASED'
       }
     });
   } catch (error) {

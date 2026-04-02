@@ -1892,14 +1892,14 @@ exports.sellerRoutes.post('/orders/:id/mark-received', rateLimiters_1.writeLimit
                 where: { id: order.id },
                 data: { status: nextStatus, statusUpdatedAt: new Date(), completedAt }
             });
-            const releaseResult = await payoutService_1.payoutService.releaseFundsForCompletedOrder(order.id, tx);
+            const releaseResult = await orderCompletionService_1.orderCompletionService.releaseFundsForCompletedOrder(order.id, tx);
             const reloaded = await tx.order.findUnique({ where: { id: order.id } });
             if (!reloaded) {
                 const error = new Error('ORDER_NOT_FOUND');
                 error.status = 404;
                 throw error;
             }
-            const breakdown = payoutService_1.payoutService.buildOrderFinanceBreakdown(reloaded);
+            const breakdown = orderCompletionService_1.orderCompletionService.buildOrderFinanceBreakdown(reloaded);
             const financeView = await sellerPayoutService_1.sellerPayoutService.buildFinanceView(sellerId);
             return {
                 order: reloaded,
@@ -1934,7 +1934,7 @@ exports.sellerRoutes.post('/orders/:id/mark-received', rateLimiters_1.writeLimit
                     availableToPayoutMinorAfter: updated.financeSnapshot.availableToPayoutMinor
                 },
                 snapshot: updated.financeSnapshot,
-                idempotent: updated.releaseResult?.skipped === 'ALREADY_RELEASED'
+                idempotent: updated.releaseResult?.reason === 'ALREADY_RELEASED'
             }
         });
     }
@@ -1990,13 +1990,9 @@ exports.sellerRoutes.patch('/orders/:id/status', rateLimiters_1.writeLimiter, as
                 }
             });
             if (payload.status === 'DELIVERED') {
-  await orderCompletionService.completeOrderFromDeliveryReceipt(
-    order.id,
-    'manual_test',
-    tx
-  );
-  await orderCompletionService.releaseFundsForCompletedOrder(order.id, tx);
-}
+                await orderCompletionService_1.orderCompletionService.completeOrderFromDeliveryReceipt(order.id, 'manual_test', tx);
+                await orderCompletionService_1.orderCompletionService.releaseFundsForCompletedOrder(order.id, tx);
+            }
             return nextOrder;
         });
         res.json({ data: updated });

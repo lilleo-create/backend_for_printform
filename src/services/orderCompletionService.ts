@@ -11,6 +11,10 @@ const terminalOrderStatuses = new Set(['CANCELLED', 'RETURNED', 'EXPIRED']);
 const toDb = (tx?: TxClient) => (tx ?? prisma) as unknown as PrismaClient;
 
 export const orderCompletionService = {
+  buildOrderFinanceBreakdown(order: any) {
+    return payoutService.buildOrderFinanceBreakdown(order);
+  },
+
   async completeOrderFromDeliveryReceipt(orderId: string, source: CompletionSource, tx?: TxClient) {
     const db = toDb(tx);
     const order = await db.order.findUnique({ where: { id: orderId } });
