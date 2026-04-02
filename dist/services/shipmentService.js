@@ -1,11 +1,15 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.shipmentService = exports.markReadyToShipCdek = exports.createShipmentCdek = exports.normalizePvzProvider = exports.mapExternalStatusToInternal = void 0;
+exports.shipmentService = exports.markReadyToShipCdek = exports.createShipmentCdek = exports.normalizePvzProvider = exports.mapExternalStatusToInternal = exports.isValidCdekPvzCode = exports.normalizeCdekPvzCode = void 0;
 const node_crypto_1 = require("node:crypto");
 const prisma_1 = require("../lib/prisma");
 const cdekService_1 = require("./cdekService");
 const FINAL_STATUSES = ['DELIVERED', 'CANCELLED', 'FAILED'];
-const CDEK_PVZ_CODE_REGEX = /^[A-Z]{3}\d{2,6}$/;
+const CDEK_PVZ_CODE_REGEX = /^[A-Z0-9]{3,20}$/;
+const normalizeCdekPvzCode = (value) => String(value ?? '').trim().toUpperCase();
+exports.normalizeCdekPvzCode = normalizeCdekPvzCode;
+const isValidCdekPvzCode = (value) => CDEK_PVZ_CODE_REGEX.test((0, exports.normalizeCdekPvzCode)(value));
+exports.isValidCdekPvzCode = isValidCdekPvzCode;
 const mapExternalStatusToInternal = (status) => {
     const normalized = (status ?? '').toUpperCase();
     if (['DELIVERY_DELIVERED', 'DELIVERED'].includes(normalized))
@@ -33,9 +37,9 @@ const safeRecord = (value) => value && typeof value === 'object' && !Array.isArr
 const parsePvzProvider = (meta) => String(safeRecord(meta).provider ?? '').trim().toUpperCase();
 const normalizePvzProvider = async (order) => {
     const carrier = String(order.carrier ?? '').toUpperCase();
-    const pvzId = String(order.buyerPickupPvzId ?? '').trim().toUpperCase();
+    const pvzId = (0, exports.normalizeCdekPvzCode)(order.buyerPickupPvzId);
     const currentProvider = parsePvzProvider(order.buyerPickupPvzMeta);
-    if (carrier !== 'CDEK' || !CDEK_PVZ_CODE_REGEX.test(pvzId) || currentProvider === 'CDEK') {
+    if (carrier !== 'CDEK' || !(0, exports.isValidCdekPvzCode)(pvzId) || currentProvider === 'CDEK') {
         return order;
     }
     const nextMeta = {
@@ -171,8 +175,10 @@ const loadOrderForCdekShipment = async (orderId, sellerId) => {
     if (!fulfillment.isPacked) {
         throw makeError('FULFILLMENT_STEPS_INCOMPLETE', 'Перед отгрузкой отметьте: Упаковка.');
     }
-    const fromPvzCode = String(order.sellerDropoffPvzId ?? '').trim();
-    const toPvzCode = String(order.buyerPickupPvzId ?? '').trim();
+    const fromPvzCodeRaw = String(order.sellerDropoffPvzId ?? '');
+    const toPvzCodeRaw = String(order.buyerPickupPvzId ?? '');
+    const fromPvzCode = (0, exports.normalizeCdekPvzCode)(fromPvzCodeRaw);
+    const toPvzCode = (0, exports.normalizeCdekPvzCode)(toPvzCodeRaw);
     if (!fromPvzCode)
         throw makeError('CDEK_DROPOFF_PVZ_NOT_SET');
     if (!toPvzCode)
@@ -196,6 +202,8 @@ const loadOrderForCdekShipment = async (orderId, sellerId) => {
     const firstProduct = order.items[0]?.product;
     return {
         order,
+        fromPvzCodeRaw,
+        toPvzCodeRaw,
         fromPvzCode,
         toPvzCode,
         recipientName,
@@ -206,7 +214,7 @@ const loadOrderForCdekShipment = async (orderId, sellerId) => {
     };
 };
 const createShipmentCdek = async (orderId, sellerId) => {
-    const { order, fromPvzCode, toPvzCode, recipientName, recipientPhone, items, totalWeight, firstProduct } = await loadOrderForCdekShipment(orderId, sellerId);
+    const { order, fromPvzCodeRaw, toPvzCodeRaw, fromPvzCode, toPvzCode, recipientName, recipientPhone, items, totalWeight, firstProduct } = await loadOrderForCdekShipment(orderId, sellerId);
     const existingShipment = await prisma_1.prisma.orderShipment.findUnique({ where: { orderId: order.id } });
     if (existingShipment || order.cdekOrderId) {
         return {
@@ -222,10 +230,24 @@ const createShipmentCdek = async (orderId, sellerId) => {
     const internalRequestId = (0, node_crypto_1.randomUUID)();
     const now = new Date();
     try {
-        if (!CDEK_PVZ_CODE_REGEX.test(fromPvzCode))
+        if (!(0, exports.isValidCdekPvzCode)(fromPvzCode)) {
+            console.warn('[CDEK][createShipmentCdek] invalid dropoff pvz code', {
+                orderId: order.id,
+                field: 'sellerDropoffPvzId',
+                dropoffPvzCodeRaw: fromPvzCodeRaw,
+                dropoffPvzCodeNormalized: fromPvzCode
+            });
             throw makeError('CDEK_DROPOFF_PVZ_INVALID_FORMAT');
-        if (!CDEK_PVZ_CODE_REGEX.test(toPvzCode))
+        }
+        if (!(0, exports.isValidCdekPvzCode)(toPvzCode)) {
+            console.warn('[CDEK][createShipmentCdek] invalid destination pvz code', {
+                orderId: order.id,
+                field: 'buyerPickupPvzId',
+                destinationPvzCodeRaw: toPvzCodeRaw,
+                destinationPvzCodeNormalized: toPvzCode
+            });
             throw makeError('CDEK_DESTINATION_PVZ_INVALID_FORMAT');
+        }
         const created = await cdekService_1.cdekService.createOrderFromMarketplaceOrder({
             orderId: order.id,
             fromPvzCode,
