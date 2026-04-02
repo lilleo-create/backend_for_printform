@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma';
 import { cdekService } from '../services/cdekService';
-import { payoutService } from '../services/payoutService';
+import { cdekWebhookService } from '../services/cdekWebhookService';
+import { mapCdekStatusToInternalDeliveryState } from '../services/cdekStatusMapper';
 
 const SYNC_INTERVAL_MS = 10 * 60 * 1000;
 
@@ -8,31 +9,7 @@ let timer: NodeJS.Timeout | null = null;
 
 // Маппинг статусов CDEK -> внутренний статус заказа
 // https://api.cdek.ru/v2/statuses
-export const mapCdekStatus = (code: string): 'READY_FOR_SHIPMENT' | 'HANDED_TO_DELIVERY' | 'IN_TRANSIT' | 'DELIVERED' | 'CANCELLED' | 'RETURNED' | null => {
-  if (!code) return null;
-  if (code === 'DELIVERED') return 'DELIVERED';
-  if (code === 'NOT_DELIVERED') return 'RETURNED';
-  if (code === 'INVALID' || code === 'REMOVED' || code === 'CANCELLED') return 'CANCELLED';
-  if (code === 'CREATED') return 'READY_FOR_SHIPMENT';
-  if (code === 'ACCEPTED') return 'HANDED_TO_DELIVERY';
-  if (
-    code === 'RETURNED' ||
-    code === 'RETURN_ORDERS_TRANSIT' ||
-    code === 'RETURN_ORDERS_RECEIVED'
-  ) return 'RETURNED';
-  if (
-    code === 'RECEIVED_AT_SHIPMENT_WAREHOUSE' ||
-    code === 'READY_FOR_SHIPMENT_IN_SENDER_CITY' ||
-    code === 'TAKEN_BY_TRANSPORTER_FROM_SENDER' ||
-    code === 'SENT_TO_TRANSIT_CITY' ||
-    code === 'ACCEPTED_IN_TRANSIT_CITY' ||
-    code === 'ACCEPTED_AT_RECIPIENT_CITY_WAREHOUSE' ||
-    code === 'ACCEPTED_AT_PICK_UP_POINT' ||
-    code === 'READY_FOR_DELIVERY' ||
-    code === 'DELIVERING'
-  ) return 'IN_TRANSIT';
-  return null;
-};
+export const mapCdekStatus = (code: string) => mapCdekStatusToInternalDeliveryState(code);
 
 export const runShipmentsSyncJob = async () => {
   // Синхронизируем только заказы с CDEK order id, которые ещё не завершены
@@ -50,36 +27,16 @@ export const runShipmentsSyncJob = async () => {
     try {
       const info = await cdekService.getOrderInfo(order.cdekOrderId);
       const newCdekStatus = info.status;
-
       if (!newCdekStatus || newCdekStatus === order.cdekStatus) continue;
 
-      const internalStatus = mapCdekStatus(newCdekStatus);
-
-      await prisma.$transaction(async (tx) => {
-        await tx.order.update({
-          where: { id: order.id },
-          data: {
-            cdekStatus: newCdekStatus,
-            trackingNumber: info.trackingNumber || undefined,
-            ...(internalStatus ? { status: internalStatus } : {}),
-            ...(internalStatus === 'CANCELLED' || internalStatus === 'RETURNED'
-              ? { payoutStatus: 'BLOCKED' }
-              : {})
-          }
-        });
-
-        await tx.orderDeliveryEvent.create({
-          data: {
-            orderId: order.id,
-            provider: 'CDEK',
-            status: newCdekStatus,
-            raw: info as unknown as object
-          }
-        });
-
-        if (internalStatus === 'DELIVERED') {
-          await payoutService.releaseForDeliveredOrder(order.id, tx as any);
-        }
+      await cdekWebhookService.applyIncomingStatus({
+        entity: {
+          uuid: info.cdekOrderId,
+          cdek_number: info.trackingNumber
+        },
+        status: { code: newCdekStatus, name: newCdekStatus },
+        source: 'sync_job',
+        rawSnapshot: info.raw
       });
 
       synced++;

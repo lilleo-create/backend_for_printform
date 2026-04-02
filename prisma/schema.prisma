@@ -291,6 +291,17 @@ model Order {
   yandexSelfPickupCode     Json?
   yandexActualInfo         Json?
   cdekOrderId              String?
+  cdekOrderUuid            String?
+  cdekNumber               String?
+  deliveryProvider         String?
+  deliveryStatus           String?
+  deliveryStatusCode       String?
+  deliveryStatusRaw        Json?
+  deliveryStatusUpdatedAt  DateTime?
+  deliveryReceiptConfirmedAt DateTime?
+  deliveredToRecipientAt   DateTime?
+  completedAt              DateTime?
+  fundsReleasedAt          DateTime?
   cdekStatus               String?
   payoutStatus             String               @default("HOLD")
   deliveryDaysMin          Int?
@@ -321,6 +332,11 @@ model Order {
   platformFeeKopecks       Int?
   acquiringFeeKopecks      Int?
   sellerNetAmountKopecks   Int?
+  grossAmountMinor         Int?
+  platformFeeMinor         Int?
+  providerFeeMinor         Int?
+  serviceFeeMinor          Int?
+  sellerNetAmountMinor     Int?
   recipientName            String?
   recipientPhone           String?
   recipientEmail           String?

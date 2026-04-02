@@ -10,6 +10,7 @@ const zod_1 = require("zod");
 const multer_1 = __importDefault(require("multer"));
 const path_1 = __importDefault(require("path"));
 const fs_1 = __importDefault(require("fs"));
+const env_1 = require("../config/env");
 const authMiddleware_1 = require("../middleware/authMiddleware");
 const prisma_1 = require("../lib/prisma");
 const productUseCases_1 = require("../usecases/productUseCases");
@@ -17,7 +18,7 @@ const orderUseCases_1 = require("../usecases/orderUseCases");
 const productRoutes_1 = require("./productRoutes");
 const rateLimiters_1 = require("../middleware/rateLimiters");
 const sellerDeliveryProfileService_1 = require("../services/sellerDeliveryProfileService");
-const payoutService_1 = require("../services/payoutService");
+const orderCompletionService_1 = require("../services/orderCompletionService");
 const sellerPayoutService_1 = require("../services/sellerPayoutService");
 const shipmentService_1 = require("../services/shipmentService");
 const sellerOrderDocumentsService_1 = require("../services/sellerOrderDocumentsService");
@@ -1908,11 +1909,34 @@ exports.sellerRoutes.patch('/orders/:id/status', rateLimiters_1.writeLimiter, as
                 }
             });
             if (payload.status === 'DELIVERED') {
-                await payoutService_1.payoutService.releaseForDeliveredOrder(order.id, tx);
+                await orderCompletionService_1.orderCompletionService.completeOrderFromDeliveryReceipt(order.id, 'manual_test', tx);
+                await orderCompletionService_1.orderCompletionService.releaseFundsForCompletedOrder(order.id, tx);
             }
             return nextOrder;
         });
         res.json({ data: updated });
+    }
+    catch (error) {
+        next(error);
+    }
+});
+exports.sellerRoutes.post('/orders/:id/mark-received', rateLimiters_1.writeLimiter, async (req, res, next) => {
+    try {
+        if (env_1.env.isProduction) {
+            return res.status(403).json({ error: { code: 'DISABLED_IN_PRODUCTION', message: 'Endpoint available only in dev/test mode.' } });
+        }
+        const order = await prisma_1.prisma.order.findFirst({
+            where: { id: req.params.id, items: { some: { product: { sellerId: req.user.userId } } } },
+            select: { id: true }
+        });
+        if (!order)
+            return res.status(404).json({ error: { code: 'ORDER_NOT_FOUND' } });
+        const result = await prisma_1.prisma.$transaction(async (tx) => {
+            const completed = await orderCompletionService_1.orderCompletionService.completeOrderFromDeliveryReceipt(order.id, 'manual_test', tx);
+            const released = await orderCompletionService_1.orderCompletionService.releaseFundsForCompletedOrder(order.id, tx);
+            return { completed, released };
+        });
+        return res.json({ data: result, testOnly: true });
     }
     catch (error) {
         next(error);
