@@ -26,6 +26,7 @@ const cdekService_1 = require("../services/cdekService");
 const productDto_1 = require("../utils/productDto");
 const orderPayment_1 = require("../utils/orderPayment");
 const statusLabels_1 = require("../utils/statusLabels");
+const money_1 = require("../utils/money");
 const orderPublicId_1 = require("../utils/orderPublicId");
 exports.sellerRoutes = (0, express_1.Router)();
 // ---------------------------------------------------------
@@ -1532,6 +1533,14 @@ const parseYookassaWidgetSuccessPayload = (body) => {
         issuerName: payload.issuerName ?? payload.issuer_name
     });
 };
+const sellerCreatePayoutSchema = zod_1.z.object({
+    amount: zod_1.z.string().trim().regex(/^\d+(\.\d{1,2})?$/),
+    description: zod_1.z.string().trim().min(1).max(255).optional(),
+    orderId: zod_1.z.string().trim().min(1).optional()
+});
+const sellerPayoutListQuerySchema = zod_1.z.object({
+    sync: zod_1.z.coerce.boolean().optional()
+});
 exports.sellerRoutes.get('/payout-details/yookassa', async (req, res, next) => {
     try {
         const data = await sellerPayoutService_1.sellerPayoutService.getYookassaPayoutDetails(req.user.userId);
@@ -1588,14 +1597,8 @@ exports.sellerRoutes.get('/payout-methods', async (req, res, next) => {
     try {
         const sellerId = req.user.userId;
         const methods = await sellerPayoutService_1.sellerPayoutService.listPayoutMethods(sellerId);
-        const widgetConfigBase = await sellerPayoutService_1.sellerPayoutService.getYookassaWidgetConfig(sellerId);
-        const widgetConfig = widgetConfigBase.enabled
-            ? widgetConfigBase
-            : {
-                ...widgetConfigBase,
-                reason: 'YooKassa Safe Deal is not configured on backend'
-            };
-        res.json({
+        const widgetConfig = await sellerPayoutService_1.sellerPayoutService.getYooKassaWidgetConfig(sellerId);
+        const responsePayload = {
             data: {
                 methods: methods
                     .filter((method) => method.status === 'ACTIVE')
@@ -1606,9 +1609,96 @@ exports.sellerRoutes.get('/payout-methods', async (req, res, next) => {
                 })),
                 widgetConfig
             }
+        };
+        res.json(responsePayload);
+    }
+    catch (error) {
+        next(error);
+    }
+});
+exports.sellerRoutes.post('/payouts', rateLimiters_1.writeLimiter, async (req, res, next) => {
+    try {
+        const payload = sellerCreatePayoutSchema.parse(req.body);
+        const payout = await sellerPayoutService_1.sellerPayoutService.createSellerPayout(req.user.userId, payload);
+        res.status(201).json({
+            data: {
+                id: payout.id,
+                status: String(payout.status ?? '').toLowerCase(),
+                amount: {
+                    value: money_1.money.toRublesString(payout.amountKopecks),
+                    currency: payout.currency
+                },
+                description: payout.description ?? null,
+                createdAt: payout.createdAt
+            }
         });
     }
     catch (error) {
+        if (sellerPayoutService_1.sellerPayoutService.isSellerPayoutError(error)) {
+            return res.status(error.httpStatus).json({ error: { code: error.code, details: error.details ?? null } });
+        }
+        next(error);
+    }
+});
+exports.sellerRoutes.get('/payouts', async (req, res, next) => {
+    try {
+        const query = sellerPayoutListQuerySchema.parse(req.query);
+        const payouts = await sellerPayoutService_1.sellerPayoutService.listSellerPayouts(req.user.userId, { sync: query.sync });
+        res.json({
+            data: payouts.map((payout) => ({
+                id: payout.id,
+                externalId: payout.externalPayoutId ?? null,
+                status: String(payout.status ?? '').toLowerCase(),
+                amount: {
+                    value: money_1.money.toRublesString(payout.amountKopecks),
+                    currency: payout.currency
+                },
+                description: payout.description ?? null,
+                dealId: payout.dealId ?? null,
+                orderId: payout.orderId ?? null,
+                metadata: payout.metadata ?? null,
+                createdAt: payout.createdAt,
+                updatedAt: payout.updatedAt,
+                succeededAt: payout.succeededAt,
+                canceledAt: payout.canceledAt
+            }))
+        });
+    }
+    catch (error) {
+        if (sellerPayoutService_1.sellerPayoutService.isSellerPayoutError(error)) {
+            return res.status(error.httpStatus).json({ error: { code: error.code, details: error.details ?? null } });
+        }
+        next(error);
+    }
+});
+exports.sellerRoutes.get('/payouts/:id', async (req, res, next) => {
+    try {
+        const sync = zod_1.z.coerce.boolean().optional().parse(req.query.sync);
+        const payout = await sellerPayoutService_1.sellerPayoutService.getSellerPayoutById(req.user.userId, req.params.id, { sync });
+        res.json({
+            data: {
+                id: payout.id,
+                externalId: payout.externalPayoutId ?? null,
+                status: String(payout.status ?? '').toLowerCase(),
+                amount: {
+                    value: money_1.money.toRublesString(payout.amountKopecks),
+                    currency: payout.currency
+                },
+                description: payout.description ?? null,
+                dealId: payout.dealId ?? null,
+                orderId: payout.orderId ?? null,
+                metadata: payout.metadata ?? null,
+                createdAt: payout.createdAt,
+                updatedAt: payout.updatedAt,
+                succeededAt: payout.succeededAt,
+                canceledAt: payout.canceledAt
+            }
+        });
+    }
+    catch (error) {
+        if (sellerPayoutService_1.sellerPayoutService.isSellerPayoutError(error)) {
+            return res.status(error.httpStatus).json({ error: { code: error.code, details: error.details ?? null } });
+        }
         next(error);
     }
 });

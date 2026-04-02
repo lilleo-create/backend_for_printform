@@ -1700,6 +1700,16 @@ const parseYookassaWidgetSuccessPayload = (body: unknown) => {
   });
 };
 
+const sellerCreatePayoutSchema = z.object({
+  amount: z.string().trim().regex(/^\d+(\.\d{1,2})?$/),
+  description: z.string().trim().min(1).max(255).optional(),
+  orderId: z.string().trim().min(1).optional()
+});
+
+const sellerPayoutListQuerySchema = z.object({
+  sync: z.coerce.boolean().optional()
+});
+
 sellerRoutes.get('/payout-details/yookassa', async (req: AuthRequest, res, next) => {
   try {
     const data = await sellerPayoutService.getYookassaPayoutDetails(req.user!.userId);
@@ -1771,14 +1781,94 @@ sellerRoutes.get('/payout-methods', async (req: AuthRequest, res, next) => {
       }
     };
 
-    console.log('[payout-methods] sellerId', sellerId);
-    console.log('[payout-methods] YOOKASSA_SHOP_ID', process.env.YOOKASSA_SHOP_ID);
-    console.log('[payout-methods] methods', responsePayload.data.methods);
-    console.log('[payout-methods] widgetConfig', widgetConfig);
-    console.log('[payout-methods] response', responsePayload);
-
     res.json(responsePayload);
   } catch (error) {
+    next(error);
+  }
+});
+
+sellerRoutes.post('/payouts', writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const payload = sellerCreatePayoutSchema.parse(req.body);
+    const payout = await sellerPayoutService.createSellerPayout(req.user!.userId, payload);
+    res.status(201).json({
+      data: {
+        id: payout.id,
+        status: String(payout.status ?? '').toLowerCase(),
+        amount: {
+          value: money.toRublesString(payout.amountKopecks),
+          currency: payout.currency
+        },
+        description: payout.description ?? null,
+        createdAt: payout.createdAt
+      }
+    });
+  } catch (error) {
+    if (sellerPayoutService.isSellerPayoutError(error)) {
+      return res.status(error.httpStatus).json({ error: { code: error.code, details: error.details ?? null } });
+    }
+    next(error);
+  }
+});
+
+sellerRoutes.get('/payouts', async (req: AuthRequest, res, next) => {
+  try {
+    const query = sellerPayoutListQuerySchema.parse(req.query);
+    const payouts = await sellerPayoutService.listSellerPayouts(req.user!.userId, { sync: query.sync });
+    res.json({
+      data: payouts.map((payout: any) => ({
+        id: payout.id,
+        externalId: payout.externalPayoutId ?? null,
+        status: String(payout.status ?? '').toLowerCase(),
+        amount: {
+          value: money.toRublesString(payout.amountKopecks),
+          currency: payout.currency
+        },
+        description: payout.description ?? null,
+        dealId: payout.dealId ?? null,
+        orderId: payout.orderId ?? null,
+        metadata: payout.metadata ?? null,
+        createdAt: payout.createdAt,
+        updatedAt: payout.updatedAt,
+        succeededAt: payout.succeededAt,
+        canceledAt: payout.canceledAt
+      }))
+    });
+  } catch (error) {
+    if (sellerPayoutService.isSellerPayoutError(error)) {
+      return res.status(error.httpStatus).json({ error: { code: error.code, details: error.details ?? null } });
+    }
+    next(error);
+  }
+});
+
+sellerRoutes.get('/payouts/:id', async (req: AuthRequest, res, next) => {
+  try {
+    const sync = z.coerce.boolean().optional().parse(req.query.sync);
+    const payout = await sellerPayoutService.getSellerPayoutById(req.user!.userId, req.params.id, { sync });
+    res.json({
+      data: {
+        id: payout.id,
+        externalId: payout.externalPayoutId ?? null,
+        status: String(payout.status ?? '').toLowerCase(),
+        amount: {
+          value: money.toRublesString(payout.amountKopecks),
+          currency: payout.currency
+        },
+        description: payout.description ?? null,
+        dealId: payout.dealId ?? null,
+        orderId: payout.orderId ?? null,
+        metadata: payout.metadata ?? null,
+        createdAt: payout.createdAt,
+        updatedAt: payout.updatedAt,
+        succeededAt: payout.succeededAt,
+        canceledAt: payout.canceledAt
+      }
+    });
+  } catch (error) {
+    if (sellerPayoutService.isSellerPayoutError(error)) {
+      return res.status(error.httpStatus).json({ error: { code: error.code, details: error.details ?? null } });
+    }
     next(error);
   }
 });

@@ -11,8 +11,23 @@ const AWAITING_PAYOUT_STATUSES = new Set(['AWAITING_PAYOUT', 'RELEASED']);
 const FROZEN_PAYOUT_STATUSES = new Set(['HOLD']);
 const PAYOUT_PENDING_STATUSES = new Set(['PAYOUT_PENDING', 'PROCESSING']);
 const SUCCESS_PAYOUT_STATUSES = new Set(['PAID', 'PAID_OUT']);
+const MIN_PAYOUT_AMOUNT_KOPECKS = 100;
+const MAX_PAYOUT_AMOUNT_KOPECKS = 15_000_000;
 
 const normalizePayoutStatus = (status?: string | null) => String(status ?? '').toUpperCase();
+
+class SellerPayoutError extends Error {
+  code: string;
+  httpStatus: number;
+  details?: Record<string, unknown>;
+
+  constructor(code: string, httpStatus: number, details?: Record<string, unknown>) {
+    super(code);
+    this.code = code;
+    this.httpStatus = httpStatus;
+    this.details = details;
+  }
+}
 
 
 type YooKassaWidgetConfig = {
@@ -281,6 +296,144 @@ export const sellerPayoutService = {
     });
   },
 
+  async calculateAvailableBalanceKopecks(sellerId: string) {
+    const orders = await prisma.order.findMany({
+      where: {
+        items: { some: { product: { sellerId } } },
+        paymentStatus: 'PAID',
+        payoutStatus: { in: ['RELEASED', 'AWAITING_PAYOUT'] }
+      },
+      select: {
+        id: true,
+        sellerNetAmountKopecks: true,
+        total: true
+      }
+    });
+
+    const pendingPayouts = await (prisma as any).sellerPayout.findMany({
+      where: { sellerId, status: { in: ['PENDING', 'WAITING_FOR_CAPTURE', 'PROCESSING'] } },
+      select: { amountKopecks: true }
+    });
+
+    const readyAmount = orders.reduce((acc, order) => acc + Number(order.sellerNetAmountKopecks ?? order.total ?? 0), 0);
+    const reservedAmount = pendingPayouts.reduce((acc: number, payout: any) => acc + Number(payout.amountKopecks ?? 0), 0);
+    return Math.max(0, readyAmount - reservedAmount);
+  },
+
+  async createSellerPayout(
+    sellerId: string,
+    payload: { amount: string; description?: string; orderId?: string | null }
+  ) {
+    const amountKopecks = money.toKopecks(Number(payload.amount));
+    if (amountKopecks < MIN_PAYOUT_AMOUNT_KOPECKS) {
+      throw new SellerPayoutError('PAYOUT_AMOUNT_BELOW_MINIMUM', 400, { min: money.toRublesString(MIN_PAYOUT_AMOUNT_KOPECKS) });
+    }
+    if (amountKopecks > MAX_PAYOUT_AMOUNT_KOPECKS) {
+      throw new SellerPayoutError('PAYOUT_AMOUNT_ABOVE_LIMIT', 400, { max: money.toRublesString(MAX_PAYOUT_AMOUNT_KOPECKS) });
+    }
+
+    const payoutMethod = await (prisma as any).sellerPayoutMethod.findFirst({
+      where: { sellerId, provider: PROVIDER, methodType: 'BANK_CARD', status: 'ACTIVE' },
+      orderBy: [{ isDefault: 'desc' }, { updatedAt: 'desc' }]
+    });
+    if (!payoutMethod) throw new SellerPayoutError('PAYOUT_METHOD_NOT_FOUND', 404);
+    if (!payoutMethod.payoutToken) throw new SellerPayoutError('PAYOUT_TOKEN_MISSING', 400);
+
+    const availableKopecks = await this.calculateAvailableBalanceKopecks(sellerId);
+    if (amountKopecks > availableKopecks) {
+      throw new SellerPayoutError('INSUFFICIENT_AVAILABLE_BALANCE', 400, {
+        requested: money.toRublesString(amountKopecks),
+        available: money.toRublesString(availableKopecks)
+      });
+    }
+
+    const orderForDeal = payload.orderId
+      ? await prisma.order.findFirst({
+          where: { id: payload.orderId, items: { some: { product: { sellerId } } }, yookassaDealId: { not: null } },
+          select: { id: true, publicNumber: true, yookassaDealId: true }
+        })
+      : await prisma.order.findFirst({
+          where: {
+            items: { some: { product: { sellerId } } },
+            yookassaDealId: { not: null },
+            paymentStatus: 'PAID'
+          },
+          orderBy: { paidAt: 'desc' },
+          select: { id: true, publicNumber: true, yookassaDealId: true }
+        });
+
+    if (!orderForDeal?.yookassaDealId) throw new SellerPayoutError('DEAL_ID_NOT_FOUND', 400);
+
+    const idempotenceKey = this.buildStableIdempotenceKey([
+      'seller',
+      sellerId,
+      orderForDeal.id,
+      payoutMethod.id,
+      String(amountKopecks),
+      String(Date.now())
+    ]);
+
+    let externalPayout: any;
+    try {
+      externalPayout = await yookassaService.createPayoutInDeal({
+        orderId: orderForDeal.id,
+        dealId: orderForDeal.yookassaDealId,
+        sellerAmountKopecks: amountKopecks,
+        currency: 'RUB',
+        payoutToken: payoutMethod.payoutToken,
+        idempotenceKey
+      });
+    } catch (error) {
+      throw new SellerPayoutError('YOOKASSA_PAYOUT_CREATE_FAILED', 502, { cause: String(error) });
+    }
+
+    const now = new Date();
+    const mappedStatus = externalPayout.status === 'succeeded' ? 'SUCCEEDED' : externalPayout.status === 'canceled' ? 'CANCELED' : 'PENDING';
+    const created = await (prisma as any).sellerPayout.create({
+      data: {
+        sellerId,
+        orderId: orderForDeal.id,
+        dealId: orderForDeal.yookassaDealId,
+        payoutMethodId: payoutMethod.id,
+        provider: PROVIDER,
+        externalPayoutId: externalPayout.id,
+        amountKopecks,
+        currency: 'RUB',
+        status: mappedStatus,
+        externalStatus: externalPayout.status ?? null,
+        description: payload.description?.trim() || 'Выплата продавцу',
+        metadata: {
+          orderId: orderForDeal.id,
+          orderPublicNumber: orderForDeal.publicNumber
+        },
+        idempotenceKey,
+        requestedAt: now,
+        succeededAt: mappedStatus === 'SUCCEEDED' ? now : null,
+        canceledAt: mappedStatus === 'CANCELED' ? now : null,
+        rawResponse: externalPayout
+      }
+    });
+
+    return created;
+  },
+
+  async listSellerPayouts(sellerId: string, options?: { sync?: boolean }) {
+    const payouts = await (prisma as any).sellerPayout.findMany({
+      where: { sellerId },
+      orderBy: [{ createdAt: 'desc' }]
+    });
+
+    if (!options?.sync) return payouts;
+    return Promise.all(payouts.map((payout: any) => this.syncPayoutStatus(sellerId, payout.id)));
+  },
+
+  async getSellerPayoutById(sellerId: string, payoutId: string, options?: { sync?: boolean }) {
+    const payout = await (prisma as any).sellerPayout.findFirst({ where: { id: payoutId, sellerId } });
+    if (!payout) throw new SellerPayoutError('PAYOUT_NOT_FOUND', 404);
+    if (!options?.sync) return payout;
+    return this.syncPayoutStatus(sellerId, payoutId);
+  },
+
   async createPayoutForOrder(sellerId: string, orderId: string) {
     const order: any = await prisma.order.findFirst({
       where: { id: orderId, items: { some: { product: { sellerId } } } },
@@ -359,7 +512,7 @@ export const sellerPayoutService = {
     const payout = await (prisma as any).sellerPayout.findFirst({
       where: { id: payoutId, sellerId }
     });
-    if (!payout) throw new Error('PAYOUT_NOT_FOUND');
+    if (!payout) throw new SellerPayoutError('PAYOUT_NOT_FOUND', 404);
 
     const external = await yookassaService.getPayout(payout.externalPayoutId);
     const mappedStatus = external.status === 'succeeded' ? 'SUCCEEDED' : external.status === 'canceled' ? 'CANCELED' : 'PENDING';
@@ -368,6 +521,7 @@ export const sellerPayoutService = {
       where: { id: payout.id },
       data: {
         status: mappedStatus,
+        externalStatus: external.status ?? null,
         succeededAt: mappedStatus === 'SUCCEEDED' ? new Date(String((external as any).succeeded_at ?? new Date().toISOString())) : null,
         canceledAt: mappedStatus === 'CANCELED' ? new Date() : null,
         cancellationParty: cancellationDetails?.party ?? null,
@@ -376,12 +530,14 @@ export const sellerPayoutService = {
       }
     });
 
-    await prisma.order.update({
-      where: { id: payout.orderId },
-      data: {
-        payoutStatus: mappedStatus === 'SUCCEEDED' ? 'PAID_OUT' : mappedStatus === 'CANCELED' ? 'PAYOUT_CANCELED' : 'PAYOUT_PENDING'
-      }
-    });
+    if (payout.orderId) {
+      await prisma.order.update({
+        where: { id: payout.orderId },
+        data: {
+          payoutStatus: mappedStatus === 'SUCCEEDED' ? 'PAID_OUT' : mappedStatus === 'CANCELED' ? 'PAYOUT_CANCELED' : 'PAYOUT_PENDING'
+        }
+      });
+    }
 
     return updated;
   },
@@ -556,5 +712,9 @@ export const sellerPayoutService = {
 
   buildStableIdempotenceKey(parts: string[]) {
     return crypto.createHash('sha256').update(parts.join(':')).digest('hex');
+  },
+
+  isSellerPayoutError(error: unknown): error is SellerPayoutError {
+    return error instanceof SellerPayoutError;
   }
 };
