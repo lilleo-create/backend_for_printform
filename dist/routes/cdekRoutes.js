@@ -5,6 +5,7 @@ const express_1 = require("express");
 const zod_1 = require("zod");
 const cdek_1 = require("../config/cdek");
 const cdekService_1 = require("../services/cdekService");
+const cdekWebhookService_1 = require("../services/cdekWebhookService");
 const authMiddleware_1 = require("../middleware/authMiddleware");
 const prisma_1 = require("../lib/prisma");
 exports.cdekRoutes = (0, express_1.Router)();
@@ -136,6 +137,16 @@ exports.cdekRoutes.post('/calculate', async (req, res) => {
     }
     catch (error) {
         res.status(error?.response?.status ?? 502).json(toErrorResponse(error));
+    }
+});
+exports.cdekRoutes.post('/webhooks/order-status', async (req, res) => {
+    try {
+        const result = await cdekWebhookService_1.cdekWebhookService.applyIncomingStatus(req.body ?? {});
+        return res.status(200).json({ received: true, data: result });
+    }
+    catch (error) {
+        console.error('[CDEK][webhook][order-status][failed]', { error });
+        return res.status(200).json({ received: true });
     }
 });
 exports.cdekRoutes.post('/calculate-for-order', authMiddleware_1.authenticate, async (req, res) => {

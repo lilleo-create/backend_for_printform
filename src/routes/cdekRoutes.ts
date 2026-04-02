@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { getCdekConfig } from '../config/cdek';
 import { cdekService } from '../services/cdekService';
+import { cdekWebhookService } from '../services/cdekWebhookService';
 import { authenticate, type AuthRequest } from '../middleware/authMiddleware';
 import { prisma } from '../lib/prisma';
 import type { Prisma } from '@prisma/client';
@@ -158,6 +159,16 @@ cdekRoutes.post('/calculate', async (req, res) => {
     res.json(result);
   } catch (error: any) {
     res.status(error?.response?.status ?? 502).json(toErrorResponse(error));
+  }
+});
+
+cdekRoutes.post('/webhooks/order-status', async (req, res) => {
+  try {
+    const result = await cdekWebhookService.applyIncomingStatus(req.body ?? {});
+    return res.status(200).json({ received: true, data: result });
+  } catch (error: any) {
+    console.error('[CDEK][webhook][order-status][failed]', { error });
+    return res.status(200).json({ received: true });
   }
 });
 

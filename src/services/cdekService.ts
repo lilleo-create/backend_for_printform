@@ -88,6 +88,16 @@ type CdekOrdersListResponse = {
   requests?: CdekApiRequestInfo[];
 };
 
+type CdekWebhookType = 'ORDER_STATUS';
+type CdekWebhookEntity = {
+  uuid?: string;
+  type?: CdekWebhookType | string;
+  url?: string;
+};
+type CdekWebhookListResponse = {
+  entity?: CdekWebhookEntity[];
+};
+
 export type CdekOrderSnapshot = {
   cdekOrderId: string;
   status: string;
@@ -243,6 +253,63 @@ class CdekService {
         if (!city) return true;
         return point.cityName.toLowerCase().includes(city.toLowerCase());
       });
+  }
+
+  async listWebhooks() {
+    const token = await this.getToken();
+    const { baseUrl } = getCdekConfig();
+    const response = await this.request<CdekWebhookListResponse>('listWebhooks', {
+      method: 'GET',
+      url: `${baseUrl}/v2/webhooks`,
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    return Array.isArray(response.entity) ? response.entity : [];
+  }
+
+  async registerWebhook(type: CdekWebhookType, url: string) {
+    const token = await this.getToken();
+    const { baseUrl } = getCdekConfig();
+    return this.request<CdekWebhookListResponse>('registerWebhook', {
+      method: 'POST',
+      url: `${baseUrl}/v2/webhooks`,
+      headers: { Authorization: `Bearer ${token}` },
+      data: { type, url }
+    });
+  }
+
+  async deleteWebhook(uuid: string) {
+    const token = await this.getToken();
+    const { baseUrl } = getCdekConfig();
+    await this.request('deleteWebhook', {
+      method: 'DELETE',
+      url: `${baseUrl}/v2/webhooks/${encodeURIComponent(uuid)}`,
+      headers: { Authorization: `Bearer ${token}` }
+    });
+  }
+
+  async ensureOrderStatusWebhook(url: string) {
+    const normalizedUrl = String(url ?? '').trim();
+    if (!normalizedUrl) throw new Error('CDEK_WEBHOOK_URL_REQUIRED');
+
+    const hooks = await this.listWebhooks();
+    const existing = hooks.find((hook) =>
+      String(hook.type ?? '').toUpperCase() === 'ORDER_STATUS' &&
+      String(hook.url ?? '').trim() === normalizedUrl
+    );
+    if (existing?.uuid) {
+      return { created: false, webhookUuid: String(existing.uuid), total: hooks.length };
+    }
+
+    const created = await this.registerWebhook('ORDER_STATUS', normalizedUrl);
+    const createdHook = (created.entity ?? []).find((hook) =>
+      String(hook.type ?? '').toUpperCase() === 'ORDER_STATUS' &&
+      String(hook.url ?? '').trim() === normalizedUrl
+    );
+    return {
+      created: true,
+      webhookUuid: String(createdHook?.uuid ?? ''),
+      total: hooks.length + 1
+    };
   }
 
   /**

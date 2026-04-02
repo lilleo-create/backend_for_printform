@@ -154,6 +154,10 @@ const syncShipmentByOrder = async (orderId: string) => {
       data: {
         cdekStatus: snapshot.status || undefined,
         cdekOrderId: snapshot.cdekOrderId || cdekOrderUuid,
+        cdekOrderUuid: snapshot.cdekOrderId || cdekOrderUuid,
+        cdekNumber: normalizedTrackingNumber || null,
+        deliveryProvider: 'CDEK',
+        deliveryStatusCode: snapshot.status || undefined,
         trackingNumber: normalizedTrackingNumber || null
       }
     });
@@ -325,7 +329,11 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
         data: {
           carrier: 'CDEK',
           cdekOrderId: created.cdekOrderId,
+          cdekOrderUuid: created.cdekOrderId,
+          cdekNumber: created.trackingNumber || null,
           cdekStatus: created.state || 'ACCEPTED',
+          deliveryProvider: 'CDEK',
+          deliveryStatusCode: created.state || 'ACCEPTED',
           trackingNumber: created.trackingNumber || null
         }
       });
@@ -397,7 +405,11 @@ export const markReadyToShipCdek = async (orderId: string, sellerId?: string) =>
         status: 'HANDED_TO_DELIVERY' as any,
         statusUpdatedAt: now,
         cdekOrderId: cdekOrderId,
+        cdekOrderUuid: cdekOrderId,
+        cdekNumber: trackingNumber || null,
         cdekStatus: cdekState || undefined,
+        deliveryProvider: 'CDEK',
+        deliveryStatusCode: cdekState || undefined,
         trackingNumber: trackingNumber || undefined
       }
     });

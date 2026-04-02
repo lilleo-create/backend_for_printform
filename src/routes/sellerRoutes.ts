@@ -13,7 +13,7 @@ import { orderUseCases } from "../usecases/orderUseCases";
 import { sellerProductCreateSchema, sellerProductUpdateSchema } from "./productRoutes";
 import { writeLimiter } from "../middleware/rateLimiters";
 import { sellerDeliveryProfileService } from "../services/sellerDeliveryProfileService";
-import { payoutService } from "../services/payoutService";
+import { orderCompletionService } from "../services/orderCompletionService";
 import { sellerPayoutService } from "../services/sellerPayoutService";
 import { shipmentService } from "../services/shipmentService";
 import { sellerOrderDocumentsService } from "../services/sellerOrderDocumentsService";
@@ -2172,12 +2172,43 @@ sellerRoutes.patch('/orders/:id/status', writeLimiter, async (req: AuthRequest, 
       });
 
       if (payload.status === 'DELIVERED') {
-        await payoutService.releaseFundsForCompletedOrder(order.id, tx);
+        await orderCompletionService.completeOrderFromDeliveryReceipt(
+          order.id,
+          'manual_test',
+          tx
+        );
+        await orderCompletionService.releaseFundsForCompletedOrder(order.id, tx);
       }
+
       return nextOrder;
     });
 
+
     res.json({ data: updated });
+  } catch (error) {
+    next(error);
+  }
+});
+
+sellerRoutes.post('/orders/:id/mark-received', writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    if (env.isProduction) {
+      return res.status(403).json({ error: { code: 'DISABLED_IN_PRODUCTION', message: 'Endpoint available only in dev/test mode.' } });
+    }
+
+    const order = await prisma.order.findFirst({
+      where: { id: req.params.id, items: { some: { product: { sellerId: req.user!.userId } } } },
+      select: { id: true }
+    });
+    if (!order) return res.status(404).json({ error: { code: 'ORDER_NOT_FOUND' } });
+
+    const result = await prisma.$transaction(async (tx) => {
+      const completed = await orderCompletionService.completeOrderFromDeliveryReceipt(order.id, 'manual_test', tx);
+      const released = await orderCompletionService.releaseFundsForCompletedOrder(order.id, tx);
+      return { completed, released };
+    });
+
+    return res.json({ data: result, testOnly: true });
   } catch (error) {
     next(error);
   }
