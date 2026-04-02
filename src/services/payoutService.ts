@@ -1,28 +1,37 @@
 import { prisma } from '../lib/prisma';
-import { yookassaService } from './yookassaService';
 
 type TxClient = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 
 const asTx = (tx?: TxClient) => tx ?? prisma;
 
-const safeDealEnabled = () => (process.env.YOOKASSA_SAFE_DEAL_ENABLED ?? '').toLowerCase() === 'true';
-const payoutDestinationData = () => {
-  const raw = process.env.YOOKASSA_PAYOUT_DESTINATION_DATA_JSON;
-  if (!raw) return undefined;
-  return JSON.parse(raw) as Record<string, unknown>;
-};
-
 const isTerminalPayoutStatus = (status: string | null | undefined) =>
   status === 'RELEASED' || status === 'PAID';
 
+const resolveOrderFees = (order: any) => {
+  const grossAmountMinor = Number(order.grossAmountKopecks ?? order.total ?? 0);
+  const platformFeeMinor = Number(order.platformFeeKopecks ?? 0);
+  const providerFeeMinor = Number(order.acquiringFeeKopecks ?? 0);
+  const serviceFeeMinor = Number(order.serviceFeeKopecks ?? platformFeeMinor + providerFeeMinor);
+  const sellerNetAmountMinor = Number(order.sellerNetAmountKopecks ?? Math.max(0, grossAmountMinor - serviceFeeMinor));
+  return { grossAmountMinor, platformFeeMinor, providerFeeMinor, serviceFeeMinor, sellerNetAmountMinor };
+};
+
 export const payoutService = {
-  async releaseForDeliveredOrder(orderId: string, tx?: TxClient) {
+  buildOrderFinanceBreakdown(order: any) {
+    return resolveOrderFees(order);
+  },
+
+  async releaseFundsForCompletedOrder(orderId: string, tx?: TxClient) {
     const db = asTx(tx) as any;
     const order = await db.order.findUnique({ where: { id: orderId } });
     if (!order) return { created: false, skipped: 'ORDER_NOT_FOUND' as const };
 
-    if (isTerminalPayoutStatus(order.payoutStatus)) {
+    if (order.fundsReleasedAt || isTerminalPayoutStatus(order.payoutStatus)) {
       return { created: false, skipped: 'ALREADY_RELEASED' as const };
+    }
+
+    if (order.paymentStatus !== 'PAID') {
+      return { created: false, skipped: 'ORDER_NOT_PAID' as const };
     }
 
     if (['CANCELLED', 'RETURNED'].includes(order.status)) {
@@ -30,64 +39,61 @@ export const payoutService = {
       return { created: false, skipped: 'ORDER_BLOCKED' as const };
     }
 
+    const sellerItem = await db.orderItem.findFirst({
+      where: { orderId },
+      include: { product: { select: { sellerId: true } } }
+    });
+    if (!sellerItem?.product?.sellerId) {
+      return { created: false, skipped: 'SELLER_NOT_FOUND' as const };
+    }
+    const sellerId = sellerItem.product.sellerId;
+    const breakdown = resolveOrderFees(order);
+
+    await db.order.update({
+      where: { id: orderId },
+      data: {
+        payoutStatus: 'RELEASED',
+        completedAt: order.completedAt ?? new Date(),
+        fundsReleasedAt: new Date(),
+        serviceFeeKopecks: breakdown.serviceFeeMinor,
+        sellerNetAmountKopecks: breakdown.sellerNetAmountMinor
+      }
+    });
+
+    await db.sellerBalanceLedgerEntry.upsert({
+      where: { orderId_entryType: { orderId, entryType: 'RELEASE_TO_AVAILABLE' } },
+      create: {
+        orderId,
+        sellerId,
+        entryType: 'RELEASE_TO_AVAILABLE',
+        amountKopecks: breakdown.sellerNetAmountMinor,
+        metadata: {
+          grossAmountMinor: breakdown.grossAmountMinor,
+          serviceFeeMinor: breakdown.serviceFeeMinor,
+          platformFeeMinor: breakdown.platformFeeMinor,
+          providerFeeMinor: breakdown.providerFeeMinor
+        }
+      },
+      update: {}
+    });
+
     const existingPayout = await db.payout.findUnique({ where: { orderId } });
     if (!existingPayout) {
-      const sellerItem = await db.orderItem.findFirst({
-        where: { orderId },
-        include: { product: { select: { sellerId: true } } }
-      });
-      if (!sellerItem?.product?.sellerId) {
-        return { created: false, skipped: 'SELLER_NOT_FOUND' as const };
-      }
-
       await db.payout.create({
         data: {
           orderId,
-          sellerId: sellerItem.product.sellerId,
-          amount: order.sellerNetAmountKopecks ?? order.total,
+          sellerId,
+          amount: breakdown.sellerNetAmountMinor,
           currency: order.currency,
           status: 'READY'
         }
       });
     }
+    return { created: !existingPayout, skipped: null, finance: breakdown };
+  },
 
-    const sellerAmountKopecks = order.sellerNetAmountKopecks ?? order.total;
-    if (safeDealEnabled() && order.yookassaDealId) {
-      try {
-        const payoutDestination = payoutDestinationData();
-
-        if (payoutDestination) {
-          const yookassaPayout = await yookassaService.createPayoutInDeal({
-            orderId,
-            dealId: order.yookassaDealId,
-            sellerAmountKopecks,
-            currency: order.currency,
-            payoutDestinationData: payoutDestination
-          });
-
-          await db.order.update({
-            where: { id: orderId },
-            data: {
-              payoutStatus: 'PROCESSING',
-              yookassaPayoutId: yookassaPayout.id,
-              yookassaDealStatus: yookassaPayout.status
-            }
-          });
-
-          return { created: !existingPayout, skipped: null };
-        }
-      } catch (error) {
-        console.error('[PAYOUT][YOOKASSA_CREATE_FAILED]', {
-          orderId,
-          dealId: order.yookassaDealId,
-          error,
-          stack: error instanceof Error ? error.stack : undefined
-        });
-      }
-    }
-
-    await db.order.update({ where: { id: orderId }, data: { payoutStatus: 'RELEASED' } });
-    return { created: !existingPayout, skipped: null };
+  async releaseForDeliveredOrder(orderId: string, tx?: TxClient) {
+    return this.releaseFundsForCompletedOrder(orderId, tx);
   },
 
   async blockForOrder(orderId: string, tx?: TxClient) {

@@ -78,6 +78,7 @@ exports.orderRepository = {
                 orderLabels: data.orderLabels ?? undefined,
                 total,
                 grossAmountKopecks: economics.grossAmountKopecks,
+                serviceFeeKopecks: economics.serviceFeeKopecks,
                 platformFeeKopecks: economics.platformFeeKopecks,
                 acquiringFeeKopecks: economics.acquiringFeeKopecks,
                 sellerNetAmountKopecks: economics.sellerNetAmountKopecks,

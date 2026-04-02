@@ -95,6 +95,7 @@ export const orderRepository = {
           orderLabels: (data.orderLabels as unknown as object | undefined) ?? undefined,
           total,
           grossAmountKopecks: economics.grossAmountKopecks,
+          serviceFeeKopecks: economics.serviceFeeKopecks,
           platformFeeKopecks: economics.platformFeeKopecks,
           acquiringFeeKopecks: economics.acquiringFeeKopecks,
           sellerNetAmountKopecks: economics.sellerNetAmountKopecks,
