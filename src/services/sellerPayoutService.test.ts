@@ -45,6 +45,7 @@ test('createPayoutForOrder supports payout token and yoomoney destination', asyn
   (prisma.order.findFirst as any) = async () => ({
     id: 'order-1',
     publicNumber: 'PF-1',
+    paymentId: 'payment-1',
     paymentStatus: 'PAID',
     yookassaDealId: 'deal-1',
     currency: 'RUB',
@@ -52,6 +53,7 @@ test('createPayoutForOrder supports payout token and yoomoney destination', asyn
     sellerNetAmountKopecks: 900,
     sellerPayouts: []
   });
+  (prisma.payment.findFirst as any) = async () => ({ id: 'payment-1' });
   (prisma.order.update as any) = async () => ({});
   (prisma as any).sellerPayoutMethod = {
     findFirst: async () =>

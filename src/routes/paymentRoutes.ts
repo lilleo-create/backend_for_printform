@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { authenticate, AuthRequest } from '../middleware/authMiddleware';
 import { writeLimiter } from '../middleware/rateLimiters';
+import { prisma } from '../lib/prisma';
 import { paymentFlowService } from '../services/paymentFlowService';
 
 export const paymentRoutes = Router();
@@ -154,6 +155,18 @@ paymentRoutes.post('/yookassa/webhook', async (req, res, next) => {
         provider: 'yookassa',
         payload
       });
+
+      if (payload.event === 'payment.succeeded') {
+        const resolvedDealId = payload.object.metadata?.dealId ?? payload.object.deal?.id ?? null;
+        if (resolvedDealId) {
+          await prisma.order.updateMany({
+            where: { id: orderId, yookassaDealId: null },
+            data: {
+              yookassaDealId: resolvedDealId
+            }
+          });
+        }
+      }
     }
 
     return res.json({ received: true });

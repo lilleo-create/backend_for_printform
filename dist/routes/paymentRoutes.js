@@ -6,6 +6,7 @@ const client_1 = require("@prisma/client");
 const zod_1 = require("zod");
 const authMiddleware_1 = require("../middleware/authMiddleware");
 const rateLimiters_1 = require("../middleware/rateLimiters");
+const prisma_1 = require("../lib/prisma");
 const paymentFlowService_1 = require("../services/paymentFlowService");
 exports.paymentRoutes = (0, express_1.Router)();
 const startSchema = zod_1.z.object({
@@ -142,6 +143,17 @@ exports.paymentRoutes.post('/yookassa/webhook', async (req, res, next) => {
                 provider: 'yookassa',
                 payload
             });
+            if (payload.event === 'payment.succeeded') {
+                const resolvedDealId = payload.object.metadata?.dealId ?? payload.object.deal?.id ?? null;
+                if (resolvedDealId) {
+                    await prisma_1.prisma.order.updateMany({
+                        where: { id: orderId, yookassaDealId: null },
+                        data: {
+                            yookassaDealId: resolvedDealId
+                        }
+                    });
+                }
+            }
         }
         return res.json({ received: true });
     }
