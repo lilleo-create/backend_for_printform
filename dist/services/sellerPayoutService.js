@@ -22,6 +22,20 @@ const MIN_PAYOUT_AMOUNT_KOPECKS = 100;
 const MAX_PAYOUT_AMOUNT_KOPECKS = 15000000;
 const normalizePayoutStatus = (status) => String(status ?? '').toUpperCase();
 const DEFAULT_TEST_PAYOUT_DESCRIPTION = 'Тестовая выплата продавцу';
+const extractDealIdFromPayloadJson = (payloadJson) => {
+    if (!payloadJson || typeof payloadJson !== 'object')
+        return null;
+    const payload = payloadJson;
+    const metadata = (payload.metadata ?? null);
+    const deal = (payload.deal ?? null);
+    const metadataDealId = typeof metadata?.dealId === 'string' ? metadata.dealId.trim() : '';
+    if (metadataDealId)
+        return metadataDealId;
+    const dealObjectId = typeof deal?.id === 'string' ? deal.id.trim() : '';
+    if (dealObjectId)
+        return dealObjectId;
+    return null;
+};
 class SellerPayoutError extends Error {
     constructor(code, httpStatus, details) {
         super(code);
@@ -72,6 +86,59 @@ exports.sellerPayoutService = {
             orderId: orderWithDeal?.id ?? null,
             orderPublicNumber: orderWithDeal?.publicNumber ?? null
         };
+    },
+    async resolveOrderDealIdForPayout(params) {
+        const db = params.tx ?? prisma_1.prisma;
+        const order = await db.order.findFirst({
+            where: { id: params.orderId, items: { some: { product: { sellerId: params.sellerId } } } },
+            select: {
+                id: true,
+                publicNumber: true,
+                paymentId: true,
+                yookassaDealId: true,
+                payoutStatus: true,
+                sellerNetAmountKopecks: true
+            }
+        });
+        if (!order)
+            throw new Error('ORDER_NOT_FOUND');
+        if (order.yookassaDealId) {
+            return { dealId: order.yookassaDealId, order, payment: null };
+        }
+        const payment = await db.payment.findFirst({
+            where: { orderId: order.id },
+            orderBy: [{ createdAt: 'desc' }],
+            select: { id: true, payloadJson: true }
+        });
+        const paymentDealId = extractDealIdFromPayloadJson(payment?.payloadJson);
+        if (paymentDealId) {
+            await db.order.update({
+                where: { id: order.id },
+                data: {
+                    yookassaDealId: paymentDealId,
+                    yookassaDealStatus: 'open'
+                }
+            });
+            console.info('[PAYOUT][DEAL_RESOLVED]', {
+                sellerId: params.sellerId,
+                orderId: order.id,
+                publicNumber: order.publicNumber,
+                resolvedDealId: paymentDealId,
+                source: 'payment.payloadJson'
+            });
+            return { dealId: paymentDealId, order, payment };
+        }
+        console.error('[PAYOUT][DEAL_NOT_FOUND]', {
+            sellerId: params.sellerId,
+            orderId: order.id,
+            publicNumber: order.publicNumber,
+            paymentId: order.paymentId ?? payment?.id ?? null,
+            orderDealId: order.yookassaDealId ?? null,
+            paymentDealId: paymentDealId ?? null,
+            payoutStatus: order.payoutStatus,
+            availableToPayoutMinor: order.sellerNetAmountKopecks ?? null
+        });
+        return { dealId: null, order, payment };
     },
     async triggerTestPayout({ sellerId, amount, description, metadata, dealId }) {
         console.log('[trigger payout] sellerId', sellerId);
@@ -399,6 +466,7 @@ exports.sellerPayoutService = {
             select: {
                 id: true,
                 publicNumber: true,
+                paymentId: true,
                 yookassaDealId: true,
                 currency: true,
                 sellerNetAmountKopecks: true,
@@ -427,15 +495,33 @@ exports.sellerPayoutService = {
         for (const row of allocationRows) {
             allocatedByOrder.set(row.orderId, (allocatedByOrder.get(row.orderId) ?? 0) + Number(row.amountKopecks ?? 0));
         }
+        const missingDealOrderIds = orders.filter((item) => !item.yookassaDealId).map((item) => item.id);
+        const dealByOrderId = new Map();
+        if (missingDealOrderIds.length > 0) {
+            const relatedPayments = await tx.payment.findMany({
+                where: { orderId: { in: missingDealOrderIds } },
+                select: { orderId: true, payloadJson: true, createdAt: true },
+                orderBy: [{ createdAt: 'desc' }]
+            });
+            for (const payment of relatedPayments) {
+                if (dealByOrderId.has(payment.orderId))
+                    continue;
+                const dealId = extractDealIdFromPayloadJson(payment.payloadJson);
+                if (!dealId)
+                    continue;
+                dealByOrderId.set(payment.orderId, dealId);
+            }
+        }
         const rawEligible = orders
             .map((order) => {
             const netAmount = Number(order.sellerNetAmountKopecks ?? order.total ?? 0);
             const allocated = allocatedByOrder.get(order.id) ?? 0;
             const availableToPayoutKopecks = Math.max(0, netAmount - allocated);
+            const resolvedDealId = order.yookassaDealId ?? dealByOrderId.get(order.id) ?? null;
             return {
                 orderId: order.id,
                 publicNumber: order.publicNumber,
-                dealId: order.yookassaDealId ?? null,
+                dealId: resolvedDealId,
                 currency: order.currency,
                 availableToPayoutKopecks,
                 createdAt: order.createdAt,
@@ -510,10 +596,7 @@ exports.sellerPayoutService = {
             });
         }
         const orderForDeal = payload.orderId
-            ? await prisma_1.prisma.order.findFirst({
-                where: { id: payload.orderId, items: { some: { product: { sellerId } } }, yookassaDealId: { not: null } },
-                select: { id: true, publicNumber: true, yookassaDealId: true }
-            })
+            ? await this.resolveOrderDealIdForPayout({ sellerId, orderId: payload.orderId })
             : await prisma_1.prisma.order.findFirst({
                 where: {
                     items: { some: { product: { sellerId } } },
@@ -524,7 +607,7 @@ exports.sellerPayoutService = {
                 select: { id: true, publicNumber: true, yookassaDealId: true }
             });
         const fallbackTestDealId = process.env.YOOKASSA_TEST_DEAL_ID?.trim() || null;
-        const dealId = orderForDeal?.yookassaDealId ?? (mode === 'test' ? fallbackTestDealId : null);
+        const dealId = ('dealId' in (orderForDeal ?? {}) ? orderForDeal?.dealId : orderForDeal?.yookassaDealId) ?? (mode === 'test' ? fallbackTestDealId : null);
         if (!dealId) {
             throw new SellerPayoutError('SELLER_PAYOUT_DEAL_NOT_FOUND', 400, {
                 mode,
@@ -532,7 +615,9 @@ exports.sellerPayoutService = {
                 hint: mode === 'test' ? 'Set YOOKASSA_TEST_DEAL_ID or create paid order with yookassaDealId' : null
             });
         }
-        const referenceOrderId = orderForDeal?.id ?? payload.orderId ?? `seller-${sellerId}-test`;
+        const resolvedOrderEntityId = orderForDeal?.order?.id ?? orderForDeal?.id ?? null;
+        const resolvedOrderPublicNumber = orderForDeal?.order?.publicNumber ?? orderForDeal?.publicNumber ?? null;
+        const referenceOrderId = resolvedOrderEntityId ?? payload.orderId ?? `seller-${sellerId}-test`;
         const idempotenceKey = this.buildStableIdempotenceKey([
             'seller',
             sellerId,
@@ -560,7 +645,7 @@ exports.sellerPayoutService = {
         const created = await prisma_1.prisma.sellerPayout.create({
             data: {
                 sellerId,
-                orderId: orderForDeal?.id ?? null,
+                orderId: resolvedOrderEntityId,
                 dealId,
                 payoutMethodId: payoutMethod.id,
                 provider: PROVIDER,
@@ -571,8 +656,8 @@ exports.sellerPayoutService = {
                 externalStatus: externalPayout.status ?? null,
                 description: payload.description?.trim() || 'Выплата продавцу',
                 metadata: {
-                    orderId: orderForDeal?.id ?? null,
-                    orderPublicNumber: orderForDeal?.publicNumber ?? null,
+                    orderId: resolvedOrderEntityId,
+                    orderPublicNumber: resolvedOrderPublicNumber,
                     mode,
                     availableBalanceBypass: allowTestBypass || undefined
                 },
@@ -772,14 +857,16 @@ exports.sellerPayoutService = {
         return this.syncPayoutStatus(sellerId, payoutId);
     },
     async createPayoutForOrder(sellerId, orderId) {
+        const resolvedDeal = await this.resolveOrderDealIdForPayout({ sellerId, orderId });
         const order = await prisma_1.prisma.order.findFirst({
-            where: { id: orderId, items: { some: { product: { sellerId } } } },
+            where: { id: resolvedDeal.order.id, items: { some: { product: { sellerId } } } },
             include: { sellerPayouts: { orderBy: { createdAt: 'desc' } } }
         });
         if (!order)
             throw new Error('ORDER_NOT_FOUND');
-        if (!order.yookassaDealId)
-            throw new Error('SAFE_DEAL_REQUIRED');
+        const dealId = resolvedDeal.dealId ?? order.yookassaDealId ?? null;
+        if (!dealId)
+            throw new SellerPayoutError('SELLER_PAYOUT_DEAL_NOT_FOUND', 400, { orderId, sellerId });
         if (order.paymentStatus !== 'PAID')
             throw new Error('ORDER_NOT_PAID');
         if (PAYMENT_STATUS_REFUND_SET.has(String(order.paymentStatus)))
@@ -796,7 +883,7 @@ exports.sellerPayoutService = {
         const idempotenceKey = `seller-payout:${order.id}:${payoutMethod.id}:${amountKopecks}`;
         const yookassaPayout = await yookassaService_1.yookassaService.createPayoutInDeal({
             orderId: order.id,
-            dealId: order.yookassaDealId,
+            dealId,
             sellerAmountKopecks: amountKopecks,
             currency: order.currency,
             payoutToken: payoutMethod.methodType === 'BANK_CARD' ? payoutMethod.payoutToken : undefined,
@@ -812,7 +899,7 @@ exports.sellerPayoutService = {
             data: {
                 sellerId,
                 orderId: order.id,
-                dealId: order.yookassaDealId,
+                dealId,
                 payoutMethodId: payoutMethod.id,
                 provider: PROVIDER,
                 externalPayoutId: yookassaPayout.id,

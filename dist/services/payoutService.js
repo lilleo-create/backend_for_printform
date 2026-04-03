@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.payoutService = void 0;
 const prisma_1 = require("../lib/prisma");
+const env_1 = require("../config/env");
 const asTx = (tx) => tx ?? prisma_1.prisma;
 const isTerminalPayoutStatus = (status) => status === 'RELEASED' || status === 'PAID';
 const resolveOrderFees = (order) => {
@@ -26,6 +27,15 @@ exports.payoutService = {
         }
         if (order.paymentStatus !== 'PAID') {
             return { created: false, skipped: 'ORDER_NOT_PAID' };
+        }
+        if (env_1.env.yookassaSafeDealEnabled && !order.yookassaDealId) {
+            console.error('[PAYOUT][RELEASE_SKIPPED_DEAL_MISSING]', {
+                orderId,
+                publicNumber: order.publicNumber ?? null,
+                paymentId: order.paymentId ?? null,
+                payoutStatus: order.payoutStatus ?? null
+            });
+            return { created: false, skipped: 'DEAL_ID_MISSING' };
         }
         if (['CANCELLED', 'RETURNED'].includes(order.status)) {
             await db.order.update({ where: { id: orderId }, data: { payoutStatus: 'BLOCKED' } });

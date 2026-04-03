@@ -37,6 +37,7 @@ const yookassaWebhookSchema = zod_1.z.object({
     object: zod_1.z.object({
         id: zod_1.z.string(),
         status: zod_1.z.string().optional(),
+        deal: zod_1.z.object({ id: zod_1.z.string().optional() }).optional(),
         amount: zod_1.z.object({
             value: zod_1.z.string()
         }).optional(),
@@ -103,7 +104,7 @@ exports.paymentRoutes.post('/yookassa/webhook', async (req, res, next) => {
             event: payload.event,
             objectId: payload.object.id,
             paymentId: payload.object.payment_id ?? payload.object.id,
-            dealId: payload.object.metadata?.dealId ?? null,
+            dealId: payload.object.metadata?.dealId ?? payload.object.deal?.id ?? null,
             orderId: payload.object.metadata?.orderId ?? null,
             amount: payload.object.amount?.value ?? null,
             status: payload.object.status ?? null
@@ -137,6 +138,7 @@ exports.paymentRoutes.post('/yookassa/webhook', async (req, res, next) => {
                 status: payload.object.status === 'succeeded' ? 'succeeded' : 'canceled',
                 orderId,
                 amount: payload.object.amount?.value ?? '0',
+                dealId: payload.object.metadata?.dealId ?? payload.object.deal?.id,
                 provider: 'yookassa',
                 payload
             });
