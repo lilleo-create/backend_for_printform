@@ -593,9 +593,9 @@ const loadSellerContext = async (userId: string): Promise<SellerContextResponse 
     profile,
     kyc: latestSubmission
       ? {
-          ...latestSubmission,
-          statusLabelRu: getKycStatusLabelRu(latestSubmission.status)
-        } as any
+        ...latestSubmission,
+        statusLabelRu: getKycStatusLabelRu(latestSubmission.status)
+      } as any
       : null,
     canSell: Boolean(approvedSubmission)
   };
@@ -647,9 +647,9 @@ sellerRoutes.get('/kyc/me', async (req: AuthRequest, res, next) => {
     res.json({
       data: submission
         ? {
-            ...submission,
-            statusLabelRu: getKycStatusLabelRu(submission.status)
-          }
+          ...submission,
+          statusLabelRu: getKycStatusLabelRu(submission.status)
+        }
         : null
     });
   } catch (error) {
@@ -797,9 +797,9 @@ sellerRoutes.post('/kyc/submit', writeLimiter, async (req: AuthRequest, res, nex
     res.status(201).json({
       data: submitted
         ? {
-            ...submitted,
-            statusLabelRu: getKycStatusLabelRu(submitted.status)
-          }
+          ...submitted,
+          statusLabelRu: getKycStatusLabelRu(submitted.status)
+        }
         : null
     });
   } catch (error) {
@@ -1712,18 +1712,15 @@ const saveYooKassaWidgetCard = async (sellerId: string, rawPayload: unknown) => 
 };
 
 const sellerCreatePayoutSchema = z.object({
-  amount: z.string().trim().regex(/^\d+(\.\d{1,2})?$/),
+  amount: z.union([
+    z.string().trim().regex(/^\d+([.,]\d{1,2})?$/),
+    z.number().finite().positive()
+  ]).transform((value) => String(value).replace(',', '.')),
   description: z.string().trim().min(1).max(255).optional(),
   orderId: z.string().trim().min(1).optional(),
   mode: z.enum(['live', 'test']).optional()
 });
-const sellerFinancePayoutSchema = z.object({
-  amount: z.union([
-    z.string().trim().regex(/^\d+([.,]\d{1,2})?$/),
-    z.number().finite().positive()
-  ]),
-  description: z.string().trim().min(1).max(255).optional()
-});
+
 const sellerTriggerPayoutSchema = z.object({
   amount: z.union([z.string().trim().min(1), z.number()]),
   description: z.string().trim().max(128).optional(),
@@ -1982,36 +1979,6 @@ sellerRoutes.patch('/payout-methods/:id/revoke', writeLimiter, async (req: AuthR
   }
 });
 
-sellerRoutes.post('/finance/payouts', writeLimiter, async (req: AuthRequest, res, next) => {
-  try {
-    const payload = sellerFinancePayoutSchema.parse(req.body);
-    const result = await sellerPayoutService.createFinancePayoutByAmount(req.user!.userId, payload);
-    res.status(201).json({
-      data: {
-        id: result.payout.id,
-        externalId: result.payout.externalPayoutId ?? null,
-        status: String(result.payout.status ?? '').toLowerCase(),
-        amount: {
-          value: money.toRublesString(result.payout.amountKopecks),
-          currency: result.payout.currency
-        },
-        description: result.payout.description ?? null,
-        allocations: result.allocations.map((allocation) => ({
-          orderId: allocation.orderId,
-          publicNumber: allocation.publicNumber,
-          amount: money.toRublesString(allocation.amountKopecks)
-        })),
-        createdAt: result.payout.createdAt
-      }
-    });
-  } catch (error) {
-    if (sellerPayoutService.isSellerPayoutError(error)) {
-      return res.status(error.httpStatus).json({ error: { code: error.code, details: error.details ?? null } });
-    }
-    next(error);
-  }
-});
-
 sellerRoutes.post('/finance/payouts/:orderId', writeLimiter, async (req: AuthRequest, res, next) => {
   try {
     const payout = await sellerPayoutService.createPayoutForOrder(req.user!.userId, req.params.orderId);
@@ -2227,7 +2194,7 @@ sellerRoutes.patch('/orders/:id/status', writeLimiter, async (req: AuthRequest, 
   }
 });
 
-sellerRoutes.post('/orders/:id/mark-received', writeLimiter, async (req: AuthRequest, res, next) => {
+sellerRoutes.post('/orders/:id/mark-received/test', writeLimiter, async (req: AuthRequest, res, next) => {
   try {
     if (env.isProduction) {
       return res.status(403).json({ error: { code: 'DISABLED_IN_PRODUCTION', message: 'Endpoint available only in dev/test mode.' } });
