@@ -1984,24 +1984,13 @@ sellerRoutes.patch('/payout-methods/:id/revoke', writeLimiter, async (req: AuthR
 
 sellerRoutes.post('/finance/payouts', writeLimiter, async (req: AuthRequest, res, next) => {
   try {
-    const payload = sellerFinancePayoutSchema.parse(req.body);
-    const result = await sellerPayoutService.createFinancePayoutByAmount(req.user!.userId, payload);
-    res.status(201).json({
-      data: {
-        id: result.payout.id,
-        externalId: result.payout.externalPayoutId ?? null,
-        status: String(result.payout.status ?? '').toLowerCase(),
-        amount: {
-          value: money.toRublesString(result.payout.amountKopecks),
-          currency: result.payout.currency
-        },
-        description: result.payout.description ?? null,
-        allocations: result.allocations.map((allocation) => ({
-          orderId: allocation.orderId,
-          publicNumber: allocation.publicNumber,
-          amount: money.toRublesString(allocation.amountKopecks)
-        })),
-        createdAt: result.payout.createdAt
+    sellerFinancePayoutSchema.parse(req.body);
+    res.status(400).json({
+      error: {
+        code: 'PAYOUT_BY_FREE_AMOUNT_DISABLED',
+        details: {
+          message: 'Для YooKassa Safe Deal выплата создаётся только по конкретному заказу.'
+        }
       }
     });
   } catch (error) {
@@ -2017,12 +2006,8 @@ sellerRoutes.post('/finance/payouts/:orderId', writeLimiter, async (req: AuthReq
     const payout = await sellerPayoutService.createPayoutForOrder(req.user!.userId, req.params.orderId);
     res.status(201).json({ data: payout });
   } catch (error) {
-    const code = error instanceof Error ? error.message : 'PAYOUT_CREATE_FAILED';
-    if (['ORDER_NOT_FOUND', 'DEFAULT_PAYOUT_METHOD_NOT_FOUND'].includes(code)) {
-      return res.status(404).json({ error: { code } });
-    }
-    if (['SAFE_DEAL_REQUIRED', 'ORDER_NOT_PAID', 'ORDER_REFUND_IN_PROGRESS', 'PAYOUT_ALREADY_SUCCEEDED'].includes(code)) {
-      return res.status(400).json({ error: { code } });
+    if (sellerPayoutService.isSellerPayoutError(error)) {
+      return res.status(error.httpStatus).json({ error: { code: error.code, details: error.details ?? null } });
     }
     next(error);
   }
@@ -2069,6 +2054,7 @@ sellerRoutes.get('/finance', async (req: AuthRequest, res, next) => {
           refundsAndHoldsMinor,
           availableToPayoutMinor: Number(financeView.summary.awaitingPayoutKopecks ?? 0)
         },
+        payoutCenter: financeView.payoutCenter ?? { availableOrders: [] },
         nextPayout: {
           availableAt: financeView.nextPayout.scheduledAt ?? null,
           ordersCount: Number(financeView.nextPayout.orderCount ?? 0),
