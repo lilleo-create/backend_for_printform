@@ -14,7 +14,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "make:admin": "tsx scripts/make-admin.ts",
-    "shipments:sync": "tsx scripts/shipments-sync.ts"
+    "shipments:sync": "tsx scripts/shipments-sync.ts",
+    "backfill:yookassa-deal-ids": "tsx scripts/backfill-yookassa-deal-ids.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
