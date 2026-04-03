@@ -33,6 +33,20 @@ const extractDealIdFromPayloadJson = (payloadJson: unknown): string | null => {
   return null;
 };
 
+function resolveDealId(order: any, payment?: any): string | null {
+  if (order?.yookassaDealId) return order.yookassaDealId;
+
+  if (payment?.yookassaDealId) return payment.yookassaDealId;
+
+  if (payment?.metadata?.dealId) return payment.metadata.dealId;
+
+  if (payment?.deal?.id) return payment.deal.id;
+
+  if (payment?.payloadJson) return extractDealIdFromPayloadJson(payment.payloadJson);
+
+  return null;
+}
+
 class SellerPayoutError extends Error {
   code: string;
   httpStatus: number;
@@ -984,14 +998,36 @@ export const sellerPayoutService = {
   },
 
   async createPayoutForOrder(sellerId: string, orderId: string) {
-    const resolvedDeal = await this.resolveOrderDealIdForPayout({ sellerId, orderId });
     const order: any = await prisma.order.findFirst({
-      where: { id: resolvedDeal.order.id, items: { some: { product: { sellerId } } } },
+      where: { id: orderId, items: { some: { product: { sellerId } } } },
       include: { sellerPayouts: { orderBy: { createdAt: 'desc' } } as any }
     } as any);
     if (!order) throw new Error('ORDER_NOT_FOUND');
-    const dealId = resolvedDeal.dealId ?? order.yookassaDealId ?? null;
-    if (!dealId) throw new SellerPayoutError('SELLER_PAYOUT_DEAL_NOT_FOUND', 400, { orderId, sellerId });
+    const payment = order.paymentId
+      ? await prisma.payment.findFirst({ where: { id: order.paymentId } })
+      : await prisma.payment.findFirst({
+          where: { orderId: order.id },
+          orderBy: [{ createdAt: 'desc' }]
+        });
+    const dealId = resolveDealId(order, payment);
+    if (!dealId) {
+      console.error('[PAYOUT][DEAL_NOT_FOUND]', {
+        orderId: order.id,
+        publicNumber: order.publicNumber,
+        paymentId: order.paymentId,
+        orderDealId: (order as any).yookassaDealId ?? null,
+        paymentDealId: (payment as any)?.yookassaDealId ?? null,
+        metadata: (payment as any)?.metadata ?? null,
+        payoutStatus: order.payoutStatus
+      });
+      throw new SellerPayoutError('SELLER_PAYOUT_DEAL_NOT_FOUND', 400, { orderId, sellerId });
+    }
+    if (!order.yookassaDealId && dealId) {
+      await prisma.order.update({
+        where: { id: order.id },
+        data: { yookassaDealId: dealId }
+      });
+    }
     if (order.paymentStatus !== 'PAID') throw new Error('ORDER_NOT_PAID');
     if (PAYMENT_STATUS_REFUND_SET.has(String(order.paymentStatus))) throw new Error('ORDER_REFUND_IN_PROGRESS');
 
