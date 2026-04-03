@@ -80,6 +80,48 @@ test('createPayoutForOrder supports payout token and yoomoney destination', asyn
   assert.deepEqual(calls[1].payoutDestinationData, { type: 'yoo_money', account_number: '4100111222333' });
 });
 
+test('createPayoutForOrder backfills deal id from webhook-shaped payment payload', async () => {
+  (prisma.order.findFirst as any) = async () => ({
+    id: 'order-42',
+    publicNumber: 'PF-42',
+    paymentId: 'payment-42',
+    paymentStatus: 'PAID',
+    payoutStatus: 'RELEASED',
+    status: 'DELIVERED',
+    yookassaDealId: null,
+    currency: 'RUB',
+    total: 2000,
+    sellerNetAmountKopecks: 1800,
+    sellerPayouts: []
+  });
+  (prisma.payment.findFirst as any) = async () => ({
+    id: 'payment-42',
+    status: 'SUCCEEDED',
+    payloadJson: {
+      object: {
+        deal: { id: 'deal-42' },
+        metadata: { dealId: 'deal-42' }
+      }
+    }
+  });
+  let updatedOrderDealId: string | null = null;
+  (prisma.order.update as any) = async ({ data }: any) => {
+    updatedOrderDealId = data?.yookassaDealId ?? null;
+    return {};
+  };
+  (prisma as any).sellerPayoutMethod = {
+    findFirst: async () => ({ id: 'pm-card', methodType: 'BANK_CARD', payoutToken: 'pt_1', status: 'ACTIVE' })
+  };
+  (prisma as any).sellerPayout = {
+    create: async ({ data }: any) => ({ id: 'sp-42', ...data })
+  };
+  (yookassaService.createPayoutInDeal as any) = async () => ({ id: 'ext-42', status: 'pending' });
+
+  const payout = await sellerPayoutService.createPayoutForOrder('seller-1', 'order-42');
+  assert.equal(updatedOrderDealId, 'deal-42');
+  assert.equal(payout.dealId, 'deal-42');
+});
+
 test('buildFinanceView excludes HOLD from adjustments and builds payout history from seller payouts', async () => {
   (prisma.order.findMany as any) = async () => ([
     {

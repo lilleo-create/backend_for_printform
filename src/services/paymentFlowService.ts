@@ -83,11 +83,40 @@ const extractDealIdFromPayload = (payload: unknown): string | null => {
   const object = asRecord(root?.object);
   const metadata = asRecord(object?.metadata);
   const deal = asRecord(object?.deal);
+  const rootMetadata = asRecord(root?.metadata);
+  const rootDeal = asRecord(root?.deal);
+  const directDealId =
+    (typeof root?.dealId === 'string' ? root.dealId.trim() : '') ||
+    (typeof root?.yookassaDealId === 'string' ? root.yookassaDealId.trim() : '');
+  if (directDealId) return directDealId;
+  const rootMetadataDealId = typeof rootMetadata?.dealId === 'string' ? rootMetadata.dealId.trim() : '';
+  if (rootMetadataDealId) return rootMetadataDealId;
+  const rootDealId = typeof rootDeal?.id === 'string' ? rootDeal.id.trim() : '';
+  if (rootDealId) return rootDealId;
   const metadataDealId = typeof metadata?.dealId === 'string' ? metadata.dealId.trim() : '';
   if (metadataDealId) return metadataDealId;
   const dealId = typeof deal?.id === 'string' ? deal.id.trim() : '';
   if (dealId) return dealId;
   return null;
+};
+
+const mergePaymentPayloadWithWebhook = (existingPayload: unknown, webhookPayload: unknown, resolvedDealId: string | null) => {
+  const existing = asRecord(existingPayload) ?? {};
+  const webhook = asRecord(webhookPayload) ?? {};
+  const existingMetadata = asRecord(existing.metadata) ?? {};
+  const webhookObject = asRecord(webhook.object);
+  const webhookMetadata = asRecord(webhookObject?.metadata) ?? {};
+
+  return {
+    ...existing,
+    ...webhook,
+    metadata: {
+      ...existingMetadata,
+      ...webhookMetadata,
+      ...(resolvedDealId ? { dealId: resolvedDealId } : {})
+    },
+    ...(resolvedDealId ? { dealId: resolvedDealId, yookassaDealId: resolvedDealId } : {})
+  } as Prisma.InputJsonValue;
 };
 
 const buildOrderLabels = (orderId: string, packagesCount: number) => {
@@ -680,10 +709,26 @@ export const paymentFlowService = {
     if (!payment) return { ok: true };
 
     if (payment.status === 'SUCCEEDED' || payment.status === 'CANCELED') {
+      const resolvedDealId = input.dealId ?? extractDealIdFromPayload(input.payload);
+      if (resolvedDealId && !order.yookassaDealId) {
+        await prisma.order.updateMany({
+          where: { id: order.id, yookassaDealId: null },
+          data: { yookassaDealId: resolvedDealId, yookassaDealStatus: 'open' }
+        });
+      }
+      if (input.payload) {
+        await prisma.payment.update({
+          where: { id: payment.id },
+          data: {
+            payloadJson: mergePaymentPayloadWithWebhook(payment.payloadJson, input.payload, resolvedDealId ?? null)
+          }
+        });
+      }
       return { ok: true };
     }
 
     if (input.status === 'succeeded') {
+      const resolvedDealId = input.dealId ?? extractDealIdFromPayload(input.payload);
       const updateResult = await prisma.payment.updateMany({
         where: {
           externalId: input.externalId,
@@ -693,6 +738,13 @@ export const paymentFlowService = {
       });
 
       if (updateResult.count === 0) return { ok: true };
+
+      await prisma.payment.update({
+        where: { id: payment.id },
+        data: {
+          payloadJson: mergePaymentPayloadWithWebhook(payment.payloadJson, input.payload, resolvedDealId)
+        }
+      });
 
       await prisma.order.update({
         where: { id: order.id },
@@ -704,9 +756,9 @@ export const paymentFlowService = {
           paymentProvider: input.provider ?? payment.provider,
           paymentId: payment.id,
           payoutStatus: 'HOLD',
-          yookassaDealId: order.yookassaDealId ?? input.dealId ?? extractDealIdFromPayload(input.payload) ?? undefined,
+          yookassaDealId: order.yookassaDealId ?? resolvedDealId ?? undefined,
           yookassaDealStatus:
-            order.yookassaDealId ?? input.dealId ?? extractDealIdFromPayload(input.payload) ? 'open' : order.yookassaDealStatus
+            order.yookassaDealId ?? resolvedDealId ? 'open' : order.yookassaDealStatus
         }
       });
 
