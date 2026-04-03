@@ -78,6 +78,18 @@ const normalizeBuyerPickupPvz = (input: StartPaymentInput['buyerPickupPvz']) => 
   };
 };
 
+const extractDealIdFromPayload = (payload: unknown): string | null => {
+  const root = asRecord(payload);
+  const object = asRecord(root?.object);
+  const metadata = asRecord(object?.metadata);
+  const deal = asRecord(object?.deal);
+  const metadataDealId = typeof metadata?.dealId === 'string' ? metadata.dealId.trim() : '';
+  if (metadataDealId) return metadataDealId;
+  const dealId = typeof deal?.id === 'string' ? deal.id.trim() : '';
+  if (dealId) return dealId;
+  return null;
+};
+
 const buildOrderLabels = (orderId: string, packagesCount: number) => {
   const shortId = orderId.replace(/[^a-zA-Z0-9]/g, '').slice(-7).toUpperCase();
   return Array.from({ length: packagesCount }, (_, index) => {
@@ -645,6 +657,7 @@ export const paymentFlowService = {
     status: 'succeeded' | 'canceled';
     orderId: string;
     amount: string;
+    dealId?: string;
     provider?: string;
     payload?: unknown;
   }) {
@@ -691,7 +704,9 @@ export const paymentFlowService = {
           paymentProvider: input.provider ?? payment.provider,
           paymentId: payment.id,
           payoutStatus: 'HOLD',
-          yookassaDealStatus: order.yookassaDealId ? 'open' : order.yookassaDealStatus
+          yookassaDealId: order.yookassaDealId ?? input.dealId ?? extractDealIdFromPayload(input.payload) ?? undefined,
+          yookassaDealStatus:
+            order.yookassaDealId ?? input.dealId ?? extractDealIdFromPayload(input.payload) ? 'open' : order.yookassaDealStatus
         }
       });
 

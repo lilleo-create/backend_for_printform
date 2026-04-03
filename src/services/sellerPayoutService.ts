@@ -3,6 +3,7 @@ import axios from 'axios';
 import { prisma } from '../lib/prisma';
 import { money } from '../utils/money';
 import { yookassaService } from './yookassaService';
+import { env } from '../config/env';
 
 const PROVIDER = 'YOOKASSA';
 
@@ -19,6 +20,18 @@ const MAX_PAYOUT_AMOUNT_KOPECKS = 15_000_000;
 
 const normalizePayoutStatus = (status?: string | null) => String(status ?? '').toUpperCase();
 const DEFAULT_TEST_PAYOUT_DESCRIPTION = 'Тестовая выплата продавцу';
+
+const extractDealIdFromPayloadJson = (payloadJson: unknown): string | null => {
+  if (!payloadJson || typeof payloadJson !== 'object') return null;
+  const payload = payloadJson as Record<string, unknown>;
+  const metadata = (payload.metadata ?? null) as Record<string, unknown> | null;
+  const deal = (payload.deal ?? null) as Record<string, unknown> | null;
+  const metadataDealId = typeof metadata?.dealId === 'string' ? metadata.dealId.trim() : '';
+  if (metadataDealId) return metadataDealId;
+  const dealObjectId = typeof deal?.id === 'string' ? deal.id.trim() : '';
+  if (dealObjectId) return dealObjectId;
+  return null;
+};
 
 class SellerPayoutError extends Error {
   code: string;
@@ -106,6 +119,63 @@ export const sellerPayoutService = {
       orderId: orderWithDeal?.id ?? null,
       orderPublicNumber: orderWithDeal?.publicNumber ?? null
     };
+  },
+
+  async resolveOrderDealIdForPayout(params: { sellerId: string; orderId: string; tx?: any }) {
+    const db = params.tx ?? prisma;
+    const order = await db.order.findFirst({
+      where: { id: params.orderId, items: { some: { product: { sellerId: params.sellerId } } } },
+      select: {
+        id: true,
+        publicNumber: true,
+        paymentId: true,
+        yookassaDealId: true,
+        payoutStatus: true,
+        sellerNetAmountKopecks: true
+      }
+    });
+    if (!order) throw new Error('ORDER_NOT_FOUND');
+
+    if (order.yookassaDealId) {
+      return { dealId: order.yookassaDealId, order, payment: null };
+    }
+
+    const payment = await db.payment.findFirst({
+      where: { orderId: order.id },
+      orderBy: [{ createdAt: 'desc' }],
+      select: { id: true, payloadJson: true }
+    });
+    const paymentDealId = extractDealIdFromPayloadJson(payment?.payloadJson);
+
+    if (paymentDealId) {
+      await db.order.update({
+        where: { id: order.id },
+        data: {
+          yookassaDealId: paymentDealId,
+          yookassaDealStatus: 'open'
+        }
+      });
+      console.info('[PAYOUT][DEAL_RESOLVED]', {
+        sellerId: params.sellerId,
+        orderId: order.id,
+        publicNumber: order.publicNumber,
+        resolvedDealId: paymentDealId,
+        source: 'payment.payloadJson'
+      });
+      return { dealId: paymentDealId, order, payment };
+    }
+
+    console.error('[PAYOUT][DEAL_NOT_FOUND]', {
+      sellerId: params.sellerId,
+      orderId: order.id,
+      publicNumber: order.publicNumber,
+      paymentId: order.paymentId ?? payment?.id ?? null,
+      orderDealId: order.yookassaDealId ?? null,
+      paymentDealId: paymentDealId ?? null,
+      payoutStatus: order.payoutStatus,
+      availableToPayoutMinor: order.sellerNetAmountKopecks ?? null
+    });
+    return { dealId: null, order, payment };
   },
 
   async triggerTestPayout({
@@ -492,6 +562,7 @@ export const sellerPayoutService = {
       select: {
         id: true,
         publicNumber: true,
+        paymentId: true,
         yookassaDealId: true,
         currency: true,
         sellerNetAmountKopecks: true,
@@ -522,15 +593,32 @@ export const sellerPayoutService = {
       allocatedByOrder.set(row.orderId, (allocatedByOrder.get(row.orderId) ?? 0) + Number(row.amountKopecks ?? 0));
     }
 
+    const missingDealOrderIds = orders.filter((item) => !item.yookassaDealId).map((item) => item.id);
+    const dealByOrderId = new Map<string, string>();
+    if (missingDealOrderIds.length > 0) {
+      const relatedPayments = await tx.payment.findMany({
+        where: { orderId: { in: missingDealOrderIds } },
+        select: { orderId: true, payloadJson: true, createdAt: true },
+        orderBy: [{ createdAt: 'desc' }]
+      });
+      for (const payment of relatedPayments) {
+        if (dealByOrderId.has(payment.orderId)) continue;
+        const dealId = extractDealIdFromPayloadJson(payment.payloadJson);
+        if (!dealId) continue;
+        dealByOrderId.set(payment.orderId, dealId);
+      }
+    }
+
     const rawEligible = orders
       .map((order) => {
         const netAmount = Number(order.sellerNetAmountKopecks ?? order.total ?? 0);
         const allocated = allocatedByOrder.get(order.id) ?? 0;
         const availableToPayoutKopecks = Math.max(0, netAmount - allocated);
+        const resolvedDealId = order.yookassaDealId ?? dealByOrderId.get(order.id) ?? null;
         return {
           orderId: order.id,
           publicNumber: order.publicNumber,
-          dealId: order.yookassaDealId ?? null,
+          dealId: resolvedDealId,
           currency: order.currency,
           availableToPayoutKopecks,
           createdAt: order.createdAt,
@@ -617,10 +705,7 @@ export const sellerPayoutService = {
     }
 
     const orderForDeal = payload.orderId
-      ? await prisma.order.findFirst({
-          where: { id: payload.orderId, items: { some: { product: { sellerId } } }, yookassaDealId: { not: null } },
-          select: { id: true, publicNumber: true, yookassaDealId: true }
-        })
+      ? await this.resolveOrderDealIdForPayout({ sellerId, orderId: payload.orderId })
       : await prisma.order.findFirst({
           where: {
             items: { some: { product: { sellerId } } },
@@ -632,7 +717,7 @@ export const sellerPayoutService = {
         });
 
     const fallbackTestDealId = process.env.YOOKASSA_TEST_DEAL_ID?.trim() || null;
-    const dealId = orderForDeal?.yookassaDealId ?? (mode === 'test' ? fallbackTestDealId : null);
+    const dealId = ('dealId' in (orderForDeal ?? {}) ? (orderForDeal as any)?.dealId : (orderForDeal as any)?.yookassaDealId) ?? (mode === 'test' ? fallbackTestDealId : null);
     if (!dealId) {
       throw new SellerPayoutError('SELLER_PAYOUT_DEAL_NOT_FOUND', 400, {
         mode,
@@ -641,7 +726,9 @@ export const sellerPayoutService = {
       });
     }
 
-    const referenceOrderId = orderForDeal?.id ?? payload.orderId ?? `seller-${sellerId}-test`;
+    const resolvedOrderEntityId = (orderForDeal as any)?.order?.id ?? (orderForDeal as any)?.id ?? null;
+    const resolvedOrderPublicNumber = (orderForDeal as any)?.order?.publicNumber ?? (orderForDeal as any)?.publicNumber ?? null;
+    const referenceOrderId = resolvedOrderEntityId ?? payload.orderId ?? `seller-${sellerId}-test`;
 
     const idempotenceKey = this.buildStableIdempotenceKey([
       'seller',
@@ -671,7 +758,7 @@ export const sellerPayoutService = {
     const created = await (prisma as any).sellerPayout.create({
       data: {
         sellerId,
-        orderId: orderForDeal?.id ?? null,
+        orderId: resolvedOrderEntityId,
         dealId,
         payoutMethodId: payoutMethod.id,
         provider: PROVIDER,
@@ -682,8 +769,8 @@ export const sellerPayoutService = {
         externalStatus: externalPayout.status ?? null,
         description: payload.description?.trim() || 'Выплата продавцу',
         metadata: {
-          orderId: orderForDeal?.id ?? null,
-          orderPublicNumber: orderForDeal?.publicNumber ?? null,
+          orderId: resolvedOrderEntityId,
+          orderPublicNumber: resolvedOrderPublicNumber,
           mode,
           availableBalanceBypass: allowTestBypass || undefined
         },
@@ -897,12 +984,14 @@ export const sellerPayoutService = {
   },
 
   async createPayoutForOrder(sellerId: string, orderId: string) {
+    const resolvedDeal = await this.resolveOrderDealIdForPayout({ sellerId, orderId });
     const order: any = await prisma.order.findFirst({
-      where: { id: orderId, items: { some: { product: { sellerId } } } },
+      where: { id: resolvedDeal.order.id, items: { some: { product: { sellerId } } } },
       include: { sellerPayouts: { orderBy: { createdAt: 'desc' } } as any }
     } as any);
     if (!order) throw new Error('ORDER_NOT_FOUND');
-    if (!order.yookassaDealId) throw new Error('SAFE_DEAL_REQUIRED');
+    const dealId = resolvedDeal.dealId ?? order.yookassaDealId ?? null;
+    if (!dealId) throw new SellerPayoutError('SELLER_PAYOUT_DEAL_NOT_FOUND', 400, { orderId, sellerId });
     if (order.paymentStatus !== 'PAID') throw new Error('ORDER_NOT_PAID');
     if (PAYMENT_STATUS_REFUND_SET.has(String(order.paymentStatus))) throw new Error('ORDER_REFUND_IN_PROGRESS');
 
@@ -918,7 +1007,7 @@ export const sellerPayoutService = {
     const idempotenceKey = `seller-payout:${order.id}:${payoutMethod.id}:${amountKopecks}`;
     const yookassaPayout = await yookassaService.createPayoutInDeal({
       orderId: order.id,
-      dealId: order.yookassaDealId,
+      dealId,
       sellerAmountKopecks: amountKopecks,
       currency: order.currency,
       payoutToken: payoutMethod.methodType === 'BANK_CARD' ? payoutMethod.payoutToken : undefined,
@@ -937,7 +1026,7 @@ export const sellerPayoutService = {
       data: {
         sellerId,
         orderId: order.id,
-        dealId: order.yookassaDealId,
+        dealId,
         payoutMethodId: payoutMethod.id,
         provider: PROVIDER,
         externalPayoutId: yookassaPayout.id,

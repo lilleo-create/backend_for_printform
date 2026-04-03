@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { env } from '../config/env';
 
 type TxClient = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 
@@ -32,6 +33,15 @@ export const payoutService = {
 
     if (order.paymentStatus !== 'PAID') {
       return { created: false, skipped: 'ORDER_NOT_PAID' as const };
+    }
+    if (env.yookassaSafeDealEnabled && !order.yookassaDealId) {
+      console.error('[PAYOUT][RELEASE_SKIPPED_DEAL_MISSING]', {
+        orderId,
+        publicNumber: order.publicNumber ?? null,
+        paymentId: order.paymentId ?? null,
+        payoutStatus: order.payoutStatus ?? null
+      });
+      return { created: false, skipped: 'DEAL_ID_MISSING' as const };
     }
 
     if (['CANCELLED', 'RETURNED'].includes(order.status)) {
