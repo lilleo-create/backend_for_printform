@@ -32,6 +32,7 @@ const originalCreatePayoutInDeal = yookassaService.createPayoutInDeal;
 const originalSellerPayoutFindMany = (prisma as any).sellerPayout?.findMany;
 const originalSellerPayoutFindFirst = (prisma as any).sellerPayout?.findFirst;
 const originalSellerPayoutCreate = (prisma as any).sellerPayout?.create;
+const originalSellerPayoutAllocationFindMany = (prisma as any).sellerPayoutAllocation?.findMany;
 let lastOrderFindManyArgs: any = null;
 
 const installPrismaMocks = () => {
@@ -46,6 +47,7 @@ const installPrismaMocks = () => {
     {
       id: 'order-awaiting',
       publicNumber: 'PF-101',
+      yookassaDealId: 'deal-101',
       total: 12000,
       grossAmountKopecks: 12000,
       platformFeeKopecks: 2000,
@@ -62,6 +64,7 @@ const installPrismaMocks = () => {
     {
       id: 'order-frozen',
       publicNumber: 'PF-102',
+      yookassaDealId: 'deal-102',
       total: 6000,
       grossAmountKopecks: 6000,
       platformFeeKopecks: 1000,
@@ -78,6 +81,7 @@ const installPrismaMocks = () => {
     {
       id: 'order-paid-out',
       publicNumber: 'PF-103',
+      yookassaDealId: 'deal-103',
       total: 8000,
       grossAmountKopecks: 8000,
       platformFeeKopecks: 1000,
@@ -101,6 +105,7 @@ const installPrismaMocks = () => {
     {
       id: 'order-blocked',
       publicNumber: 'PF-104',
+      yookassaDealId: 'deal-104',
       total: 4000,
       grossAmountKopecks: 4000,
       platformFeeKopecks: 1000,
@@ -161,6 +166,8 @@ const installPrismaMocks = () => {
   (prisma as any).sellerPayout.findMany = async () => [];
   (prisma as any).sellerPayout.findFirst = async () => null;
   (prisma as any).sellerPayout.create = async ({ data }: any) => ({ id: 'payout-1', createdAt: new Date(), updatedAt: new Date(), ...data });
+  (prisma as any).sellerPayoutAllocation = (prisma as any).sellerPayoutAllocation ?? {};
+  (prisma as any).sellerPayoutAllocation.findMany = async () => [];
   (yookassaService.createPayoutInDeal as any) = async () => ({ id: 'ext-payout-1', status: 'pending' });
 };
 
@@ -196,6 +203,9 @@ test.after(() => {
   if ((prisma as any).sellerPayout && originalSellerPayoutCreate) {
     (prisma as any).sellerPayout.create = originalSellerPayoutCreate;
   }
+  if ((prisma as any).sellerPayoutAllocation && originalSellerPayoutAllocationFindMany) {
+    (prisma as any).sellerPayoutAllocation.findMany = originalSellerPayoutAllocationFindMany;
+  }
   (yookassaService.createPayoutInDeal as any) = originalCreatePayoutInDeal;
   (prisma.$transaction as any) = originalPrismaTransaction;
 });
@@ -208,12 +218,12 @@ test('GET /seller/payments returns finance-oriented payload for seller accountin
   assert.equal(response.status, 200);
 
   assert.deepEqual(response.body.data.summary, {
-    awaitingPayoutKopecks: 10000,
+    awaitingPayoutKopecks: 15000,
     frozenKopecks: 5000,
     paidOutKopecks: 7000,
     refundedKopecks: 3000,
     blockedKopecks: 0,
-    awaitingPayoutRubles: '100.00',
+    awaitingPayoutRubles: '150.00',
     frozenRubles: '50.00',
     paidOutRubles: '70.00',
     refundedRubles: '30.00',
@@ -256,11 +266,11 @@ test('GET /seller/finance returns compatibility payload for accounting dashboard
 
   assert.equal(response.status, 200);
   assert.deepEqual(response.body.data.summary, {
-    pendingPayoutMinor: 10000,
+    pendingPayoutMinor: 15000,
     frozenMinor: 5000,
     paidOutMinor: 7000,
     refundsAndHoldsMinor: 3000,
-    availableToPayoutMinor: 10000
+    availableToPayoutMinor: 15000
   });
 
   assert.deepEqual(response.body.data.nextPayout, {
@@ -268,6 +278,8 @@ test('GET /seller/finance returns compatibility payload for accounting dashboard
     ordersCount: 2,
     amountMinor: 15000
   });
+  assert.equal(Array.isArray(response.body.data.payoutCenter.availableOrders), true);
+  assert.equal(response.body.data.payoutCenter.availableOrders[0].descriptionPreview.startsWith('Выплата по заказу №'), true);
 
   assert.equal(response.body.data.queue.length, 2);
   assert.equal(response.body.data.holds.length, 2);
@@ -298,6 +310,9 @@ test('GET /seller/finance returns valid empty structure when seller has no finan
       availableAt: null,
       ordersCount: 0,
       amountMinor: 0
+    },
+    payoutCenter: {
+      availableOrders: []
     },
     queue: [],
     holds: [],
@@ -371,7 +386,7 @@ test('POST /seller/payout-methods/yookassa/card accepts snake_case payload from 
 
 test('POST /seller/payouts creates seller payout from saved card', async () => {
   (prisma.order.findFirst as any) = async () => ({ id: 'order-1', publicNumber: 'PF-101', yookassaDealId: 'deal-1' });
-  (prisma.order.findMany as any) = async () => ([{ id: 'order-1', sellerNetAmountKopecks: 100000, total: 100000 }]);
+  (prisma.order.findMany as any) = async () => ([{ id: 'order-1', sellerNetAmountKopecks: 100000, total: 100000, yookassaDealId: 'deal-1' }]);
   (prisma as any).sellerPayout.findMany = async () => [];
 
   const response = await request(buildApp())
@@ -382,4 +397,14 @@ test('POST /seller/payouts creates seller payout from saved card', async () => {
   assert.equal(response.status, 201);
   assert.equal(response.body.data.status, 'pending');
   assert.equal(response.body.data.amount.value, '1000.00');
+});
+
+test('POST /seller/finance/payouts returns controlled legacy error for free amount flow', async () => {
+  const response = await request(buildApp())
+    .post('/seller/finance/payouts')
+    .set('Authorization', `Bearer ${accessToken}`)
+    .send({ amount: '1000.00' });
+
+  assert.equal(response.status, 400);
+  assert.equal(response.body.error.code, 'PAYOUT_BY_FREE_AMOUNT_DISABLED');
 });
