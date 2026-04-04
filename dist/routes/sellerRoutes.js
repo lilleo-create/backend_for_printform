@@ -1543,17 +1543,13 @@ const saveYooKassaWidgetCard = async (sellerId, rawPayload) => {
     return sellerPayoutService_1.sellerPayoutService.saveYookassaCardFromWidget(sellerId, payload);
 };
 const sellerCreatePayoutSchema = zod_1.z.object({
-    amount: zod_1.z.string().trim().regex(/^\d+(\.\d{1,2})?$/),
-    description: zod_1.z.string().trim().min(1).max(255).optional(),
-    orderId: zod_1.z.string().trim().min(1).optional(),
-    mode: zod_1.z.enum(['live', 'test']).optional()
-});
-const sellerFinancePayoutSchema = zod_1.z.object({
     amount: zod_1.z.union([
         zod_1.z.string().trim().regex(/^\d+([.,]\d{1,2})?$/),
         zod_1.z.number().finite().positive()
-    ]),
-    description: zod_1.z.string().trim().min(1).max(255).optional()
+    ]).transform((value) => String(value).replace(',', '.')),
+    description: zod_1.z.string().trim().min(1).max(255).optional(),
+    orderId: zod_1.z.string().trim().min(1).optional(),
+    mode: zod_1.z.enum(['live', 'test']).optional()
 });
 const sellerTriggerPayoutSchema = zod_1.z.object({
     amount: zod_1.z.union([zod_1.z.string().trim().min(1), zod_1.z.number()]),
@@ -1811,8 +1807,8 @@ exports.sellerRoutes.patch('/payout-methods/:id/revoke', rateLimiters_1.writeLim
 });
 exports.sellerRoutes.post('/finance/payouts', rateLimiters_1.writeLimiter, async (req, res, next) => {
     try {
-        sellerFinancePayoutSchema.parse(req.body);
-        res.status(400).json({
+        sellerCreatePayoutSchema.partial().parse(req.body ?? {});
+        return res.status(400).json({
             error: {
                 code: 'PAYOUT_BY_FREE_AMOUNT_DISABLED',
                 details: {
@@ -1822,8 +1818,20 @@ exports.sellerRoutes.post('/finance/payouts', rateLimiters_1.writeLimiter, async
         });
     }
     catch (error) {
+        if (error instanceof zod_1.z.ZodError) {
+            return res.status(400).json({
+                error: {
+                    code: 'PAYOUT_BY_FREE_AMOUNT_DISABLED',
+                    details: {
+                        message: 'Для YooKassa Safe Deal выплата создаётся только по конкретному заказу.'
+                    }
+                }
+            });
+        }
         if (sellerPayoutService_1.sellerPayoutService.isSellerPayoutError(error)) {
-            return res.status(error.httpStatus).json({ error: { code: error.code, details: error.details ?? null } });
+            return res.status(error.httpStatus).json({
+                error: { code: error.code, details: error.details ?? null }
+            });
         }
         next(error);
     }
@@ -1831,11 +1839,13 @@ exports.sellerRoutes.post('/finance/payouts', rateLimiters_1.writeLimiter, async
 exports.sellerRoutes.post('/finance/payouts/:orderId', rateLimiters_1.writeLimiter, async (req, res, next) => {
     try {
         const payout = await sellerPayoutService_1.sellerPayoutService.createPayoutForOrder(req.user.userId, req.params.orderId);
-        res.status(201).json({ data: payout });
+        return res.status(201).json({ data: payout });
     }
     catch (error) {
         if (sellerPayoutService_1.sellerPayoutService.isSellerPayoutError(error)) {
-            return res.status(error.httpStatus).json({ error: { code: error.code, details: error.details ?? null } });
+            return res.status(error.httpStatus).json({
+                error: { code: error.code, details: error.details ?? null }
+            });
         }
         next(error);
     }
@@ -2024,7 +2034,7 @@ exports.sellerRoutes.patch('/orders/:id/status', rateLimiters_1.writeLimiter, as
         next(error);
     }
 });
-exports.sellerRoutes.post('/orders/:id/mark-received', rateLimiters_1.writeLimiter, async (req, res, next) => {
+exports.sellerRoutes.post('/orders/:id/mark-received/test', rateLimiters_1.writeLimiter, async (req, res, next) => {
     try {
         if (env_1.env.isProduction) {
             return res.status(403).json({ error: { code: 'DISABLED_IN_PRODUCTION', message: 'Endpoint available only in dev/test mode.' } });
