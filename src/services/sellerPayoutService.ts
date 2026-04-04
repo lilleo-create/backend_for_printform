@@ -1473,7 +1473,7 @@ export const sellerPayoutService = {
         status: true,
         createdAt: true,
         completedAt: true,
-        deliveredAt: true,
+        deliveredToRecipientAt: true,
         paidAt: true,
         refunds: { select: { id: true, amount: true, status: true, createdAt: true }, orderBy: { createdAt: 'desc' } },
         sellerPayouts: {
