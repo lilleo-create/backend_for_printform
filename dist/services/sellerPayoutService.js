@@ -84,6 +84,7 @@ class SellerPayoutError extends Error {
 }
 const ORDER_TERMINAL_BLOCKED_STATUSES = new Set(['CANCELLED', 'CANCELED', 'RETURNED']);
 const ORDER_COMPLETED_STATUSES = new Set(['DELIVERED', 'COMPLETED']);
+const YOOKASSA_DEAL_NOT_FOUND_REASON = 'Не найден идентификатор сделки YooKassa';
 const PAYOUT_UI_STATE_META = {
     AVAILABLE: { label: 'Доступно к выплате', tone: 'success' },
     PROCESSING: { label: 'В обработке', tone: 'warning' },
@@ -104,6 +105,8 @@ const mapReasonToPayoutErrorCode = (state) => {
         return 'PAYOUT_ALREADY_IN_PROGRESS';
     if (state.payoutState === 'PAID_OUT')
         return 'ORDER_ALREADY_PAID_OUT';
+    if (state.reason === YOOKASSA_DEAL_NOT_FOUND_REASON)
+        return 'SELLER_PAYOUT_DEAL_NOT_FOUND';
     if (state.availableAmountMinor <= 0)
         return 'PAYOUT_AMOUNT_ZERO';
     if (state.reason && RESOLVABLE_UNAVAILABLE_REASONS.has(state.reason))
@@ -115,10 +118,7 @@ const getOrderPayoutState = (input) => {
     const payoutStatus = normalizePayoutStatus(input.order?.payoutStatus);
     const orderStatus = normalizePayoutStatus(input.order?.status);
     const hasActivePayout = ACTIVE_PAYOUT_STATUSES.includes(normalizePayoutStatus(input.latestPayoutStatus)) || input.reservedMinor > 0;
-    const isCompletedOrReleased = ORDER_COMPLETED_STATUSES.has(orderStatus)
-        || ['RELEASED', 'AWAITING_PAYOUT', 'PAID_OUT', 'PAYOUT_PENDING'].includes(payoutStatus)
-        || Boolean(input.order?.completedAt)
-        || Boolean(input.order?.deliveredAt);
+    const hasReleasedFunds = Boolean(input.order?.fundsReleasedAt);
     let payoutState = 'UNAVAILABLE';
     let reason = null;
     if (input.hasBlockingRefund || PAYMENT_STATUS_REFUND_SET.has(paymentStatus)) {
@@ -141,16 +141,16 @@ const getOrderPayoutState = (input) => {
         payoutState = 'UNAVAILABLE';
         reason = 'ORDER_NOT_PAID';
     }
-    else if (!isCompletedOrReleased) {
+    else if (!hasReleasedFunds) {
         payoutState = 'UNAVAILABLE';
         reason = 'ORDER_NOT_ELIGIBLE_FOR_PAYOUT';
     }
     else if (!input.hasDealId) {
-        payoutState = 'UNAVAILABLE';
-        reason = 'SELLER_PAYOUT_DEAL_NOT_FOUND';
+        payoutState = 'BLOCKED';
+        reason = YOOKASSA_DEAL_NOT_FOUND_REASON;
     }
     else if (!input.hasDefaultPayoutMethod) {
-        payoutState = 'UNAVAILABLE';
+        payoutState = 'BLOCKED';
         reason = 'DEFAULT_PAYOUT_METHOD_NOT_FOUND';
     }
     else if (input.availableAmountMinor <= 0) {
@@ -1082,7 +1082,8 @@ exports.sellerPayoutService = {
                     sellerNetAmountKopecks: true,
                     createdAt: true,
                     completedAt: true,
-                    paidAt: true
+                    paidAt: true,
+                    fundsReleasedAt: true
                 }
             });
             if (!order)
@@ -1307,7 +1308,8 @@ exports.sellerPayoutService = {
                 status: true,
                 createdAt: true,
                 completedAt: true,
-                deliveredAt: true,
+                deliveredToRecipientAt: true,
+                fundsReleasedAt: true,
                 paidAt: true,
                 refunds: { select: { id: true, amount: true, status: true, createdAt: true }, orderBy: { createdAt: 'desc' } },
                 sellerPayouts: {
@@ -1393,8 +1395,12 @@ exports.sellerPayoutService = {
                 hasDefaultPayoutMethod,
                 hasBlockingRefund
             });
-            if (payoutState.payoutState === 'BLOCKED')
-                summary.blockedKopecks += net;
+            const outstandingMinor = Math.max(0, availableForPayout + payoutConsumption.reserved);
+            const hasReleasedFunds = Boolean(order.fundsReleasedAt);
+            if (payoutState.payoutState === 'BLOCKED') {
+                summary.blockedKopecks += outstandingMinor;
+                summary.paidOutKopecks += payoutConsumption.paidOut;
+            }
             else if (payoutState.payoutState === 'PAID_OUT')
                 summary.paidOutKopecks += net;
             else if (payoutState.payoutState === 'PROCESSING') {
@@ -1407,7 +1413,10 @@ exports.sellerPayoutService = {
                 summary.paidOutKopecks += payoutConsumption.paidOut;
             }
             else {
-                summary.frozenKopecks += availableForPayout + payoutConsumption.reserved;
+                if (hasReleasedFunds)
+                    summary.blockedKopecks += outstandingMinor;
+                else
+                    summary.frozenKopecks += outstandingMinor;
                 summary.paidOutKopecks += payoutConsumption.paidOut;
                 if (PAYMENT_STATUS_REFUND_SET.has(paymentStatus))
                     summary.refundedKopecks += net;
@@ -1440,7 +1449,7 @@ exports.sellerPayoutService = {
             }
             const completedAt = order.completedAt ?? order.paidAt ?? null;
             const deliveredToRecipientAt = order.deliveredAt ?? order.completedAt ?? null;
-            const fundsReleasedAt = order.completedAt ?? order.paidAt ?? null;
+            const fundsReleasedAt = order.fundsReleasedAt ?? null;
             const orderPayoutItem = {
                 orderId: order.id,
                 publicNumber: order.publicNumber,
@@ -1483,6 +1492,9 @@ exports.sellerPayoutService = {
                     alreadyPaidOutMinor: payoutConsumption.paidOut,
                     availableAmountMinor: payoutState.availableAmountMinor,
                     hasDealId,
+                    fundsReleasedAt: order.fundsReleasedAt?.toISOString?.() ?? null,
+                    payoutStatus: order.payoutStatus ?? null,
+                    hasPayoutMethod: hasDefaultPayoutMethod,
                     latestPayoutStatus,
                     refundState: (order.refunds ?? []).map((item) => item.status),
                     finalPayoutState: payoutState.payoutState,
