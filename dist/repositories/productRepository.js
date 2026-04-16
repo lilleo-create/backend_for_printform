@@ -187,30 +187,47 @@ const stripClientOnlyProductFields = (data) => {
 };
 exports.productRepository = {
     findMany: async (filters) => {
-        const sortField = filters.sort === 'rating' ? 'ratingAvg' : filters.sort === 'price' ? 'price' : 'createdAt';
-        const orderBy = { [sortField]: filters.order ?? 'desc' };
+        const sortField = filters.sort === 'rating'
+            ? 'ratingAvg'
+            : filters.sort === 'price'
+                ? 'price'
+                : filters.sort === 'popularity'
+                    ? 'ratingCount'
+                    : 'createdAt';
+        const orderBy = sortField === 'ratingCount'
+            ? [{ ratingCount: filters.order ?? 'desc' }, { ratingAvg: 'desc' }, { createdAt: 'desc' }]
+            : { [sortField]: filters.order ?? 'desc' };
         const page = filters.page && filters.page > 0 ? filters.page : 1;
         const limit = filters.limit && filters.limit > 0 ? filters.limit : 12;
         const skip = (page - 1) * limit;
+        const where = {
+            sellerId: filters.shopId,
+            parentProductId: null,
+            deletedAt: null,
+            moderationStatus: 'APPROVED',
+            category: filters.category,
+            material: filters.material,
+            price: {
+                gte: filters.minPrice,
+                lte: filters.maxPrice
+            }
+        };
+        if (filters.available === false) {
+            where.id = { in: [] };
+        }
+        if (filters.query) {
+            where.OR = [
+                { title: { contains: filters.query, mode: 'insensitive' } },
+                { description: { contains: filters.query, mode: 'insensitive' } },
+                { descriptionShort: { contains: filters.query, mode: 'insensitive' } },
+                { descriptionFull: { contains: filters.query, mode: 'insensitive' } },
+                { material: { contains: filters.query, mode: 'insensitive' } },
+                { category: { contains: filters.query, mode: 'insensitive' } }
+            ];
+        }
+        const total = await prisma_1.prisma.product.count({ where });
         const products = await prisma_1.prisma.product.findMany({
-            where: {
-                sellerId: filters.shopId,
-                parentProductId: null,
-                deletedAt: null,
-                title: filters.query
-                    ? {
-                        contains: filters.query,
-                        mode: 'insensitive'
-                    }
-                    : undefined,
-                category: filters.category,
-                material: filters.material,
-                moderationStatus: 'APPROVED',
-                price: {
-                    gte: filters.minPrice,
-                    lte: filters.maxPrice
-                }
-            },
+            where,
             include: {
                 images: { orderBy: { sortOrder: 'asc' } },
                 media: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
@@ -246,7 +263,7 @@ exports.productRepository = {
                 maxPrice: row._max.price
             }
         ]));
-        return productViews.map((product) => {
+        const items = productViews.map((product) => {
             if (!product.variantGroupId) {
                 return { ...product, variantSummary: null };
             }
@@ -263,6 +280,16 @@ exports.productRepository = {
                     : null
             };
         });
+        return {
+            items,
+            meta: {
+                total,
+                page,
+                limit,
+                hasMore: skip + items.length < total,
+                nextPage: skip + items.length < total ? page + 1 : null
+            }
+        };
     },
     findById: async (id) => {
         const product = await prisma_1.prisma.product.findFirst({
