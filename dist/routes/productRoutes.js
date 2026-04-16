@@ -5,6 +5,7 @@ const express_1 = require("express");
 const zod_1 = require("zod");
 const productUseCases_1 = require("../usecases/productUseCases");
 const reviewService_1 = require("../services/reviewService");
+const prisma_1 = require("../lib/prisma");
 const authMiddleware_1 = require("../middleware/authMiddleware");
 const rateLimiters_1 = require("../middleware/rateLimiters");
 const ownership_1 = require("../middleware/ownership");
@@ -45,7 +46,8 @@ const listSchema = zod_1.z.object({
     material: zod_1.z.string().optional(),
     minPrice: zod_1.z.coerce.number().int().optional(),
     maxPrice: zod_1.z.coerce.number().int().optional(),
-    sort: zod_1.z.enum(['createdAt', 'rating', 'price']).optional(),
+    available: zod_1.z.coerce.boolean().optional(),
+    sort: zod_1.z.enum(['createdAt', 'rating', 'price', 'popularity']).optional(),
     order: zod_1.z.enum(['asc', 'desc']).optional(),
     page: zod_1.z.coerce.number().int().positive().optional(),
     limit: zod_1.z.coerce.number().int().positive().optional()
@@ -60,15 +62,60 @@ exports.productRoutes.get('/', rateLimiters_1.publicReadLimiter, async (req, res
             material: params.material,
             minPrice: params.minPrice,
             maxPrice: params.maxPrice,
+            available: params.available,
             sort: params.sort,
             order: params.order,
             page: params.page,
             limit: params.limit
         });
-        res.json({ data: products });
+        res.json({ data: products.items, meta: products.meta });
     }
     catch (error) {
         next(error);
+    }
+});
+exports.productRoutes.get('/filters/meta', rateLimiters_1.publicReadLimiter, async (req, res, next) => {
+    try {
+        const params = listSchema.parse(req.query);
+        const baseWhere = {
+            sellerId: params.shopId,
+            parentProductId: null,
+            deletedAt: null,
+            moderationStatus: 'APPROVED'
+        };
+        const [categories, materials, priceRange] = await Promise.all([
+            prisma_1.prisma.product.findMany({
+                where: baseWhere,
+                distinct: ['category'],
+                select: { category: true },
+                orderBy: { category: 'asc' }
+            }),
+            prisma_1.prisma.product.findMany({
+                where: baseWhere,
+                distinct: ['material'],
+                select: { material: true },
+                orderBy: { material: 'asc' }
+            }),
+            prisma_1.prisma.product.aggregate({
+                where: baseWhere,
+                _min: { price: true },
+                _max: { price: true }
+            })
+        ]);
+        return res.json({
+            data: {
+                categories: categories.map((item) => item.category).filter(Boolean),
+                materials: materials.map((item) => item.material).filter(Boolean),
+                price: {
+                    min: priceRange._min.price ?? null,
+                    max: priceRange._max.price ?? null
+                },
+                sortOptions: ['createdAt', 'rating', 'price', 'popularity']
+            }
+        });
+    }
+    catch (error) {
+        return next(error);
     }
 });
 exports.productRoutes.get('/:id', rateLimiters_1.publicReadLimiter, async (req, res, next) => {

@@ -9,10 +9,11 @@ export const productUseCases = {
     material?: string;
     minPrice?: number;
     maxPrice?: number;
-    sort?: 'createdAt' | 'rating' | 'price';
+    sort?: 'createdAt' | 'rating' | 'price' | 'popularity';
     order?: 'asc' | 'desc';
     page?: number;
     limit?: number;
+    available?: boolean;
   }) => productRepository.findMany(filters),
   get: (id: string) => productRepository.findById(id),
   getForSellerEdit: (id: string, sellerId: string) => productRepository.getSellerProductForEdit(id, sellerId),

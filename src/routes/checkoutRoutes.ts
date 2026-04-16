@@ -1,10 +1,39 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { requireAuth, type AuthRequest } from '../middleware/authMiddleware';
+import { authenticateOptional, type AuthRequest, requireAuth } from '../middleware/authMiddleware';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { prisma } from '../lib/prisma';
 
 export const checkoutRoutes = Router();
+
+const CHECKOUT_SOURCE = {
+  CART: 'CART',
+  BUY_NOW: 'BUY_NOW'
+} as const;
+
+type CheckoutSource = (typeof CHECKOUT_SOURCE)[keyof typeof CHECKOUT_SOURCE];
+
+const sourceQuerySchema = z.object({
+  source: z.enum(['CART', 'BUY_NOW']).optional()
+});
+
+const buyNowBodySchema = z.object({
+  items: z
+    .array(
+      z.object({
+        productId: z.string().min(1),
+        variantId: z.string().min(1).optional(),
+        quantity: z.number().int().min(1).max(999).default(1)
+      })
+    )
+    .min(1)
+});
+
+const cartItemBodySchema = z.object({
+  productId: z.string().min(1),
+  variantId: z.string().min(1).optional(),
+  quantity: z.number().int().min(1).max(999).default(1)
+});
 
 const recipientSchema = z.object({
   name: z.string().min(2),
@@ -23,18 +52,11 @@ const addressSchema = z.object({
 });
 
 const pickupPointSchema = z.object({
-  // PVZ id from widget (uuid)
   id: z.string().min(1),
-
   buyerPickupPointId: z.string().optional(),
-
-  // ✅ platform_id for request/create is UUID (PVZ id), not digits.
   buyerPickupPlatformStationId: z.string().nullable().optional(),
-
-  // digits operator station id (useful for offers/* расчёты)
   buyerPickupOperatorStationId: z.string().regex(/^\d+$/).nullable().optional(),
   operator_station_id: z.string().regex(/^\d+$/).nullable().optional(),
-
   fullAddress: z.string().min(1),
   country: z.string().optional(),
   locality: z.string().optional(),
@@ -94,6 +116,14 @@ type CardRow = {
   exp_year: number;
 };
 
+type CheckoutSessionRow = { id: string };
+
+type CheckoutSessionItemRow = {
+  product_id: string;
+  variant_id: string | null;
+  quantity: number;
+};
+
 const DELIVERY_METHODS = [
   { id: 'courier', code: 'COURIER', title: 'Курьером', description: 'Курьером до двери' },
   { id: 'pickup_point', code: 'PICKUP_POINT', title: 'Самовывоз', description: 'Пункт выдачи или постамат' }
@@ -141,6 +171,38 @@ const ensureCheckoutTables = async () => {
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
       `);
+
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS checkout_sessions (
+          id TEXT PRIMARY KEY,
+          scope_key TEXT NOT NULL,
+          source TEXT NOT NULL,
+          is_active BOOLEAN NOT NULL DEFAULT TRUE,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE (scope_key, source)
+        )
+      `);
+
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS checkout_session_items (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL REFERENCES checkout_sessions(id) ON DELETE CASCADE,
+          product_id TEXT NOT NULL,
+          variant_id TEXT,
+          quantity INT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE (session_id, product_id, variant_id)
+        )
+      `);
+
+      await prisma.$executeRawUnsafe(
+        'CREATE INDEX IF NOT EXISTS idx_checkout_sessions_scope_source ON checkout_sessions(scope_key, source)'
+      );
+      await prisma.$executeRawUnsafe(
+        'CREATE INDEX IF NOT EXISTS idx_checkout_session_items_session ON checkout_session_items(session_id)'
+      );
     })().then(() => undefined);
   }
 
@@ -160,71 +222,234 @@ const getBrand = (cardNumber: string) => {
   return 'CARD';
 };
 
+const resolveScopeKey = (req: AuthRequest) => {
+  if (req.user?.userId) {
+    return { scopeKey: `user:${req.user.userId}`, userId: req.user.userId };
+  }
+  const guestToken = req.header('x-checkout-session-token')?.trim();
+  if (!guestToken) {
+    return null;
+  }
+  return { scopeKey: `guest:${guestToken}`, userId: null };
+};
 
-const getCheckoutData = async (userId: string) => {
+const getOrCreateSession = async (scopeKey: string, source: CheckoutSource) => {
+  const existing = await prisma.$queryRawUnsafe<CheckoutSessionRow[]>(
+    'SELECT id FROM checkout_sessions WHERE scope_key = $1 AND source = $2 LIMIT 1',
+    scopeKey,
+    source
+  );
+
+  if (existing[0]) {
+    return existing[0].id;
+  }
+
+  const sessionId = `chk_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO checkout_sessions (id, scope_key, source, is_active, created_at, updated_at)
+     VALUES ($1, $2, $3, TRUE, NOW(), NOW())
+     ON CONFLICT (scope_key, source)
+     DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
+    sessionId,
+    scopeKey,
+    source
+  );
+
+  const createdOrExisting = await prisma.$queryRawUnsafe<CheckoutSessionRow[]>(
+    'SELECT id FROM checkout_sessions WHERE scope_key = $1 AND source = $2 LIMIT 1',
+    scopeKey,
+    source
+  );
+
+  return createdOrExisting[0].id;
+};
+
+const replaceSessionItems = async (
+  scopeKey: string,
+  source: CheckoutSource,
+  items: Array<{ productId: string; variantId?: string; quantity: number }>
+) => {
+  const deduped = new Map<string, { productId: string; variantId?: string; quantity: number }>();
+  for (const item of items) {
+    const key = `${item.productId}::${item.variantId ?? ''}`;
+    deduped.set(key, item);
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const sessionId = await getOrCreateSession(scopeKey, source);
+    await tx.$executeRawUnsafe('DELETE FROM checkout_session_items WHERE session_id = $1', sessionId);
+
+    for (const item of deduped.values()) {
+      const id = `itm_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      await tx.$executeRawUnsafe(
+        `INSERT INTO checkout_session_items (id, session_id, product_id, variant_id, quantity, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
+        id,
+        sessionId,
+        item.productId,
+        item.variantId ?? null,
+        item.quantity
+      );
+    }
+
+    await tx.$executeRawUnsafe('UPDATE checkout_sessions SET updated_at = NOW() WHERE id = $1', sessionId);
+  });
+};
+
+const upsertCartItem = async (
+  scopeKey: string,
+  item: { productId: string; variantId?: string; quantity: number }
+) => {
+  const sessionId = await getOrCreateSession(scopeKey, CHECKOUT_SOURCE.CART);
+  const existing = await prisma.$queryRawUnsafe<Array<{ id: string; quantity: number }>>(
+    `SELECT id, quantity
+     FROM checkout_session_items
+     WHERE session_id = $1 AND product_id = $2 AND COALESCE(variant_id, '') = COALESCE($3, '')
+     LIMIT 1`,
+    sessionId,
+    item.productId,
+    item.variantId ?? null
+  );
+
+  if (existing[0]) {
+    await prisma.$executeRawUnsafe(
+      'UPDATE checkout_session_items SET quantity = $2, updated_at = NOW() WHERE id = $1',
+      existing[0].id,
+      item.quantity
+    );
+  } else {
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO checkout_session_items (id, session_id, product_id, variant_id, quantity, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
+      `itm_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      sessionId,
+      item.productId,
+      item.variantId ?? null,
+      item.quantity
+    );
+  }
+};
+
+const removeCartItem = async (scopeKey: string, productId: string, variantId?: string) => {
+  const session = await prisma.$queryRawUnsafe<CheckoutSessionRow[]>(
+    'SELECT id FROM checkout_sessions WHERE scope_key = $1 AND source = $2 LIMIT 1',
+    scopeKey,
+    CHECKOUT_SOURCE.CART
+  );
+  if (!session[0]) {
+    return;
+  }
+
+  await prisma.$executeRawUnsafe(
+    `DELETE FROM checkout_session_items
+     WHERE session_id = $1 AND product_id = $2 AND COALESCE(variant_id, '') = COALESCE($3, '')`,
+    session[0].id,
+    productId,
+    variantId ?? null
+  );
+};
+
+const getCheckoutData = async ({
+  userId,
+  scopeKey,
+  source
+}: {
+  userId: string | null;
+  scopeKey: string;
+  source: CheckoutSource;
+}) => {
   await ensureCheckoutTables();
 
-  const user = await prisma.user.findUnique({ where: { id: userId } });
-  const contact = await prisma.contact.findFirst({ where: { userId }, orderBy: { createdAt: 'desc' } });
-  const defaultAddress = await prisma.address.findFirst({ where: { userId, isDefault: true } });
+  const user = userId ? await prisma.user.findUnique({ where: { id: userId } }) : null;
+  const contact = userId ? await prisma.contact.findFirst({ where: { userId }, orderBy: { createdAt: 'desc' } }) : null;
+  const defaultAddress = userId ? await prisma.address.findFirst({ where: { userId, isDefault: true } }) : null;
 
-  const prefsRows = await prisma.$queryRawUnsafe<PreferencesRow[]>(
-    'SELECT * FROM user_checkout_preferences WHERE user_id = $1 LIMIT 1',
-    userId
-  );
+  const prefsRows = userId
+    ? await prisma.$queryRawUnsafe<PreferencesRow[]>(
+        'SELECT * FROM user_checkout_preferences WHERE user_id = $1 LIMIT 1',
+        userId
+      )
+    : [];
   const prefs = prefsRows[0];
 
-  const cards = await prisma.$queryRawUnsafe<CardRow[]>(
-    `SELECT id, brand, last4, exp_month, exp_year
-     FROM user_saved_cards
-     WHERE user_id = $1
-     ORDER BY created_at DESC`,
-    userId
+  const cards = userId
+    ? await prisma.$queryRawUnsafe<CardRow[]>(
+        `SELECT id, brand, last4, exp_month, exp_year
+         FROM user_saved_cards
+         WHERE user_id = $1
+         ORDER BY created_at DESC`,
+        userId
+      )
+    : [];
+
+  const sessionRows = await prisma.$queryRawUnsafe<CheckoutSessionRow[]>(
+    'SELECT id FROM checkout_sessions WHERE scope_key = $1 AND source = $2 LIMIT 1',
+    scopeKey,
+    source
   );
 
-  const products = await prisma.product.findMany({
-    take: 4,
-    orderBy: { createdAt: 'desc' },
-    select: {
-      id: true,
-      title: true,
-      price: true,
-      image: true,
-      descriptionShort: true,
-      sku: true,
-      sellerId: true,
-      weightGrossG: true,
-      dxCm: true,
-      dyCm: true,
-      dzCm: true
-    }
-  });
+  const itemRows = sessionRows[0]
+    ? await prisma.$queryRawUnsafe<CheckoutSessionItemRow[]>(
+        `SELECT product_id, variant_id, quantity
+         FROM checkout_session_items
+         WHERE session_id = $1
+         ORDER BY created_at DESC`,
+        sessionRows[0].id
+      )
+    : [];
+
+  const productIds = Array.from(new Set(itemRows.map((item) => item.product_id)));
+  const products = productIds.length
+    ? await prisma.product.findMany({
+        where: {
+          id: { in: productIds },
+          moderationStatus: 'APPROVED',
+          deletedAt: null
+        },
+        select: {
+          id: true,
+          title: true,
+          price: true,
+          image: true,
+          descriptionShort: true,
+          sku: true,
+          sellerId: true,
+          weightGrossG: true,
+          dxCm: true,
+          dyCm: true,
+          dzCm: true
+        }
+      })
+    : [];
+
+  const productMap = new Map(products.map((product) => [product.id, product]));
+  const cartItems = itemRows
+    .map((item) => {
+      const product = productMap.get(item.product_id);
+      if (!product) return null;
+
+      return {
+        productId: product.id,
+        variantId: item.variant_id,
+        title: product.title,
+        price: product.price,
+        quantity: item.quantity,
+        image: product.image,
+        shortSpec: product.descriptionShort || product.sku,
+        productionTimeHours: 24,
+        deliveryDays: null,
+        etaMinDays: null,
+        etaMaxDays: null,
+        dimensions: product.dxCm && product.dyCm && product.dzCm ? { dxCm: product.dxCm, dyCm: product.dyCm, dzCm: product.dzCm } : null,
+        weightGrossG: product.weightGrossG ?? null
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
 
   const parsedPickupPoint = pickupPointSchema.safeParse(prefs?.pickup_point_json);
 
-  const cartItems = products.map((item) => {
-      // Срок доставки CDEK рассчитывается через /api/cdek/calculate-for-order после оформления
-      const deliveryDays: number | null = null;
-      const etaMinDays: number | null = null;
-      const etaMaxDays: number | null = null;
-
-      return {
-        productId: item.id,
-        title: item.title,
-        price: item.price,
-        quantity: 1,
-        image: item.image,
-        shortSpec: item.descriptionShort || item.sku,
-        productionTimeHours: 24,
-        deliveryDays,
-        etaMinDays,
-        etaMaxDays,
-        dimensions: item.dxCm && item.dyCm && item.dzCm ? { dxCm: item.dxCm, dyCm: item.dyCm, dzCm: item.dzCm } : null,
-        weightGrossG: item.weightGrossG ?? null
-      };
-  });
-
   return {
+    source,
     recipient: {
       name: contact?.name ?? user?.fullName ?? user?.name ?? '',
       phone: contact?.phone ?? user?.phone ?? '',
@@ -232,14 +457,14 @@ const getCheckoutData = async (userId: string) => {
     },
     address: defaultAddress
       ? {
-        line1: defaultAddress.addressText,
-        city: 'Москва',
-        postalCode: '125040',
-        country: 'Россия',
-        apartment: defaultAddress.apartment ?? null,
-        floor: defaultAddress.floor ?? null,
-        comment: defaultAddress.courierComment ?? null
-      }
+          line1: defaultAddress.addressText,
+          city: 'Москва',
+          postalCode: '125040',
+          country: 'Россия',
+          apartment: defaultAddress.apartment ?? null,
+          floor: defaultAddress.floor ?? null,
+          comment: defaultAddress.courierComment ?? null
+        }
       : null,
     selectedPickupPoint: parsedPickupPoint.success ? parsedPickupPoint.data : null,
     selectedDeliveryMethod: normalizeDeliveryMethod(prefs?.delivery_method),
@@ -259,12 +484,98 @@ const getCheckoutData = async (userId: string) => {
   };
 };
 
-checkoutRoutes.get('/', requireAuth, async (req: AuthRequest, res, next) => {
+checkoutRoutes.get('/', authenticateOptional, async (req: AuthRequest, res, next) => {
   try {
-    const data = await getCheckoutData(req.user!.userId);
+    const params = sourceQuerySchema.parse(req.query);
+    const identity = resolveScopeKey(req);
+    if (!identity) {
+      return res.status(401).json({ error: { code: 'AUTH_OR_CHECKOUT_TOKEN_REQUIRED' } });
+    }
+
+    const data = await getCheckoutData({
+      scopeKey: identity.scopeKey,
+      userId: identity.userId,
+      source: params.source ?? CHECKOUT_SOURCE.CART
+    });
     res.json(data);
   } catch (error) {
     next(error);
+  }
+});
+
+checkoutRoutes.get('/buy-now', authenticateOptional, async (req: AuthRequest, res, next) => {
+  try {
+    const identity = resolveScopeKey(req);
+    if (!identity) {
+      return res.status(401).json({ error: { code: 'AUTH_OR_CHECKOUT_TOKEN_REQUIRED' } });
+    }
+
+    const data = await getCheckoutData({
+      scopeKey: identity.scopeKey,
+      userId: identity.userId,
+      source: CHECKOUT_SOURCE.BUY_NOW
+    });
+
+    return res.json(data);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+checkoutRoutes.post('/buy-now', authenticateOptional, writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const identity = resolveScopeKey(req);
+    if (!identity) {
+      return res.status(401).json({ error: { code: 'AUTH_OR_CHECKOUT_TOKEN_REQUIRED' } });
+    }
+
+    const payload = buyNowBodySchema.parse(req.body);
+    await ensureCheckoutTables();
+    await replaceSessionItems(identity.scopeKey, CHECKOUT_SOURCE.BUY_NOW, payload.items);
+
+    const data = await getCheckoutData({
+      scopeKey: identity.scopeKey,
+      userId: identity.userId,
+      source: CHECKOUT_SOURCE.BUY_NOW
+    });
+
+    return res.status(200).json({ ok: true, data });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+checkoutRoutes.post('/cart/items', authenticateOptional, writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const identity = resolveScopeKey(req);
+    if (!identity) {
+      return res.status(401).json({ error: { code: 'AUTH_OR_CHECKOUT_TOKEN_REQUIRED' } });
+    }
+
+    const payload = cartItemBodySchema.parse(req.body);
+    await ensureCheckoutTables();
+    await upsertCartItem(identity.scopeKey, payload);
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+checkoutRoutes.delete('/cart/items/:productId', authenticateOptional, writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const identity = resolveScopeKey(req);
+    if (!identity) {
+      return res.status(401).json({ error: { code: 'AUTH_OR_CHECKOUT_TOKEN_REQUIRED' } });
+    }
+
+    const variantId = typeof req.query.variantId === 'string' ? req.query.variantId : undefined;
+    await ensureCheckoutTables();
+    await removeCartItem(identity.scopeKey, req.params.productId, variantId);
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return next(error);
   }
 });
 
@@ -344,13 +655,6 @@ checkoutRoutes.put('/pickup', requireAuth, writeLimiter, async (req: AuthRequest
       buyerPickupPvzId,
       addressFull: payload.pickupPoint.fullAddress
     };
-
-    console.info('[CHECKOUT][buyer_pvz_saved]', {
-      buyerId: req.user!.userId,
-      provider: payload.provider,
-      buyerPickupPvzId,
-      addressFull: payload.pickupPoint.fullAddress
-    });
 
     await ensureCheckoutTables();
 

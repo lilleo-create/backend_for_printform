@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { productUseCases } from '../usecases/productUseCases';
 import { reviewService } from '../services/reviewService';
+import { prisma } from '../lib/prisma';
 import { authenticate, authenticateOptional, AuthRequest } from '../middleware/authMiddleware';
 import { publicReadLimiter, writeLimiter } from '../middleware/rateLimiters';
 import { checkOwnership } from '../middleware/ownership';
@@ -50,7 +51,8 @@ const listSchema = z.object({
   material: z.string().optional(),
   minPrice: z.coerce.number().int().optional(),
   maxPrice: z.coerce.number().int().optional(),
-  sort: z.enum(['createdAt', 'rating', 'price']).optional(),
+  available: z.coerce.boolean().optional(),
+  sort: z.enum(['createdAt', 'rating', 'price', 'popularity']).optional(),
   order: z.enum(['asc', 'desc']).optional(),
   page: z.coerce.number().int().positive().optional(),
   limit: z.coerce.number().int().positive().optional()
@@ -66,14 +68,61 @@ productRoutes.get('/', publicReadLimiter, async (req, res, next) => {
       material: params.material,
       minPrice: params.minPrice,
       maxPrice: params.maxPrice,
+      available: params.available,
       sort: params.sort,
       order: params.order,
       page: params.page,
       limit: params.limit
     });
-    res.json({ data: products });
+    res.json({ data: products.items, meta: products.meta });
   } catch (error) {
     next(error);
+  }
+});
+
+productRoutes.get('/filters/meta', publicReadLimiter, async (req, res, next) => {
+  try {
+    const params = listSchema.parse(req.query);
+    const baseWhere = {
+      sellerId: params.shopId,
+      parentProductId: null,
+      deletedAt: null,
+      moderationStatus: 'APPROVED'
+    } as const;
+
+    const [categories, materials, priceRange] = await Promise.all([
+      prisma.product.findMany({
+        where: baseWhere,
+        distinct: ['category'],
+        select: { category: true },
+        orderBy: { category: 'asc' }
+      }),
+      prisma.product.findMany({
+        where: baseWhere,
+        distinct: ['material'],
+        select: { material: true },
+        orderBy: { material: 'asc' }
+      }),
+      prisma.product.aggregate({
+        where: baseWhere,
+        _min: { price: true },
+        _max: { price: true }
+      })
+    ]);
+
+    return res.json({
+      data: {
+        categories: categories.map((item) => item.category).filter(Boolean),
+        materials: materials.map((item) => item.material).filter(Boolean),
+        price: {
+          min: priceRange._min.price ?? null,
+          max: priceRange._max.price ?? null
+        },
+        sortOptions: ['createdAt', 'rating', 'price', 'popularity']
+      }
+    });
+  } catch (error) {
+    return next(error);
   }
 });
 
