@@ -19,6 +19,7 @@ import {
 } from "../middleware/rateLimiters";
 import { prisma } from "../lib/prisma";
 import { deviceTrustService } from "../services/deviceTrustService";
+import { googleOAuthService } from "../services/googleOAuthService";
 
 export const authRoutes = Router();
 
@@ -996,7 +997,7 @@ authRoutes.post("/otp/request", otpRequestLimiter, async (req, res, next) => {
     if (result.throttled)
       return res
         .status(429)
-        .json({ ok: false, error: { code: "RATE_LIMITED" } });
+        .json({ ok: false, error: { code: "OTP_COOLDOWN", message: "Too many requests, try later" } });
     if (result.data) return res.json({ ok: true, data: result.data });
     return res.json({
       ok: true,
@@ -1188,6 +1189,46 @@ authRoutes.post("/otp/plusofon/webhook", async (req, res, next) => {
     return res.json({ ok: true });
   } catch (error) {
     return next(error);
+  }
+});
+
+authRoutes.get("/google", (_req, res) => {
+  if (!env.googleClientId || !env.googleClientSecret) {
+    return res.status(503).json({ error: { code: "OAUTH_NOT_CONFIGURED" } });
+  }
+  return res.redirect(302, googleOAuthService.getAuthUrl());
+});
+
+authRoutes.get("/google/callback", async (req, res) => {
+  const redirectError = `${env.frontendUrl}/auth?error=google_failed`;
+
+  const code = req.query.code as string | undefined;
+  if (!code) {
+    return res.redirect(302, redirectError);
+  }
+
+  try {
+    const profile = await googleOAuthService.getUserProfile(code);
+
+    let user = await userRepository.findByGoogleId(profile.googleId);
+
+    if (!user) {
+      const byEmail = await userRepository.findByEmail(profile.email);
+      if (byEmail) {
+        user = await userRepository.linkGoogleAccount(byEmail.id, profile.googleId, profile.avatarUrl);
+      } else {
+        user = await userRepository.createOAuthUser(profile);
+      }
+    }
+
+    const tokens = await authService.issueOAuthTokens(user);
+
+    res.cookie(env.authRefreshCookieName, tokens.refreshToken, refreshCookieOptions);
+
+    return res.redirect(302, `${env.frontendUrl}/auth/oauth-callback?token=${tokens.accessToken}`);
+  } catch (error) {
+    console.error("[OAuth] Google callback failed", error);
+    return res.redirect(302, redirectError);
   }
 });
 

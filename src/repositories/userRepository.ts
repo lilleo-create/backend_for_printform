@@ -4,6 +4,7 @@ export const userRepository = {
   findByEmail: (email: string) => prisma.user.findUnique({ where: { email } }),
   findByPhone: (phone: string) => prisma.user.findUnique({ where: { phone } }),
   findById: (id: string) => prisma.user.findUnique({ where: { id } }),
+  findByGoogleId: (googleId: string) => prisma.user.findUnique({ where: { googleId } }),
   create: (data: {
     name: string;
     email: string;
@@ -18,6 +19,26 @@ export const userRepository = {
         ...data,
         role: data.role ?? 'BUYER'
       }
+    }),
+  createOAuthUser: (data: {
+    email: string;
+    name: string;
+    googleId: string;
+    avatarUrl?: string | null;
+  }) =>
+    prisma.user.create({
+      data: {
+        email: data.email,
+        name: data.name,
+        googleId: data.googleId,
+        avatarUrl: data.avatarUrl ?? null,
+        role: 'BUYER'
+      }
+    }),
+  linkGoogleAccount: (id: string, googleId: string, avatarUrl?: string | null) =>
+    prisma.user.update({
+      where: { id },
+      data: { googleId, ...(avatarUrl !== undefined ? { avatarUrl } : {}) }
     }),
   updateProfile: (
     id: string,

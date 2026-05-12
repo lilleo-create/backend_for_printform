@@ -6,12 +6,12 @@ import { env } from '../config/env';
 import { prisma } from '../lib/prisma';
 import { userRepository } from '../repositories/userRepository';
 
-const createAccessToken = (payload: { userId: string; role: string }) => {
-  return jwt.sign({ ...payload, scope: 'access' }, env.jwtSecret, { expiresIn: `${env.authAccessTokenTtlMinutes}m` });
+const createAccessToken = (payload: { userId: string; role: string }, expiresIn?: string) => {
+  return jwt.sign({ ...payload, scope: 'access' }, env.jwtSecret, { expiresIn: (expiresIn ?? `${env.authAccessTokenTtlMinutes}m`) as never });
 };
 
-const createRefreshToken = (payload: { userId: string; role: string }) => {
-  return jwt.sign({ ...payload, jti: crypto.randomUUID() }, env.jwtRefreshSecret, { expiresIn: `${env.authRefreshTokenTtlDays}d` });
+const createRefreshToken = (payload: { userId: string; role: string }, expiresIn?: string) => {
+  return jwt.sign({ ...payload, jti: crypto.randomUUID() }, env.jwtRefreshSecret, { expiresIn: (expiresIn ?? `${env.authRefreshTokenTtlDays}d`) as never });
 };
 
 const createOtpToken = (payload: { userId?: string; registrationSessionId?: string; scope: 'otp' | 'otp_register' | 'otp_login_device' | 'otp_password_reset' }) => {
@@ -43,6 +43,19 @@ export const authService = {
       }
     });
     return { accessToken, refreshToken, refreshExpiresAt: expiresAt };
+  },
+
+  async issueOAuthTokens(user: { id: string; role: string }) {
+    const accessToken = createAccessToken({ userId: user.id, role: user.role }, '1h');
+    const refreshToken = createRefreshToken({ userId: user.id, role: user.role }, '30d');
+    await prisma.refreshToken.create({
+      data: {
+        token: refreshToken,
+        userId: user.id,
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+      }
+    });
+    return { accessToken, refreshToken };
   },
   issueOtpToken(user: { id: string }) {
     return createOtpToken({ userId: user.id, scope: 'otp' });
@@ -108,7 +121,7 @@ export const authService = {
   },
   async login(login: { phone: string }, password: string) {
     const user = await userRepository.findByPhone(login.phone);
-    if (!user) throw new Error('INVALID_CREDENTIALS');
+    if (!user || !user.passwordHash) throw new Error('INVALID_CREDENTIALS');
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) throw new Error('INVALID_CREDENTIALS');
     return { user };

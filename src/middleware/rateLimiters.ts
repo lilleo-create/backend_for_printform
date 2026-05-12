@@ -9,6 +9,7 @@ const createLimiter = (options: {
   windowMs: number;
   max: number;
   skip?: (req: Request) => boolean;
+  errorCode?: string;
 }) =>
   rateLimit({
     windowMs: options.windowMs,
@@ -21,8 +22,9 @@ const createLimiter = (options: {
       const retryAfterSeconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
       res.setHeader("Retry-After", String(retryAfterSeconds));
       return res.status(opts.statusCode).json({
+        ok: false,
         error: {
-          code: "RATE_LIMITED",
+          code: options.errorCode ?? "RATE_LIMITED",
           retryAfterSeconds,
           resendAvailableAt: new Date(Date.now() + retryAfterMs).toISOString(),
         },
@@ -45,6 +47,7 @@ export const authLimiter = createLimiter({ windowMs: 15 * 60 * 1000, max: 30 });
 export const otpRequestLimiter = createLimiter({
   windowMs: 15 * 60 * 1000,
   max: 10,
+  errorCode: 'OTP_COOLDOWN'
 });
 export const otpVerifyLimiter = createLimiter({
   windowMs: 15 * 60 * 1000,
