@@ -17,6 +17,8 @@ const phone_1 = require("../utils/phone");
 const rateLimiters_1 = require("../middleware/rateLimiters");
 const prisma_1 = require("../lib/prisma");
 const deviceTrustService_1 = require("../services/deviceTrustService");
+const googleOAuthService_1 = require("../services/googleOAuthService");
+const yandexOAuthService_1 = require("../services/yandexOAuthService");
 exports.authRoutes = (0, express_1.Router)();
 const loginIdentifierSchema = zod_1.z
     .object({
@@ -786,7 +788,7 @@ exports.authRoutes.post("/otp/request", rateLimiters_1.otpRequestLimiter, async 
         if (result.throttled)
             return res
                 .status(429)
-                .json({ ok: false, error: { code: "RATE_LIMITED" } });
+                .json({ ok: false, error: { code: "OTP_COOLDOWN", message: "Too many requests, try later" } });
         if (result.data)
             return res.json({ ok: true, data: result.data });
         return res.json({
@@ -968,18 +970,87 @@ exports.authRoutes.post("/otp/plusofon/webhook", async (req, res, next) => {
         return next(error);
     }
 });
+exports.authRoutes.get("/google", (_req, res) => {
+    if (!env_1.env.googleClientId || !env_1.env.googleClientSecret) {
+        return res.status(503).json({ error: { code: "OAUTH_NOT_CONFIGURED" } });
+    }
+    return res.redirect(302, googleOAuthService_1.googleOAuthService.getAuthUrl());
+});
+exports.authRoutes.get("/google/callback", async (req, res) => {
+    const redirectError = `${env_1.env.frontendUrl}/auth?error=google_failed`;
+    const code = req.query.code;
+    if (!code) {
+        return res.redirect(302, redirectError);
+    }
+    try {
+        const profile = await googleOAuthService_1.googleOAuthService.getUserProfile(code);
+        let user = await userRepository_1.userRepository.findByGoogleId(profile.googleId);
+        if (!user) {
+            const byEmail = await userRepository_1.userRepository.findByEmail(profile.email);
+            if (byEmail) {
+                user = await userRepository_1.userRepository.linkGoogleAccount(byEmail.id, profile.googleId, profile.avatarUrl);
+            }
+            else {
+                user = await userRepository_1.userRepository.createOAuthUser(profile);
+            }
+        }
+        const tokens = await authService_1.authService.issueOAuthTokens(user);
+        res.cookie(env_1.env.authRefreshCookieName, tokens.refreshToken, refreshCookieOptions);
+        return res.redirect(302, `${env_1.env.frontendUrl}/auth/oauth-callback?token=${tokens.accessToken}`);
+    }
+    catch (error) {
+        console.error("[OAuth] Google callback failed", error);
+        return res.redirect(302, redirectError);
+    }
+});
+exports.authRoutes.get("/yandex", (_req, res) => {
+    if (!env_1.env.yandexClientId || !env_1.env.yandexClientSecret) {
+        return res.status(503).json({ error: { code: "OAUTH_NOT_CONFIGURED" } });
+    }
+    return res.redirect(302, yandexOAuthService_1.yandexOAuthService.getAuthUrl());
+});
+exports.authRoutes.get("/yandex/callback", async (req, res) => {
+    const redirectError = `${env_1.env.frontendUrl}/auth?error=yandex_failed`;
+    const code = req.query.code;
+    if (!code) {
+        return res.redirect(302, redirectError);
+    }
+    try {
+        const profile = await yandexOAuthService_1.yandexOAuthService.getUserProfile(code);
+        let user = await userRepository_1.userRepository.findByYandexId(profile.yandexId);
+        if (!user) {
+            const byEmail = await userRepository_1.userRepository.findByEmail(profile.email);
+            if (byEmail) {
+                user = await userRepository_1.userRepository.linkYandexAccount(byEmail.id, profile.yandexId, profile.avatarUrl);
+            }
+            else {
+                user = await userRepository_1.userRepository.createOAuthUser(profile);
+            }
+        }
+        const tokens = await authService_1.authService.issueOAuthTokens(user);
+        res.cookie(env_1.env.authRefreshCookieName, tokens.refreshToken, refreshCookieOptions);
+        return res.redirect(302, `${env_1.env.frontendUrl}/auth/oauth-callback?token=${tokens.accessToken}`);
+    }
+    catch (error) {
+        console.error("[OAuth] Yandex callback failed", error);
+        return res.redirect(302, redirectError);
+    }
+});
 exports.authRoutes.get("/me", authMiddleware_1.authenticate, async (req, res, next) => {
     try {
         const user = await userRepository_1.userRepository.findById(req.user.userId);
         if (!user)
-            return res.status(404).json({ error: { code: "NOT_FOUND" } });
+            return res.status(404).json({ ok: false, error: { code: "NOT_FOUND" } });
         return res.json({
+            ok: true,
             data: {
                 id: user.id,
-                name: user.name,
-                fullName: user.fullName,
-                role: user.role,
                 email: user.email,
+                name: user.name,
+                phone: user.phone ?? null,
+                role: user.role.toLowerCase(),
+                avatar_url: user.avatarUrl ?? null,
+                is_verified: user.phoneVerifiedAt != null || user.googleId != null || user.yandexId != null
             },
         });
     }

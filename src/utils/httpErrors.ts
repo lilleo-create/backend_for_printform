@@ -4,6 +4,7 @@ type ErrorCode = 'UNAUTHORIZED' | 'FORBIDDEN' | 'NOT_FOUND';
 
 const respondWithError = (res: Response, code: ErrorCode, message?: string) => {
   return res.status(code === 'UNAUTHORIZED' ? 401 : code === 'FORBIDDEN' ? 403 : 404).json({
+    ok: false,
     error: {
       code,
       message: message ?? code

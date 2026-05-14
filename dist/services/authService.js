@@ -10,11 +10,11 @@ const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const env_1 = require("../config/env");
 const prisma_1 = require("../lib/prisma");
 const userRepository_1 = require("../repositories/userRepository");
-const createAccessToken = (payload) => {
-    return jsonwebtoken_1.default.sign({ ...payload, scope: 'access' }, env_1.env.jwtSecret, { expiresIn: `${env_1.env.authAccessTokenTtlMinutes}m` });
+const createAccessToken = (payload, expiresIn) => {
+    return jsonwebtoken_1.default.sign({ ...payload, scope: 'access' }, env_1.env.jwtSecret, { expiresIn: (expiresIn ?? `${env_1.env.authAccessTokenTtlMinutes}m`) });
 };
-const createRefreshToken = (payload) => {
-    return jsonwebtoken_1.default.sign({ ...payload, jti: crypto_1.default.randomUUID() }, env_1.env.jwtRefreshSecret, { expiresIn: `${env_1.env.authRefreshTokenTtlDays}d` });
+const createRefreshToken = (payload, expiresIn) => {
+    return jsonwebtoken_1.default.sign({ ...payload, jti: crypto_1.default.randomUUID() }, env_1.env.jwtRefreshSecret, { expiresIn: (expiresIn ?? `${env_1.env.authRefreshTokenTtlDays}d`) });
 };
 const createOtpToken = (payload) => {
     return jsonwebtoken_1.default.sign(payload, env_1.env.jwtSecret, { expiresIn: '10m' });
@@ -44,6 +44,18 @@ exports.authService = {
             }
         });
         return { accessToken, refreshToken, refreshExpiresAt: expiresAt };
+    },
+    async issueOAuthTokens(user) {
+        const accessToken = createAccessToken({ userId: user.id, role: user.role }, '1h');
+        const refreshToken = createRefreshToken({ userId: user.id, role: user.role }, '30d');
+        await prisma_1.prisma.refreshToken.create({
+            data: {
+                token: refreshToken,
+                userId: user.id,
+                expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+            }
+        });
+        return { accessToken, refreshToken };
     },
     issueOtpToken(user) {
         return createOtpToken({ userId: user.id, scope: 'otp' });
@@ -99,7 +111,7 @@ exports.authService = {
     },
     async login(login, password) {
         const user = await userRepository_1.userRepository.findByPhone(login.phone);
-        if (!user)
+        if (!user || !user.passwordHash)
             throw new Error('INVALID_CREDENTIALS');
         const valid = await bcryptjs_1.default.compare(password, user.passwordHash);
         if (!valid)

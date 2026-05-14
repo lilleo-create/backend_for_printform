@@ -20,6 +20,7 @@ import {
 import { prisma } from "../lib/prisma";
 import { deviceTrustService } from "../services/deviceTrustService";
 import { googleOAuthService } from "../services/googleOAuthService";
+import { yandexOAuthService } from "../services/yandexOAuthService";
 
 export const authRoutes = Router();
 
@@ -1232,17 +1233,60 @@ authRoutes.get("/google/callback", async (req, res) => {
   }
 });
 
+authRoutes.get("/yandex", (_req, res) => {
+  if (!env.yandexClientId || !env.yandexClientSecret) {
+    return res.status(503).json({ error: { code: "OAUTH_NOT_CONFIGURED" } });
+  }
+  return res.redirect(302, yandexOAuthService.getAuthUrl());
+});
+
+authRoutes.get("/yandex/callback", async (req, res) => {
+  const redirectError = `${env.frontendUrl}/auth?error=yandex_failed`;
+
+  const code = req.query.code as string | undefined;
+  if (!code) {
+    return res.redirect(302, redirectError);
+  }
+
+  try {
+    const profile = await yandexOAuthService.getUserProfile(code);
+
+    let user = await userRepository.findByYandexId(profile.yandexId);
+
+    if (!user) {
+      const byEmail = await userRepository.findByEmail(profile.email);
+      if (byEmail) {
+        user = await userRepository.linkYandexAccount(byEmail.id, profile.yandexId, profile.avatarUrl);
+      } else {
+        user = await userRepository.createOAuthUser(profile);
+      }
+    }
+
+    const tokens = await authService.issueOAuthTokens(user);
+
+    res.cookie(env.authRefreshCookieName, tokens.refreshToken, refreshCookieOptions);
+
+    return res.redirect(302, `${env.frontendUrl}/auth/oauth-callback?token=${tokens.accessToken}`);
+  } catch (error) {
+    console.error("[OAuth] Yandex callback failed", error);
+    return res.redirect(302, redirectError);
+  }
+});
+
 authRoutes.get("/me", authenticate, async (req: AuthRequest, res, next) => {
   try {
     const user = await userRepository.findById(req.user!.userId);
-    if (!user) return res.status(404).json({ error: { code: "NOT_FOUND" } });
+    if (!user) return res.status(404).json({ ok: false, error: { code: "NOT_FOUND" } });
     return res.json({
+      ok: true,
       data: {
         id: user.id,
-        name: user.name,
-        fullName: user.fullName,
-        role: user.role,
         email: user.email,
+        name: user.name,
+        phone: user.phone ?? null,
+        role: user.role.toLowerCase(),
+        avatar_url: user.avatarUrl ?? null,
+        is_verified: user.phoneVerifiedAt != null || user.googleId != null || user.yandexId != null
       },
     });
   } catch (error) {

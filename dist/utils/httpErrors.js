@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.notFound = exports.forbidden = exports.unauthorized = void 0;
 const respondWithError = (res, code, message) => {
     return res.status(code === 'UNAUTHORIZED' ? 401 : code === 'FORBIDDEN' ? 403 : 404).json({
+        ok: false,
         error: {
             code,
             message: message ?? code

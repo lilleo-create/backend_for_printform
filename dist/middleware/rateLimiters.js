@@ -17,8 +17,9 @@ const createLimiter = (options) => (0, express_rate_limit_1.default)({
         const retryAfterSeconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
         res.setHeader("Retry-After", String(retryAfterSeconds));
         return res.status(opts.statusCode).json({
+            ok: false,
             error: {
-                code: "RATE_LIMITED",
+                code: options.errorCode ?? "RATE_LIMITED",
                 retryAfterSeconds,
                 resendAvailableAt: new Date(Date.now() + retryAfterMs).toISOString(),
             },
@@ -39,6 +40,7 @@ exports.authLimiter = createLimiter({ windowMs: 15 * 60 * 1000, max: 30 });
 exports.otpRequestLimiter = createLimiter({
     windowMs: 15 * 60 * 1000,
     max: 10,
+    errorCode: 'OTP_COOLDOWN'
 });
 exports.otpVerifyLimiter = createLimiter({
     windowMs: 15 * 60 * 1000,
