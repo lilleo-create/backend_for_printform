@@ -84,7 +84,7 @@ export const otpService = {
     const phone = normalizePhone(payload.phone); const purpose = purposeToDb[payload.purpose];
     const rateLimit = await guardOtpRequestRateLimits(phone, purpose); if (rateLimit.throttled) return { ok: true, throttled: true };
     if (payload.purpose === 'password_reset' || payload.purpose === 'login_device') return requestPlusofonOtp({ ...payload, phone, skipRateLimit: true });
-    const isPlusofonCallToAuth = env.otpProvider === 'plusofon' && payload.purpose === 'buyer_register_phone'; if (isPlusofonCallToAuth) return requestPlusofonOtp({ ...payload, phone, skipRateLimit: true });
+    if (env.otpProvider === 'plusofon') return requestPlusofonOtp({ ...payload, phone, skipRateLimit: true });
     const now = rateLimit.now;
     const code = generateOtpCode(); const expiresAt = new Date(now.getTime() + env.otpTtlMinutes * 60 * 1000); const created = await prisma.phoneOtp.create({ data: { phone, purpose, codeHash: hashOtpCode(code), expiresAt, maxAttempts: env.otpMaxAttempts, ip: payload.ip, userAgent: payload.userAgent, providerPayload: { source: 'backend', purpose: payload.purpose } } });
     const message = `Ваш код для ${formatPurpose(payload.purpose)}: ${code}`; const callbackUrl = `${env.backendUrl.replace(/\/$/, '')}/auth/otp/telegram/callback`; const internalRequestId = `otp_${created.id}_${Date.now()}`; const providerPayload = created.id;
