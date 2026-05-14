@@ -614,10 +614,21 @@ const verifyPurposeAccess = async (
   const user = decoded.userId
     ? await userRepository.findById(decoded.userId)
     : null;
-  if (!user?.phone)
+  if (!user)
     return { error: { status: 404, body: { error: { code: "NOT_FOUND" } } } };
-  if (!phone) return { phone: user.phone, user };
-  if (phone !== user.phone) {
+
+  // These purposes are for adding/changing a phone — user may not have one yet
+  const isSetPhonePurpose =
+    purpose === "buyer_change_phone" || purpose === "seller_connect_phone";
+
+  if (!user.phone && !isSetPhonePurpose)
+    return { error: { status: 404, body: { error: { code: "NOT_FOUND" } } } };
+
+  if (!phone) return { phone: user.phone ?? "", user };
+
+  // Phone mismatch only applies when user already has a different phone
+  // and the purpose is not explicitly changing/adding a phone
+  if (user.phone && phone !== user.phone && !isSetPhonePurpose) {
     console.info("[AUTH][OTP_VERIFY][PHONE_MISMATCH]", {
       purpose,
       userId: user.id,
