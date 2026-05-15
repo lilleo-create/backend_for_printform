@@ -467,11 +467,17 @@ const verifyPurposeAccess = async (purpose, decoded, phoneRaw) => {
     const user = decoded.userId
         ? await userRepository_1.userRepository.findById(decoded.userId)
         : null;
-    if (!user?.phone)
+    if (!user)
+        return { error: { status: 404, body: { error: { code: "NOT_FOUND" } } } };
+    // These purposes are for adding/changing a phone — user may not have one yet
+    const isSetPhonePurpose = purpose === "buyer_change_phone" || purpose === "seller_connect_phone";
+    if (!user.phone && !isSetPhonePurpose)
         return { error: { status: 404, body: { error: { code: "NOT_FOUND" } } } };
     if (!phone)
-        return { phone: user.phone, user };
-    if (phone !== user.phone) {
+        return { phone: user.phone ?? "", user };
+    // Phone mismatch only applies when user already has a different phone
+    // and the purpose is not explicitly changing/adding a phone
+    if (user.phone && phone !== user.phone && !isSetPhonePurpose) {
         console.info("[AUTH][OTP_VERIFY][PHONE_MISMATCH]", {
             purpose,
             userId: user.id,
@@ -878,9 +884,11 @@ exports.authRoutes.post("/otp/verify", rateLimiters_1.otpVerifyLimiter, async (r
             user = await userRepository_1.userRepository.findById(userId);
             if (!user)
                 return res.status(401).json({ error: { code: "UNAUTHORIZED" } });
-            if (user.phone && user.phone !== phone)
+            const isChangePurpose = purpose === "buyer_change_phone" ||
+                purpose === "seller_connect_phone";
+            if (user.phone && user.phone !== phone && !isChangePurpose)
                 return res.status(400).json({ error: { code: "PHONE_MISMATCH" } });
-            if (!user.phone) {
+            if (!user.phone || (isChangePurpose && user.phone !== phone)) {
                 const existingPhone = await userRepository_1.userRepository.findByPhone(phone);
                 if (existingPhone && existingPhone.id !== user.id)
                     return res.status(409).json({ error: { code: "PHONE_EXISTS" } });
@@ -1018,14 +1026,24 @@ exports.authRoutes.get("/yandex/callback", async (req, res) => {
     try {
         const profile = await yandexOAuthService_1.yandexOAuthService.getUserProfile(code);
         let user = await userRepository_1.userRepository.findByYandexId(profile.yandexId);
+        let yandexPhone = null;
+        if (profile.phone) {
+            try {
+                yandexPhone = (0, phone_1.normalizePhone)(profile.phone);
+            }
+            catch { /* invalid phone from Yandex — skip */ }
+        }
         if (!user) {
             const byEmail = await userRepository_1.userRepository.findByEmail(profile.email);
             if (byEmail) {
-                user = await userRepository_1.userRepository.linkYandexAccount(byEmail.id, profile.yandexId, profile.avatarUrl);
+                user = await userRepository_1.userRepository.linkYandexAccount(byEmail.id, profile.yandexId, profile.avatarUrl, yandexPhone);
             }
             else {
-                user = await userRepository_1.userRepository.createOAuthUser(profile);
+                user = await userRepository_1.userRepository.createOAuthUser({ ...profile, phone: yandexPhone });
             }
+        }
+        else if (yandexPhone && !user.phone) {
+            user = await userRepository_1.userRepository.updateProfile(user.id, { phone: yandexPhone });
         }
         const tokens = await authService_1.authService.issueOAuthTokens(user);
         res.cookie(env_1.env.authRefreshCookieName, tokens.refreshToken, refreshCookieOptions);

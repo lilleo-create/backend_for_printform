@@ -11,7 +11,8 @@ exports.yandexOAuthService = {
         const params = new URLSearchParams({
             response_type: 'code',
             client_id: env_1.env.yandexClientId,
-            redirect_uri: env_1.env.yandexCallbackUrl
+            redirect_uri: env_1.env.yandexCallbackUrl,
+            scope: 'login:info login:email login:phone_number'
         });
         return `${YANDEX_AUTHORIZE_URL}?${params.toString()}`;
     },
@@ -48,11 +49,13 @@ exports.yandexOAuthService = {
         const avatarUrl = info.default_avatar_id
             ? `${YANDEX_AVATAR_BASE}/${info.default_avatar_id}/islands-200`
             : null;
+        const phone = info.default_phone?.number ?? null;
         return {
             yandexId: info.id,
             email: info.default_email,
             name: info.real_name ?? info.login,
-            avatarUrl
+            avatarUrl,
+            phone
         };
     }
 };

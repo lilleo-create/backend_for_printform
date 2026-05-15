@@ -21,6 +21,7 @@ exports.userRepository = {
             googleId: data.googleId ?? null,
             yandexId: data.yandexId ?? null,
             avatarUrl: data.avatarUrl ?? null,
+            phone: data.phone ?? null,
             role: 'BUYER'
         }
     }),
@@ -28,9 +29,13 @@ exports.userRepository = {
         where: { id },
         data: { googleId, ...(avatarUrl !== undefined ? { avatarUrl } : {}) }
     }),
-    linkYandexAccount: (id, yandexId, avatarUrl) => prisma_1.prisma.user.update({
+    linkYandexAccount: (id, yandexId, avatarUrl, phone) => prisma_1.prisma.user.update({
         where: { id },
-        data: { yandexId, ...(avatarUrl !== undefined ? { avatarUrl } : {}) }
+        data: {
+            yandexId,
+            ...(avatarUrl !== undefined ? { avatarUrl } : {}),
+            ...(phone ? { phone } : {})
+        }
     }),
     updateProfile: (id, payload) => prisma_1.prisma.user.update({
         where: { id },

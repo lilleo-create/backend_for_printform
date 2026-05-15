@@ -98,8 +98,7 @@ exports.otpService = {
             return { ok: true, throttled: true };
         if (payload.purpose === 'password_reset' || payload.purpose === 'login_device')
             return requestPlusofonOtp({ ...payload, phone, skipRateLimit: true });
-        const isPlusofonCallToAuth = env_1.env.otpProvider === 'plusofon' && payload.purpose === 'buyer_register_phone';
-        if (isPlusofonCallToAuth)
+        if (env_1.env.otpProvider === 'plusofon')
             return requestPlusofonOtp({ ...payload, phone, skipRateLimit: true });
         const now = rateLimit.now;
         const code = (0, otp_1.generateOtpCode)();
