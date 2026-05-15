@@ -1105,9 +1105,12 @@ authRoutes.post("/otp/verify", otpVerifyLimiter, async (req, res, next) => {
       user = await userRepository.findById(userId);
       if (!user)
         return res.status(401).json({ error: { code: "UNAUTHORIZED" } });
-      if (user.phone && user.phone !== phone)
+      const isChangePurpose =
+        purpose === "buyer_change_phone" ||
+        purpose === "seller_connect_phone";
+      if (user.phone && user.phone !== phone && !isChangePurpose)
         return res.status(400).json({ error: { code: "PHONE_MISMATCH" } });
-      if (!user.phone) {
+      if (!user.phone || (isChangePurpose && user.phone !== phone)) {
         const existingPhone = await userRepository.findByPhone(phone);
         if (existingPhone && existingPhone.id !== user.id)
           return res.status(409).json({ error: { code: "PHONE_EXISTS" } });
@@ -1267,10 +1270,12 @@ authRoutes.get("/yandex/callback", async (req, res) => {
     if (!user) {
       const byEmail = await userRepository.findByEmail(profile.email);
       if (byEmail) {
-        user = await userRepository.linkYandexAccount(byEmail.id, profile.yandexId, profile.avatarUrl);
+        user = await userRepository.linkYandexAccount(byEmail.id, profile.yandexId, profile.avatarUrl, profile.phone);
       } else {
         user = await userRepository.createOAuthUser(profile);
       }
+    } else if (profile.phone && !user.phone) {
+      user = await userRepository.updateProfile(user.id, { phone: profile.phone });
     }
 
     const tokens = await authService.issueOAuthTokens(user);

@@ -17,6 +17,7 @@ interface YandexUserInfo {
   real_name?: string;
   default_email?: string;
   default_avatar_id?: string;
+  default_phone?: { id: number; number: string } | null;
 }
 
 export const yandexOAuthService = {
@@ -24,7 +25,8 @@ export const yandexOAuthService = {
     const params = new URLSearchParams({
       response_type: 'code',
       client_id: env.yandexClientId,
-      redirect_uri: env.yandexCallbackUrl
+      redirect_uri: env.yandexCallbackUrl,
+      scope: 'login:info login:email login:phone_number'
     });
     return `${YANDEX_AUTHORIZE_URL}?${params.toString()}`;
   },
@@ -34,6 +36,7 @@ export const yandexOAuthService = {
     email: string;
     name: string;
     avatarUrl: string | null;
+    phone: string | null;
   }> {
     const credentials = Buffer.from(`${env.yandexClientId}:${env.yandexClientSecret}`).toString('base64');
 
@@ -76,11 +79,14 @@ export const yandexOAuthService = {
       ? `${YANDEX_AVATAR_BASE}/${info.default_avatar_id}/islands-200`
       : null;
 
+    const phone = info.default_phone?.number ?? null;
+
     return {
       yandexId: info.id,
       email: info.default_email,
       name: info.real_name ?? info.login,
-      avatarUrl
+      avatarUrl,
+      phone
     };
   }
 };
