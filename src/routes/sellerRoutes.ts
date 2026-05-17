@@ -500,6 +500,27 @@ const MAX_FETCH_LIMIT = 5000;
 // ---------------------------------------------------------
 // Routes
 // ---------------------------------------------------------
+
+sellerRoutes.get('/onboarding/prefill', requireAuth, async (req: AuthRequest, res, next) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user!.userId },
+      select: { name: true, email: true, phone: true, phoneVerifiedAt: true, googleId: true, yandexId: true }
+    });
+    if (!user) return res.status(404).json({ error: { code: 'NOT_FOUND' } });
+    return res.json({
+      data: {
+        name: user.name ?? '',
+        email: user.email ?? '',
+        phone: user.phone ?? null,
+        phoneVerified: Boolean(user.phoneVerifiedAt || user.googleId || user.yandexId)
+      }
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 sellerRoutes.post('/onboarding', requireAuth, writeLimiter, async (req: AuthRequest, res, next) => {
   try {
     const payload = sellerOnboardingSchema.parse(req.body);
@@ -511,7 +532,7 @@ sellerRoutes.post('/onboarding', requireAuth, writeLimiter, async (req: AuthRequ
     const isVerified = Boolean(user?.phoneVerifiedAt || user?.googleId || user?.yandexId);
     if (!isVerified) return res.status(403).json({ error: { code: 'PHONE_NOT_VERIFIED' } });
 
-    const phone = user.phone ?? payload.phone;
+    const phone = payload.phone || user.phone || '';
     const storeName = payload.storeName || payload.name;
     const contactEmail = (payload.email || user.email || '').trim() || null;
     const sellerType = payload.sellerType;
