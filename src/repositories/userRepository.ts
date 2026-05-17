@@ -28,6 +28,7 @@ export const userRepository = {
     yandexId?: string;
     avatarUrl?: string | null;
     phone?: string | null;
+    phoneVerifiedAt?: Date | null;
   }) =>
     prisma.user.create({
       data: {
@@ -37,6 +38,7 @@ export const userRepository = {
         yandexId: data.yandexId ?? null,
         avatarUrl: data.avatarUrl ?? null,
         phone: data.phone ?? null,
+        phoneVerifiedAt: data.phoneVerifiedAt ?? null,
         role: 'BUYER'
       }
     }),
@@ -45,13 +47,13 @@ export const userRepository = {
       where: { id },
       data: { googleId, ...(avatarUrl !== undefined ? { avatarUrl } : {}) }
     }),
-  linkYandexAccount: (id: string, yandexId: string, avatarUrl?: string | null, phone?: string | null) =>
+  linkYandexAccount: (id: string, yandexId: string, avatarUrl?: string | null, phone?: string | null, phoneVerifiedAt?: Date | null) =>
     prisma.user.update({
       where: { id },
       data: {
         yandexId,
         ...(avatarUrl !== undefined ? { avatarUrl } : {}),
-        ...(phone ? { phone } : {})
+        ...(phone ? { phone, phoneVerifiedAt: phoneVerifiedAt ?? null } : {})
       }
     }),
   updateProfile: (

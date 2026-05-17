@@ -1038,21 +1038,27 @@ exports.authRoutes.get("/yandex/callback", async (req, res) => {
             }
             catch { /* invalid phone from Yandex — skip */ }
         }
+        const resolveYandexPhone = async () => {
+            if (!yandexPhone) return null;
+            const inUse = await userRepository_1.userRepository.findByPhone(yandexPhone);
+            return inUse ? null : yandexPhone;
+        };
         if (!user) {
             const byEmail = await userRepository_1.userRepository.findByEmail(profile.email);
             if (byEmail) {
-                const phoneForLink = yandexPhone && !(await userRepository_1.userRepository.findByPhone(yandexPhone)) ? yandexPhone : null;
-                user = await userRepository_1.userRepository.linkYandexAccount(byEmail.id, profile.yandexId, profile.avatarUrl, phoneForLink);
+                const phoneForLink = byEmail.phone ? null : await resolveYandexPhone();
+                const verifiedAt = phoneForLink ? new Date() : null;
+                user = await userRepository_1.userRepository.linkYandexAccount(byEmail.id, profile.yandexId, profile.avatarUrl, phoneForLink, verifiedAt);
             }
             else {
-                const phoneForCreate = yandexPhone && !(await userRepository_1.userRepository.findByPhone(yandexPhone)) ? yandexPhone : null;
-                user = await userRepository_1.userRepository.createOAuthUser({ ...profile, phone: phoneForCreate });
+                const phoneForCreate = await resolveYandexPhone();
+                user = await userRepository_1.userRepository.createOAuthUser({ ...profile, phone: phoneForCreate, phoneVerifiedAt: phoneForCreate ? new Date() : null });
             }
         }
         else if (yandexPhone && !user.phone) {
-            const phoneInUse = await userRepository_1.userRepository.findByPhone(yandexPhone);
-            if (!phoneInUse) {
-                user = await userRepository_1.userRepository.updateProfile(user.id, { phone: yandexPhone });
+            const phoneForUpdate = await resolveYandexPhone();
+            if (phoneForUpdate) {
+                user = await userRepository_1.userRepository.updateProfile(user.id, { phone: phoneForUpdate, phoneVerifiedAt: new Date() });
             }
         }
         const tokens = await authService_1.authService.issueOAuthTokens(user);

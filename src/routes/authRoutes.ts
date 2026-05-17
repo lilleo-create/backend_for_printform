@@ -1277,19 +1277,30 @@ authRoutes.get("/yandex/callback", async (req, res) => {
       try { yandexPhone = normalizePhone(profile.phone); } catch { /* invalid phone from Yandex — skip */ }
     }
 
+    const resolveYandexPhone = async (): Promise<string | null> => {
+      if (!yandexPhone) return null;
+      const inUse = await userRepository.findByPhone(yandexPhone);
+      return inUse ? null : yandexPhone;
+    };
+
     if (!user) {
       const byEmail = await userRepository.findByEmail(profile.email);
       if (byEmail) {
-        const phoneForLink = yandexPhone && !(await userRepository.findByPhone(yandexPhone)) ? yandexPhone : null;
-        user = await userRepository.linkYandexAccount(byEmail.id, profile.yandexId, profile.avatarUrl, phoneForLink);
+        const phoneForLink = byEmail.phone ? null : await resolveYandexPhone();
+        const verifiedAt = phoneForLink ? new Date() : null;
+        user = await userRepository.linkYandexAccount(byEmail.id, profile.yandexId, profile.avatarUrl, phoneForLink, verifiedAt);
       } else {
-        const phoneForCreate = yandexPhone && !(await userRepository.findByPhone(yandexPhone)) ? yandexPhone : null;
-        user = await userRepository.createOAuthUser({ ...profile, phone: phoneForCreate });
+        const phoneForCreate = await resolveYandexPhone();
+        user = await userRepository.createOAuthUser({
+          ...profile,
+          phone: phoneForCreate,
+          phoneVerifiedAt: phoneForCreate ? new Date() : null
+        });
       }
     } else if (yandexPhone && !user.phone) {
-      const phoneInUse = await userRepository.findByPhone(yandexPhone);
-      if (!phoneInUse) {
-        user = await userRepository.updateProfile(user.id, { phone: yandexPhone });
+      const phoneForUpdate = await resolveYandexPhone();
+      if (phoneForUpdate) {
+        user = await userRepository.updateProfile(user.id, { phone: phoneForUpdate, phoneVerifiedAt: new Date() });
       }
     }
 
