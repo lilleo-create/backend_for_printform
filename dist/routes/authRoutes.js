@@ -1021,6 +1021,11 @@ exports.authRoutes.get("/yandex/callback", async (req, res) => {
     const redirectError = `${env_1.env.frontendUrl}/auth?error=yandex_failed`;
     const code = req.query.code;
     if (!code) {
+        console.error("[OAuth] Yandex no code in callback", {
+            error: req.query.error,
+            error_description: req.query.error_description,
+            query: req.query
+        });
         return res.redirect(302, redirectError);
     }
     try {
