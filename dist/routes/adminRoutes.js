@@ -127,6 +127,15 @@ const reviewSubmission = async (id, status, comment, reviewerId) => {
             where: { id: updated.userId },
             data: { role: (0, accessControl_1.resolveRoleAfterSellerEnablement)(updated.user.role) }
         });
+        await prisma_1.prisma.sellerProfile.updateMany({
+            where: { userId: updated.userId },
+            data: { status: 'APPROVED' }
+        });
+    } else if (status === 'REJECTED') {
+        await prisma_1.prisma.sellerProfile.updateMany({
+            where: { userId: updated.userId, status: 'APPROVED' },
+            data: { status: 'PENDING' }
+        });
     }
     return updated;
 };

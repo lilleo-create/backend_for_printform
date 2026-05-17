@@ -506,9 +506,10 @@ sellerRoutes.post('/onboarding', requireAuth, writeLimiter, async (req: AuthRequ
 
     const user = await prisma.user.findUnique({
       where: { id: req.user!.userId },
-      select: { phoneVerifiedAt: true, phone: true, email: true }
+      select: { phoneVerifiedAt: true, phone: true, email: true, googleId: true, yandexId: true }
     });
-    if (!user?.phoneVerifiedAt) return res.status(403).json({ error: { code: 'PHONE_NOT_VERIFIED' } });
+    const isVerified = Boolean(user?.phoneVerifiedAt || user?.googleId || user?.yandexId);
+    if (!isVerified) return res.status(403).json({ error: { code: 'PHONE_NOT_VERIFIED' } });
 
     const phone = user.phone ?? payload.phone;
     const storeName = payload.storeName || payload.name;
