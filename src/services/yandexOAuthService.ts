@@ -9,6 +9,8 @@ interface YandexTokenResponse {
   access_token: string;
   token_type: string;
   expires_in: number;
+  error?: string;
+  error_description?: string;
 }
 
 interface YandexUserInfo {
@@ -38,13 +40,10 @@ export const yandexOAuthService = {
     avatarUrl: string | null;
     phone: string | null;
   }> {
-    const credentials = Buffer.from(`${env.yandexClientId}:${env.yandexClientSecret}`).toString('base64');
-
     const tokenRes = await fetch(YANDEX_TOKEN_URL, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Authorization': `Basic ${credentials}`
+        'Content-Type': 'application/x-www-form-urlencoded'
       },
       body: new URLSearchParams({
         grant_type: 'authorization_code',
@@ -55,23 +54,30 @@ export const yandexOAuthService = {
       }).toString()
     });
 
-    if (!tokenRes.ok) {
+    const tokenData = (await tokenRes.json()) as YandexTokenResponse;
+
+    if (!tokenRes.ok || !tokenData.access_token) {
+      console.error('[Yandex OAuth] Token exchange failed', {
+        status: tokenRes.status,
+        error: tokenData.error,
+        error_description: tokenData.error_description
+      });
       throw new Error('YANDEX_TOKEN_EXCHANGE_FAILED');
     }
 
-    const { access_token } = (await tokenRes.json()) as YandexTokenResponse;
-
     const infoRes = await fetch(YANDEX_USER_INFO_URL, {
-      headers: { 'Authorization': `OAuth ${access_token}` }
+      headers: { 'Authorization': `OAuth ${tokenData.access_token}` }
     });
 
     if (!infoRes.ok) {
+      console.error('[Yandex OAuth] Profile fetch failed', { status: infoRes.status });
       throw new Error('YANDEX_PROFILE_FETCH_FAILED');
     }
 
     const info = (await infoRes.json()) as YandexUserInfo;
 
     if (!info.id || !info.default_email) {
+      console.error('[Yandex OAuth] Profile incomplete', { id: info.id, hasEmail: !!info.default_email });
       throw new Error('YANDEX_PROFILE_INCOMPLETE');
     }
 

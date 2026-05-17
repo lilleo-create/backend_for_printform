@@ -1294,7 +1294,8 @@ authRoutes.get("/yandex/callback", async (req, res) => {
 
     return res.redirect(302, `${env.frontendUrl}/auth/oauth-callback?token=${tokens.accessToken}`);
   } catch (error) {
-    console.error("[OAuth] Yandex callback failed", error);
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error("[OAuth] Yandex callback failed:", msg, error);
     return res.redirect(302, redirectError);
   }
 });
