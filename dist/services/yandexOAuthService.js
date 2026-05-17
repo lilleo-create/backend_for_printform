@@ -12,7 +12,7 @@ exports.yandexOAuthService = {
             response_type: 'code',
             client_id: env_1.env.yandexClientId,
             redirect_uri: env_1.env.yandexCallbackUrl,
-            scope: 'login:info login:email login:phone_number'
+            scope: 'login:info login:email'
         });
         return `${YANDEX_AUTHORIZE_URL}?${params.toString()}`;
     },
