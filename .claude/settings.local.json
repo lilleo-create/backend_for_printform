@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(cat src/utils/phone.ts)",
-      "Bash(cat src/utils/phone.js)"
+      "Bash(cat src/utils/phone.js)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(npx tsc *)"
     ]
   }
 }

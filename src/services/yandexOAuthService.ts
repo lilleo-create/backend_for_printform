@@ -27,7 +27,8 @@ export const yandexOAuthService = {
     const params = new URLSearchParams({
       response_type: 'code',
       client_id: env.yandexClientId,
-      redirect_uri: env.yandexCallbackUrl
+      redirect_uri: env.yandexCallbackUrl,
+      scope: 'login:info login:email login:phone'
     });
     return `${YANDEX_AUTHORIZE_URL}?${params.toString()}`;
   },

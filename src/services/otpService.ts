@@ -19,7 +19,8 @@ export type OtpPurpose =
   | 'seller_change_payout_details'
   | 'seller_payout_settings_verify'
   | 'password_reset'
-  | 'login_device';
+  | 'login_device'
+  | 'oauth_phone_binding';
 
 type OtpRequestStatus = 'pending' | 'verified' | 'expired' | 'failed' | 'cancelled';
 export type OtpRequestErrorData = { code: 'OTP_PROVIDER_AUTH_FAILED' | 'OTP_PROVIDER_TIMEOUT' | 'OTP_PROVIDER_UNAVAILABLE' | 'OTP_REQUEST_FAILED'; message: string; };
@@ -44,10 +45,11 @@ const purposeToDb: Record<OtpPurpose, PrismaOtpPurpose> = {
   seller_change_payout_details: 'SELLER_CHANGE_PAYOUT_DETAILS',
   seller_payout_settings_verify: 'SELLER_PAYOUT_SETTINGS_VERIFY',
   password_reset: 'PASSWORD_RESET',
-  login_device: 'LOGIN_DEVICE'
+  login_device: 'LOGIN_DEVICE',
+  oauth_phone_binding: 'OAUTH_PHONE_BINDING'
 };
 const toJsonSafe = (value: unknown): Prisma.InputJsonValue => { try { return value == null ? {} : JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue; } catch { return { value: String(value) }; } };
-const formatPurpose = (purpose: OtpPurpose) => ({ buyer_register_phone: 'подтверждения телефона при регистрации', buyer_change_phone: 'смены телефона', buyer_sensitive_action: 'подтверждения чувствительного действия', seller_connect_phone: 'подключения продавца', seller_change_payout_details: 'изменения реквизитов продавца', seller_payout_settings_verify: 'подтверждения настроек выплат', password_reset: 'сброса пароля', login_device: 'подтверждения нового устройства' }[purpose]);
+const formatPurpose = (purpose: OtpPurpose) => ({ buyer_register_phone: 'подтверждения телефона при регистрации', buyer_change_phone: 'смены телефона', buyer_sensitive_action: 'подтверждения чувствительного действия', seller_connect_phone: 'подключения продавца', seller_change_payout_details: 'изменения реквизитов продавца', seller_payout_settings_verify: 'подтверждения настроек выплат', password_reset: 'сброса пароля', login_device: 'подтверждения нового устройства', oauth_phone_binding: 'привязки телефона через OAuth' }[purpose]);
 
 const guardOtpRequestRateLimits = async (phone: string, purpose: PrismaOtpPurpose) => {
   const now = new Date();
