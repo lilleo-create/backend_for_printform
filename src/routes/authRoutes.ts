@@ -1289,9 +1289,18 @@ authRoutes.get("/yandex/callback", async (req, res) => {
       try { yandexPhone = normalizePhone(profile.phone); } catch { /* invalid phone from Yandex — skip */ }
     }
 
+    console.info('[Yandex OAuth DEBUG]', {
+      yandexId: profile.yandexId,
+      email: profile.email,
+      rawPhone: profile.phone,
+      normalizedPhone: yandexPhone,
+      existingUserPhone: user?.phone ?? null,
+    });
+
     const resolveYandexPhone = async (): Promise<string | null> => {
       if (!yandexPhone) return null;
       const inUse = await userRepository.findByPhone(yandexPhone);
+      if (inUse) console.info('[Yandex OAuth DEBUG] phone already in use by userId', inUse.id);
       return inUse ? null : yandexPhone;
     };
 
@@ -1311,10 +1320,13 @@ authRoutes.get("/yandex/callback", async (req, res) => {
       }
     } else if (yandexPhone && !user.phone) {
       const phoneForUpdate = await resolveYandexPhone();
+      console.info('[Yandex OAuth DEBUG] updating phone', { phoneForUpdate });
       if (phoneForUpdate) {
         user = await userRepository.updateProfile(user.id, { phone: phoneForUpdate, phoneVerifiedAt: new Date() });
       }
     }
+
+    console.info('[Yandex OAuth DEBUG] final user.phone', user.phone);
 
     if (!user.phone) {
       const tempToken = authService.issueOAuthPhoneBindingToken(user);
