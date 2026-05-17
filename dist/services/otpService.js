@@ -93,13 +93,13 @@ exports.otpService = {
     async requestOtp(payload) {
         const phone = (0, phone_1.normalizePhone)(payload.phone);
         const purpose = purposeToDb[payload.purpose];
-        const rateLimit = await guardOtpRequestRateLimits(phone, purpose);
-        if (rateLimit.throttled)
-            return { ok: true, throttled: true };
         if (payload.purpose === 'password_reset' || payload.purpose === 'login_device')
             return requestPlusofonOtp({ ...payload, phone, skipRateLimit: true });
         if (env_1.env.otpProvider === 'plusofon')
-            return requestPlusofonOtp({ ...payload, phone, skipRateLimit: true });
+            return requestPlusofonOtp({ ...payload, phone, skipRateLimit: false });
+        const rateLimit = await guardOtpRequestRateLimits(phone, purpose);
+        if (rateLimit.throttled)
+            return { ok: true, throttled: true };
         const now = rateLimit.now;
         const code = (0, otp_1.generateOtpCode)();
         const expiresAt = new Date(now.getTime() + env_1.env.otpTtlMinutes * 60 * 1000);
