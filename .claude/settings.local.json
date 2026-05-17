@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat src/utils/phone.ts)",
+      "Bash(cat src/utils/phone.js)"
+    ]
+  }
+}

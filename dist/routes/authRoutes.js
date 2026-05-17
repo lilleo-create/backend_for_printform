@@ -1036,14 +1036,19 @@ exports.authRoutes.get("/yandex/callback", async (req, res) => {
         if (!user) {
             const byEmail = await userRepository_1.userRepository.findByEmail(profile.email);
             if (byEmail) {
-                user = await userRepository_1.userRepository.linkYandexAccount(byEmail.id, profile.yandexId, profile.avatarUrl, yandexPhone);
+                const phoneForLink = yandexPhone && !(await userRepository_1.userRepository.findByPhone(yandexPhone)) ? yandexPhone : null;
+                user = await userRepository_1.userRepository.linkYandexAccount(byEmail.id, profile.yandexId, profile.avatarUrl, phoneForLink);
             }
             else {
-                user = await userRepository_1.userRepository.createOAuthUser({ ...profile, phone: yandexPhone });
+                const phoneForCreate = yandexPhone && !(await userRepository_1.userRepository.findByPhone(yandexPhone)) ? yandexPhone : null;
+                user = await userRepository_1.userRepository.createOAuthUser({ ...profile, phone: phoneForCreate });
             }
         }
         else if (yandexPhone && !user.phone) {
-            user = await userRepository_1.userRepository.updateProfile(user.id, { phone: yandexPhone });
+            const phoneInUse = await userRepository_1.userRepository.findByPhone(yandexPhone);
+            if (!phoneInUse) {
+                user = await userRepository_1.userRepository.updateProfile(user.id, { phone: yandexPhone });
+            }
         }
         const tokens = await authService_1.authService.issueOAuthTokens(user);
         res.cookie(env_1.env.authRefreshCookieName, tokens.refreshToken, refreshCookieOptions);

@@ -1275,12 +1275,17 @@ authRoutes.get("/yandex/callback", async (req, res) => {
     if (!user) {
       const byEmail = await userRepository.findByEmail(profile.email);
       if (byEmail) {
-        user = await userRepository.linkYandexAccount(byEmail.id, profile.yandexId, profile.avatarUrl, yandexPhone);
+        const phoneForLink = yandexPhone && !(await userRepository.findByPhone(yandexPhone)) ? yandexPhone : null;
+        user = await userRepository.linkYandexAccount(byEmail.id, profile.yandexId, profile.avatarUrl, phoneForLink);
       } else {
-        user = await userRepository.createOAuthUser({ ...profile, phone: yandexPhone });
+        const phoneForCreate = yandexPhone && !(await userRepository.findByPhone(yandexPhone)) ? yandexPhone : null;
+        user = await userRepository.createOAuthUser({ ...profile, phone: phoneForCreate });
       }
     } else if (yandexPhone && !user.phone) {
-      user = await userRepository.updateProfile(user.id, { phone: yandexPhone });
+      const phoneInUse = await userRepository.findByPhone(yandexPhone);
+      if (!phoneInUse) {
+        user = await userRepository.updateProfile(user.id, { phone: yandexPhone });
+      }
     }
 
     const tokens = await authService.issueOAuthTokens(user);
