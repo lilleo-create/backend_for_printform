@@ -34,7 +34,8 @@ const purposeToDb = {
     seller_change_payout_details: 'SELLER_CHANGE_PAYOUT_DETAILS',
     seller_payout_settings_verify: 'SELLER_PAYOUT_SETTINGS_VERIFY',
     password_reset: 'PASSWORD_RESET',
-    login_device: 'LOGIN_DEVICE'
+    login_device: 'LOGIN_DEVICE',
+    oauth_phone_binding: 'OAUTH_PHONE_BINDING'
 };
 const toJsonSafe = (value) => { try {
     return value == null ? {} : JSON.parse(JSON.stringify(value));
@@ -42,7 +43,7 @@ const toJsonSafe = (value) => { try {
 catch {
     return { value: String(value) };
 } };
-const formatPurpose = (purpose) => ({ buyer_register_phone: 'подтверждения телефона при регистрации', buyer_change_phone: 'смены телефона', buyer_sensitive_action: 'подтверждения чувствительного действия', seller_connect_phone: 'подключения продавца', seller_change_payout_details: 'изменения реквизитов продавца', seller_payout_settings_verify: 'подтверждения настроек выплат', password_reset: 'сброса пароля', login_device: 'подтверждения нового устройства' }[purpose]);
+const formatPurpose = (purpose) => ({ buyer_register_phone: 'подтверждения телефона при регистрации', buyer_change_phone: 'смены телефона', buyer_sensitive_action: 'подтверждения чувствительного действия', seller_connect_phone: 'подключения продавца', seller_change_payout_details: 'изменения реквизитов продавца', seller_payout_settings_verify: 'подтверждения настроек выплат', password_reset: 'сброса пароля', login_device: 'подтверждения нового устройства', oauth_phone_binding: 'привязки телефона через OAuth' }[purpose]);
 const guardOtpRequestRateLimits = async (phone, purpose) => {
     const now = new Date();
     const windowStart = new Date(now.getTime() - otpRequestWindowMs);
