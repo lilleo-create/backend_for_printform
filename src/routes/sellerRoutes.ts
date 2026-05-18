@@ -24,6 +24,7 @@ import { computePaymentTiming, expirePendingPayments } from "../utils/orderPayme
 import { getKycStatusLabelRu } from "../utils/statusLabels";
 import { money } from '../utils/money';
 import { withOrderPublicId } from '../utils/orderPublicId';
+import { authService } from '../services/authService';
 export const sellerRoutes = Router();
 
 export type SellerKycSubmissionWithDocuments = Prisma.SellerKycSubmissionGetPayload<{ include: { documents: true } }>;
@@ -529,7 +530,8 @@ sellerRoutes.post('/onboarding', requireAuth, writeLimiter, async (req: AuthRequ
       where: { id: req.user!.userId },
       select: { phoneVerifiedAt: true, phone: true, email: true, googleId: true, yandexId: true }
     });
-    const isVerified = Boolean(user?.phoneVerifiedAt || user?.googleId || user?.yandexId);
+    if (!user) return res.status(404).json({ error: { code: 'NOT_FOUND' } });
+    const isVerified = Boolean(user.phoneVerifiedAt || user.googleId || user.yandexId);
     if (!isVerified) return res.status(403).json({ error: { code: 'PHONE_NOT_VERIFIED' } });
 
     const phone = payload.phone || user.phone || '';
@@ -566,6 +568,8 @@ sellerRoutes.post('/onboarding', requireAuth, writeLimiter, async (req: AuthRequ
       }
     });
 
+    const { accessToken } = await authService.issueTokens({ id: updated.id, role: updated.role });
+
     return res.json({
       data: {
         id: updated.id,
@@ -579,7 +583,8 @@ sellerRoutes.post('/onboarding', requireAuth, writeLimiter, async (req: AuthRequ
           isAdmin: req.user!.isAdmin,
           isSeller: true
         }
-      }
+      },
+      accessToken,
     });
   } catch (error) {
     if (error instanceof z.ZodError) {

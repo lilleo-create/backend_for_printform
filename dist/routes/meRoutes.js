@@ -55,7 +55,8 @@ exports.meRoutes.get('/', authMiddleware_1.requireAuth, async (req, res, next) =
                     canAccessAdmin: req.user.isAdmin,
                     canAccessSeller: req.user.isSeller
                 },
-                email: user.email
+                email: user.email,
+                phone: user.phone ?? null
             }
         });
     }

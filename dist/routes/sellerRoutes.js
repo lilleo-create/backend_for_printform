@@ -29,6 +29,7 @@ const orderPayment_1 = require("../utils/orderPayment");
 const statusLabels_1 = require("../utils/statusLabels");
 const money_1 = require("../utils/money");
 const orderPublicId_1 = require("../utils/orderPublicId");
+const authService_1 = require("../services/authService");
 exports.sellerRoutes = (0, express_1.Router)();
 // ---------------------------------------------------------
 // Uploads
@@ -463,7 +464,9 @@ exports.sellerRoutes.post('/onboarding', authMiddleware_1.requireAuth, rateLimit
             where: { id: req.user.userId },
             select: { phoneVerifiedAt: true, phone: true, email: true, googleId: true, yandexId: true }
         });
-        const isVerified = Boolean(user?.phoneVerifiedAt || user?.googleId || user?.yandexId);
+        if (!user)
+            return res.status(404).json({ error: { code: 'NOT_FOUND' } });
+        const isVerified = Boolean(user.phoneVerifiedAt || user.googleId || user.yandexId);
         if (!isVerified)
             return res.status(403).json({ error: { code: 'PHONE_NOT_VERIFIED' } });
         const phone = payload.phone || user.phone || '';
@@ -497,6 +500,7 @@ exports.sellerRoutes.post('/onboarding', authMiddleware_1.requireAuth, rateLimit
                 }
             }
         });
+        const { accessToken } = await authService_1.authService.issueTokens({ id: updated.id, role: updated.role });
         return res.json({
             data: {
                 id: updated.id,
@@ -510,7 +514,8 @@ exports.sellerRoutes.post('/onboarding', authMiddleware_1.requireAuth, rateLimit
                     isAdmin: req.user.isAdmin,
                     isSeller: true
                 }
-            }
+            },
+            accessToken,
         });
     }
     catch (error) {

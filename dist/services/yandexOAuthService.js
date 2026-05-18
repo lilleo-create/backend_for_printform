@@ -11,7 +11,8 @@ exports.yandexOAuthService = {
         const params = new URLSearchParams({
             response_type: 'code',
             client_id: env_1.env.yandexClientId,
-            redirect_uri: env_1.env.yandexCallbackUrl
+            redirect_uri: env_1.env.yandexCallbackUrl,
+            scope: 'login:info login:email login:phone'
         });
         return `${YANDEX_AUTHORIZE_URL}?${params.toString()}`;
     },
@@ -29,7 +30,7 @@ exports.yandexOAuthService = {
                 redirect_uri: env_1.env.yandexCallbackUrl
             }).toString()
         });
-        const tokenData = await tokenRes.json();
+        const tokenData = (await tokenRes.json());
         if (!tokenRes.ok || !tokenData.access_token) {
             console.error('[Yandex OAuth] Token exchange failed', {
                 status: tokenRes.status,
@@ -45,7 +46,7 @@ exports.yandexOAuthService = {
             console.error('[Yandex OAuth] Profile fetch failed', { status: infoRes.status });
             throw new Error('YANDEX_PROFILE_FETCH_FAILED');
         }
-        const info = await infoRes.json();
+        const info = (await infoRes.json());
         if (!info.id || !info.default_email) {
             console.error('[Yandex OAuth] Profile incomplete', { id: info.id, hasEmail: !!info.default_email });
             throw new Error('YANDEX_PROFILE_INCOMPLETE');

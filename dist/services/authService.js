@@ -16,8 +16,8 @@ const createAccessToken = (payload, expiresIn) => {
 const createRefreshToken = (payload, expiresIn) => {
     return jsonwebtoken_1.default.sign({ ...payload, jti: crypto_1.default.randomUUID() }, env_1.env.jwtRefreshSecret, { expiresIn: (expiresIn ?? `${env_1.env.authRefreshTokenTtlDays}d`) });
 };
-const createOtpToken = (payload) => {
-    return jsonwebtoken_1.default.sign(payload, env_1.env.jwtSecret, { expiresIn: '10m' });
+const createOtpToken = (payload, expiresIn = '10m') => {
+    return jsonwebtoken_1.default.sign(payload, env_1.env.jwtSecret, { expiresIn: expiresIn });
 };
 exports.authService = {
     getRefreshCookieOptions() {
@@ -68,6 +68,9 @@ exports.authService = {
     },
     issuePasswordResetOtpToken(user) {
         return createOtpToken({ userId: user.id, scope: 'otp_password_reset' });
+    },
+    issueOAuthPhoneBindingToken(user) {
+        return createOtpToken({ userId: user.id, scope: 'otp_oauth_phone_binding' }, '15m');
     },
     async startRegistration(nickname, fullName, email, password, role, phone, address) {
         const existingEmail = await userRepository_1.userRepository.findByEmail(email);

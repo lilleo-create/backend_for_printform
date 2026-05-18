@@ -80,6 +80,7 @@ const otpPurposeSchema = zod_1.z.enum([
     "seller_payout_settings_verify",
     "login_device",
     "password_reset",
+    "oauth_phone_binding",
 ]);
 const otpRequestSchema = zod_1.z.object({
     phone: zod_1.z.string().min(5),
@@ -194,6 +195,8 @@ const inferOtpPurposeFromScope = (scope) => {
         return "login_device";
     if (scope === "otp_password_reset")
         return "password_reset";
+    if (scope === "otp_oauth_phone_binding")
+        return "oauth_phone_binding";
     return null;
 };
 const canUseExistingOtpFlow = (scope, purpose) => {
@@ -203,6 +206,8 @@ const canUseExistingOtpFlow = (scope, purpose) => {
         return scope === "otp_login_device";
     if (purpose === "password_reset")
         return scope === "otp_password_reset";
+    if (purpose === "oauth_phone_binding")
+        return scope === "otp_oauth_phone_binding";
     return scope === "access";
 };
 const buildOtpLifecycleSnapshot = async (phoneRaw, purpose) => {
@@ -470,7 +475,9 @@ const verifyPurposeAccess = async (purpose, decoded, phoneRaw) => {
     if (!user)
         return { error: { status: 404, body: { error: { code: "NOT_FOUND" } } } };
     // These purposes are for adding/changing a phone — user may not have one yet
-    const isSetPhonePurpose = purpose === "buyer_change_phone" || purpose === "seller_connect_phone";
+    const isSetPhonePurpose = purpose === "buyer_change_phone" ||
+        purpose === "seller_connect_phone" ||
+        purpose === "oauth_phone_binding";
     if (!user.phone && !isSetPhonePurpose)
         return { error: { status: 404, body: { error: { code: "NOT_FOUND" } } } };
     if (!phone)
@@ -827,6 +834,7 @@ exports.authRoutes.get("/otp/status/:requestId", async (req, res, next) => {
                 "access",
                 "otp_login_device",
                 "otp_password_reset",
+                "otp_oauth_phone_binding",
             ].includes(decoded.scope))
             return res.status(401).json({ error: { code: "UNAUTHORIZED" } });
         const status = await otpService_1.otpService.getOtpStatusByRequestId(requestId);
@@ -885,7 +893,8 @@ exports.authRoutes.post("/otp/verify", rateLimiters_1.otpVerifyLimiter, async (r
             if (!user)
                 return res.status(401).json({ error: { code: "UNAUTHORIZED" } });
             const isChangePurpose = purpose === "buyer_change_phone" ||
-                purpose === "seller_connect_phone";
+                purpose === "seller_connect_phone" ||
+                purpose === "oauth_phone_binding";
             if (user.phone && user.phone !== phone && !isChangePurpose)
                 return res.status(400).json({ error: { code: "PHONE_MISMATCH" } });
             if (!user.phone || (isChangePurpose && user.phone !== phone)) {
@@ -914,6 +923,11 @@ exports.authRoutes.post("/otp/verify", rateLimiters_1.otpVerifyLimiter, async (r
                 ok: true,
                 resetToken: createPasswordResetToken({ userId: user.id }),
             });
+        }
+        if (purpose === "oauth_phone_binding") {
+            const tokens = await authService_1.authService.issueOAuthTokens(user);
+            res.cookie(env_1.env.authRefreshCookieName, tokens.refreshToken, refreshCookieOptions);
+            return res.json({ token: tokens.accessToken, user: authService_1.authService.getPublicUser(user) });
         }
         return finalizeAuthorizedSession({ res, req, user });
     }
@@ -1038,9 +1052,19 @@ exports.authRoutes.get("/yandex/callback", async (req, res) => {
             }
             catch { /* invalid phone from Yandex — skip */ }
         }
+        console.info('[Yandex OAuth DEBUG]', {
+            yandexId: profile.yandexId,
+            email: profile.email,
+            rawPhone: profile.phone,
+            normalizedPhone: yandexPhone,
+            existingUserPhone: user?.phone ?? null,
+        });
         const resolveYandexPhone = async () => {
-            if (!yandexPhone) return null;
+            if (!yandexPhone)
+                return null;
             const inUse = await userRepository_1.userRepository.findByPhone(yandexPhone);
+            if (inUse)
+                console.info('[Yandex OAuth DEBUG] phone already in use by userId', inUse.id);
             return inUse ? null : yandexPhone;
         };
         if (!user) {
@@ -1052,14 +1076,24 @@ exports.authRoutes.get("/yandex/callback", async (req, res) => {
             }
             else {
                 const phoneForCreate = await resolveYandexPhone();
-                user = await userRepository_1.userRepository.createOAuthUser({ ...profile, phone: phoneForCreate, phoneVerifiedAt: phoneForCreate ? new Date() : null });
+                user = await userRepository_1.userRepository.createOAuthUser({
+                    ...profile,
+                    phone: phoneForCreate,
+                    phoneVerifiedAt: phoneForCreate ? new Date() : null
+                });
             }
         }
         else if (yandexPhone && !user.phone) {
             const phoneForUpdate = await resolveYandexPhone();
+            console.info('[Yandex OAuth DEBUG] updating phone', { phoneForUpdate });
             if (phoneForUpdate) {
                 user = await userRepository_1.userRepository.updateProfile(user.id, { phone: phoneForUpdate, phoneVerifiedAt: new Date() });
             }
+        }
+        console.info('[Yandex OAuth DEBUG] final user.phone', user.phone);
+        if (!user.phone) {
+            const tempToken = authService_1.authService.issueOAuthPhoneBindingToken(user);
+            return res.redirect(302, `${env_1.env.frontendUrl}/auth/oauth-callback?requiresOtp=true&tempToken=${tempToken}`);
         }
         const tokens = await authService_1.authService.issueOAuthTokens(user);
         res.cookie(env_1.env.authRefreshCookieName, tokens.refreshToken, refreshCookieOptions);
