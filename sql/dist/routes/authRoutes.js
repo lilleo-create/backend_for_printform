@@ -1052,19 +1052,13 @@ exports.authRoutes.get("/yandex/callback", async (req, res) => {
             }
             catch { /* invalid phone from Yandex — skip */ }
         }
-        console.info('[Yandex OAuth DEBUG]', {
-            yandexId: profile.yandexId,
-            email: profile.email,
-            rawPhone: profile.phone,
-            normalizedPhone: yandexPhone,
-            existingUserPhone: user?.phone ?? null,
-        });
+        console.info('[Yandex OAuth] profile phone raw:', profile.phone, '| normalized:', yandexPhone, '| user.phone:', user?.phone ?? null);
         const resolveYandexPhone = async () => {
             if (!yandexPhone)
                 return null;
             const inUse = await userRepository_1.userRepository.findByPhone(yandexPhone);
             if (inUse)
-                console.info('[Yandex OAuth DEBUG] phone already in use by userId', inUse.id);
+                console.info('[Yandex OAuth] phone already taken by userId:', inUse.id);
             return inUse ? null : yandexPhone;
         };
         if (!user) {
@@ -1085,15 +1079,9 @@ exports.authRoutes.get("/yandex/callback", async (req, res) => {
         }
         else if (yandexPhone && !user.phone) {
             const phoneForUpdate = await resolveYandexPhone();
-            console.info('[Yandex OAuth DEBUG] updating phone', { phoneForUpdate });
             if (phoneForUpdate) {
                 user = await userRepository_1.userRepository.updateProfile(user.id, { phone: phoneForUpdate, phoneVerifiedAt: new Date() });
             }
-        }
-        console.info('[Yandex OAuth DEBUG] final user.phone', user.phone);
-        if (!user.phone) {
-            const tempToken = authService_1.authService.issueOAuthPhoneBindingToken(user);
-            return res.redirect(302, `${env_1.env.frontendUrl}/auth/oauth-callback?requiresOtp=true&tempToken=${tempToken}`);
         }
         const tokens = await authService_1.authService.issueOAuthTokens(user);
         res.cookie(env_1.env.authRefreshCookieName, tokens.refreshToken, refreshCookieOptions);
