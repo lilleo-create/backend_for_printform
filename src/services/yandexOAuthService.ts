@@ -28,7 +28,7 @@ export const yandexOAuthService = {
       response_type: 'code',
       client_id: env.yandexClientId,
       redirect_uri: env.yandexCallbackUrl,
-      scope: 'login:info login:email login:phone'
+      scope: 'login:email login:avatar login:phone'
     });
     return `${YANDEX_AUTHORIZE_URL}?${params.toString()}`;
   },
