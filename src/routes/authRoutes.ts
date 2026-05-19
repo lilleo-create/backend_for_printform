@@ -1289,12 +1289,9 @@ authRoutes.get("/yandex/callback", async (req, res) => {
       try { yandexPhone = normalizePhone(profile.phone); } catch { /* invalid phone from Yandex — skip */ }
     }
 
-    console.info('[Yandex OAuth] profile phone raw:', profile.phone, '| normalized:', yandexPhone, '| user.phone:', user?.phone ?? null);
-
     const resolveYandexPhone = async (): Promise<string | null> => {
       if (!yandexPhone) return null;
       const inUse = await userRepository.findByPhone(yandexPhone);
-      if (inUse) console.info('[Yandex OAuth] phone already taken by userId:', inUse.id);
       return inUse ? null : yandexPhone;
     };
 

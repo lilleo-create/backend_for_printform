@@ -383,6 +383,20 @@ const updateProductRating = async (productId: string) => {
   });
 };
 
+adminRoutes.post('/reviews/recalculate-ratings', requireAdmin, async (_req, res, next) => {
+  try {
+    const products = await prisma.product.findMany({ select: { id: true } });
+    let updated = 0;
+    for (const product of products) {
+      await updateProductRating(product.id);
+      updated++;
+    }
+    return res.json({ ok: true, updated });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 adminRoutes.get('/reviews', async (req, res, next) => {
   try {
     const status = reviewStatusSchema.parse(req.query.status ?? 'PENDING') as ReviewModerationStatus;

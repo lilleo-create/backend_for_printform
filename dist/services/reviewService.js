@@ -1,0 +1,567 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.reviewService = void 0;
+const prisma_1 = require("../lib/prisma");
+const client_1 = require("@prisma/client");
+const statusLabels_1 = require("../utils/statusLabels");
+const sortMap = (sort) => {
+    switch (sort) {
+        case 'helpful':
+            return [{ likesCount: 'desc' }, { createdAt: 'desc' }];
+        case 'high':
+            return [{ rating: 'desc' }, { createdAt: 'desc' }];
+        case 'low':
+            return [{ rating: 'asc' }, { createdAt: 'desc' }];
+        default:
+            return [{ createdAt: 'desc' }];
+    }
+};
+const buildWhere = (productIds) => ({
+    productId: { in: productIds },
+    moderationStatus: 'APPROVED',
+    isPublic: true
+});
+const buildReplyVisibilityWhere = (options) => {
+    if (options.isAdmin) {
+        return {};
+    }
+    if (!options.currentUserId) {
+        return { moderationStatus: 'APPROVED' };
+    }
+    return {
+        OR: [
+            { moderationStatus: 'APPROVED' },
+            { authorId: options.currentUserId }
+        ]
+    };
+};
+const buildReviewInclude = (options = {}) => ({
+    user: { select: { id: true, name: true } },
+    replies: {
+        where: buildReplyVisibilityWhere(options),
+        orderBy: { createdAt: 'asc' },
+        include: {
+            author: {
+                select: {
+                    id: true,
+                    name: true,
+                    sellerProfile: {
+                        select: {
+                            storeName: true
+                        }
+                    }
+                }
+            }
+        }
+    }
+});
+const mapReview = (review, options = {}) => ({
+    id: review.id,
+    productId: review.productId,
+    authorId: review.userId,
+    text: review.comment,
+    rating: review.rating,
+    pros: review.pros,
+    cons: review.cons,
+    comment: review.comment,
+    photos: review.photos,
+    likesCount: review.likesCount,
+    dislikesCount: review.dislikesCount,
+    isPublic: review.isPublic,
+    status: review.status,
+    moderationStatus: review.moderationStatus,
+    moderationStatusLabelRu: (0, statusLabels_1.getReviewModerationStatusLabelRu)(review.moderationStatus),
+    createdAt: review.createdAt,
+    updatedAt: review.updatedAt,
+    author: review.user
+        ? {
+            id: review.user.id,
+            nickname: review.user.name ?? null
+        }
+        : null,
+    user: review.user
+        ? {
+            id: review.user.id,
+            nickname: review.user.name ?? null
+        }
+        : null,
+    currentUserReaction: review.currentUserReaction ?? null,
+    isOwn: Boolean(options.currentUserId && review.userId === options.currentUserId),
+    canEdit: Boolean(options.currentUserId && (options.isAdmin || review.userId === options.currentUserId)),
+    canDelete: Boolean(options.currentUserId && (options.isAdmin || review.userId === options.currentUserId)),
+    repliesCount: review.replies.length,
+    replies: review.replies.map((reply) => ({
+        id: reply.id,
+        reviewId: reply.reviewId,
+        authorId: reply.authorId,
+        authorType: reply.authorType,
+        text: reply.text,
+        createdAt: reply.createdAt,
+        updatedAt: reply.updatedAt,
+        moderationStatus: reply.moderationStatus,
+        moderationStatusLabelRu: (0, statusLabels_1.getReviewModerationStatusLabelRu)(reply.moderationStatus),
+        author: {
+            id: reply.author?.id ?? null,
+            nickname: reply.author?.name ?? null,
+            storeName: reply.author?.sellerProfile?.storeName ?? null,
+            displayName: reply.authorType === 'SELLER'
+                ? (reply.author?.sellerProfile?.storeName ?? reply.author?.name ?? null)
+                : (reply.author?.name ?? null)
+        },
+        canEdit: Boolean(options.currentUserId && (options.isAdmin || reply.authorId === options.currentUserId)),
+        canDelete: Boolean(options.currentUserId && (options.isAdmin || reply.authorId === options.currentUserId)),
+        isOwn: Boolean(options.currentUserId && reply.authorId === options.currentUserId)
+    }))
+});
+const mapReviewReply = (reply, options = {}) => ({
+    id: reply.id,
+    reviewId: reply.reviewId,
+    authorId: reply.authorId,
+    authorType: reply.authorType,
+    text: reply.text,
+    createdAt: reply.createdAt,
+    updatedAt: reply.updatedAt,
+    moderationStatus: reply.moderationStatus,
+    moderationStatusLabelRu: (0, statusLabels_1.getReviewModerationStatusLabelRu)(reply.moderationStatus),
+    author: {
+        id: reply.author?.id ?? null,
+        nickname: reply.author?.name ?? null,
+        storeName: reply.author?.sellerProfile?.storeName ?? null,
+        displayName: reply.authorType === 'SELLER'
+            ? (reply.author?.sellerProfile?.storeName ?? reply.author?.name ?? null)
+            : (reply.author?.name ?? null)
+    },
+    canEdit: Boolean(options.currentUserId && (options.isAdmin || reply.authorId === options.currentUserId)),
+    canDelete: Boolean(options.currentUserId && (options.isAdmin || reply.authorId === options.currentUserId)),
+    isOwn: Boolean(options.currentUserId && reply.authorId === options.currentUserId)
+});
+exports.reviewService = {
+    async getSellerSummaryByProductId(productId) {
+        const product = await prisma_1.prisma.product.findFirst({
+            where: { id: productId, moderationStatus: 'APPROVED', deletedAt: null },
+            select: {
+                id: true,
+                sellerId: true,
+                seller: {
+                    select: {
+                        id: true,
+                        name: true,
+                        sellerProfile: { select: { storeName: true, status: true } }
+                    }
+                }
+            }
+        });
+        if (!product)
+            return null;
+        const stats = await prisma_1.prisma.product.aggregate({
+            where: { sellerId: product.sellerId, moderationStatus: 'APPROVED', deletedAt: null },
+            _avg: { ratingAvg: true },
+            _count: { id: true }
+        });
+        return {
+            id: product.seller.id,
+            storeTitle: product.seller.sellerProfile?.storeName ?? product.seller.name,
+            sellerName: product.seller.name,
+            rating: stats._avg.ratingAvg ?? null,
+            productsCount: stats._count.id,
+            storeAvailable: product.seller.sellerProfile?.status === 'APPROVED'
+        };
+    },
+    async addReview(data) {
+        return prisma_1.prisma.$transaction(async (tx) => {
+            const product = await tx.product.findUnique({
+                where: { id: data.productId },
+                select: { id: true }
+            });
+            if (!product)
+                throw new Error('NOT_FOUND');
+            const review = await tx.review.create({
+                data: {
+                    productId: data.productId,
+                    userId: data.userId,
+                    rating: data.rating,
+                    pros: data.pros,
+                    cons: data.cons,
+                    comment: data.comment,
+                    photos: data.photos,
+                    status: client_1.ReviewStatus.PENDING,
+                    moderationStatus: 'PENDING',
+                    moderationNotes: null,
+                    moderatedAt: null,
+                    moderatedById: null
+                }
+            });
+            const createdReview = await tx.review.findUnique({
+                where: { id: review.id },
+                include: buildReviewInclude({ currentUserId: data.userId })
+            });
+            if (!createdReview)
+                throw new Error('NOT_FOUND');
+            return mapReview({ ...createdReview, currentUserReaction: null }, { currentUserId: data.userId });
+        });
+    },
+    async listByProducts(productIds, page = 1, limit = 5, sort = 'new', options = {}) {
+        if (productIds.length === 0) {
+            return [];
+        }
+        const reviewInclude = buildReviewInclude(options);
+        let authorPendingReview = null;
+        try {
+            if (options.currentUserId && !options.isAdmin) {
+                authorPendingReview = await prisma_1.prisma.review.findFirst({
+                    where: {
+                        productId: { in: productIds },
+                        userId: options.currentUserId,
+                        moderationStatus: 'PENDING'
+                    },
+                    include: reviewInclude,
+                    orderBy: { createdAt: 'desc' }
+                });
+            }
+            const hasAuthorPendingReview = Boolean(authorPendingReview);
+            const shouldPrependAuthorPendingReview = hasAuthorPendingReview && page === 1;
+            const approvedSkip = Math.max((page - 1) * limit - (hasAuthorPendingReview ? 1 : 0), 0);
+            const approvedTake = Math.max(limit - (shouldPrependAuthorPendingReview ? 1 : 0), 0);
+            const approvedWhere = hasAuthorPendingReview && options.currentUserId
+                ? {
+                    ...buildWhere(productIds),
+                    NOT: { userId: options.currentUserId }
+                }
+                : buildWhere(productIds);
+            const approvedReviews = approvedTake > 0
+                ? await prisma_1.prisma.review.findMany({
+                    where: approvedWhere,
+                    orderBy: sortMap(sort),
+                    take: approvedTake,
+                    skip: approvedSkip,
+                    include: reviewInclude
+                })
+                : [];
+            const orderedReviews = shouldPrependAuthorPendingReview ? [authorPendingReview, ...approvedReviews] : approvedReviews;
+            if (!options.currentUserId || orderedReviews.length === 0) {
+                return orderedReviews.map((review) => mapReview({ ...review, currentUserReaction: null }, options));
+            }
+            const reactions = await prisma_1.prisma.reviewReaction.findMany({
+                where: {
+                    userId: options.currentUserId,
+                    reviewId: { in: orderedReviews.map((review) => review.id) }
+                },
+                select: {
+                    reviewId: true,
+                    type: true
+                }
+            });
+            const reactionByReviewId = new Map(reactions.map((reaction) => [reaction.reviewId, reaction.type]));
+            return orderedReviews.map((review) => mapReview({
+                ...review,
+                currentUserReaction: reactionByReviewId.get(review.id) ?? null
+            }, options));
+        }
+        catch (error) {
+            console.error('[reviewService.listByProducts] failed to load reviews', {
+                productIds,
+                currentUserId: options.currentUserId ?? null,
+                isAdmin: options.isAdmin ?? false,
+                page,
+                limit,
+                sort,
+                message: error instanceof Error ? error.message : String(error),
+                stack: error instanceof Error ? error.stack : undefined
+            });
+            throw error;
+        }
+    },
+    async countByProducts(productIds, options = {}) {
+        const approvedCount = await prisma_1.prisma.review.count({ where: buildWhere(productIds) });
+        if (!options.currentUserId || options.isAdmin) {
+            return approvedCount;
+        }
+        const pendingCount = await prisma_1.prisma.review.count({
+            where: {
+                productId: { in: productIds },
+                userId: options.currentUserId,
+                moderationStatus: 'PENDING'
+            }
+        });
+        return approvedCount + pendingCount;
+    },
+    async summaryByProducts(productIds) {
+        const grouped = await prisma_1.prisma.review.groupBy({
+            by: ['rating'],
+            where: buildWhere(productIds),
+            _count: { _all: true }
+        });
+        const total = grouped.reduce((sum, item) => sum + item._count._all, 0);
+        const avg = total
+            ? grouped.reduce((sum, item) => sum + item.rating * item._count._all, 0) / total
+            : 0;
+        const counts = [5, 4, 3, 2, 1].map((value) => ({
+            rating: value,
+            count: grouped.find((item) => item.rating === value)?._count._all ?? 0
+        }));
+        const photos = (await prisma_1.prisma.review.findMany({
+            where: buildWhere(productIds),
+            select: { photos: true }
+        })).flatMap((review) => review.photos ?? []);
+        return { total, avg, counts, photos };
+    },
+    listByUser: (userId) => prisma_1.prisma.review.findMany({
+        where: { userId },
+        orderBy: [{ createdAt: 'desc' }],
+        include: { product: { select: { id: true, title: true, image: true } } }
+    }),
+    async updateVisibility(id, userId, isPublic) {
+        const review = await prisma_1.prisma.review.findFirst({ where: { id, userId } });
+        if (!review)
+            throw new Error('NOT_FOUND');
+        return prisma_1.prisma.review.update({
+            where: { id },
+            data: { isPublic }
+        });
+    },
+    async setReaction(reviewId, userId, type, productId) {
+        return prisma_1.prisma.$transaction(async (tx) => {
+            const review = await tx.review.findUnique({
+                where: { id: reviewId },
+                select: { id: true, productId: true }
+            });
+            if (!review) {
+                throw new Error('NOT_FOUND');
+            }
+            if (productId && review.productId !== productId) {
+                throw new Error('FORBIDDEN');
+            }
+            const existing = await tx.reviewReaction.findUnique({
+                where: { reviewId_userId: { reviewId, userId } },
+                select: { id: true, type: true }
+            });
+            if (!existing) {
+                await tx.reviewReaction.create({
+                    data: { reviewId, userId, type }
+                });
+                await tx.review.update({
+                    where: { id: reviewId },
+                    data: {
+                        likesCount: { increment: type === 'LIKE' ? 1 : 0 },
+                        dislikesCount: { increment: type === 'DISLIKE' ? 1 : 0 }
+                    }
+                });
+            }
+            else if (existing.type !== type) {
+                await tx.reviewReaction.update({
+                    where: { id: existing.id },
+                    data: { type }
+                });
+                await tx.review.update({
+                    where: { id: reviewId },
+                    data: {
+                        likesCount: { increment: type === 'LIKE' ? 1 : -1 },
+                        dislikesCount: { increment: type === 'DISLIKE' ? 1 : -1 }
+                    }
+                });
+            }
+            const updated = await tx.review.findUnique({
+                where: { id: reviewId },
+                select: { id: true, likesCount: true, dislikesCount: true }
+            });
+            return {
+                reviewId,
+                currentUserReaction: type,
+                reactions: {
+                    likes: updated?.likesCount ?? 0,
+                    dislikes: updated?.dislikesCount ?? 0
+                },
+                likes: updated?.likesCount ?? 0,
+                dislikes: updated?.dislikesCount ?? 0,
+                likesCount: updated?.likesCount ?? 0,
+                dislikesCount: updated?.dislikesCount ?? 0
+            };
+        });
+    },
+    async removeReaction(reviewId, userId, productId) {
+        return prisma_1.prisma.$transaction(async (tx) => {
+            const review = await tx.review.findUnique({
+                where: { id: reviewId },
+                select: { id: true, productId: true }
+            });
+            if (!review) {
+                throw new Error('NOT_FOUND');
+            }
+            if (productId && review.productId !== productId) {
+                throw new Error('FORBIDDEN');
+            }
+            const existing = await tx.reviewReaction.findUnique({
+                where: { reviewId_userId: { reviewId, userId } },
+                select: { id: true, type: true }
+            });
+            if (!existing) {
+                const snapshot = await tx.review.findUnique({
+                    where: { id: reviewId },
+                    select: { likesCount: true, dislikesCount: true }
+                });
+                if (!snapshot) {
+                    throw new Error('NOT_FOUND');
+                }
+                return {
+                    reviewId,
+                    currentUserReaction: null,
+                    reactions: {
+                        likes: snapshot.likesCount,
+                        dislikes: snapshot.dislikesCount
+                    },
+                    likes: snapshot.likesCount,
+                    dislikes: snapshot.dislikesCount,
+                    likesCount: snapshot.likesCount,
+                    dislikesCount: snapshot.dislikesCount
+                };
+            }
+            await tx.reviewReaction.delete({ where: { id: existing.id } });
+            await tx.review.update({
+                where: { id: reviewId },
+                data: {
+                    likesCount: { decrement: existing.type === 'LIKE' ? 1 : 0 },
+                    dislikesCount: { decrement: existing.type === 'DISLIKE' ? 1 : 0 }
+                }
+            });
+            const updated = await tx.review.findUnique({
+                where: { id: reviewId },
+                select: { likesCount: true, dislikesCount: true }
+            });
+            return {
+                reviewId,
+                currentUserReaction: null,
+                reactions: {
+                    likes: updated?.likesCount ?? 0,
+                    dislikes: updated?.dislikesCount ?? 0
+                },
+                likes: updated?.likesCount ?? 0,
+                dislikes: updated?.dislikesCount ?? 0,
+                likesCount: updated?.likesCount ?? 0,
+                dislikesCount: updated?.dislikesCount ?? 0
+            };
+        });
+    },
+    async addReply(reviewId, authorId, text, productId) {
+        return prisma_1.prisma.$transaction(async (tx) => {
+            const review = await tx.review.findUnique({
+                where: { id: reviewId },
+                select: {
+                    id: true,
+                    productId: true,
+                    product: {
+                        select: {
+                            sellerId: true
+                        }
+                    }
+                }
+            });
+            if (!review) {
+                throw new Error('NOT_FOUND');
+            }
+            if (productId && review.productId !== productId) {
+                throw new Error('FORBIDDEN');
+            }
+            const authorType = review.product.sellerId === authorId ? 'SELLER' : 'BUYER';
+            const reply = await tx.reviewReply.create({
+                data: {
+                    reviewId,
+                    authorId,
+                    authorType,
+                    text,
+                    moderationStatus: 'PENDING'
+                },
+                include: {
+                    author: {
+                        select: {
+                            id: true,
+                            name: true,
+                            sellerProfile: {
+                                select: { storeName: true }
+                            }
+                        }
+                    }
+                }
+            });
+            return mapReviewReply(reply, { currentUserId: authorId });
+        });
+    },
+    async updateReview(reviewId, actorId, text, isAdmin = false) {
+        const review = await prisma_1.prisma.review.findUnique({ where: { id: reviewId } });
+        if (!review)
+            throw new Error('NOT_FOUND');
+        if (!isAdmin && review.userId !== actorId)
+            throw new Error('FORBIDDEN_REVIEW_OBJECT');
+        const updated = await prisma_1.prisma.review.update({
+            where: { id: reviewId },
+            data: {
+                ...(text.pros !== undefined ? { pros: text.pros } : {}),
+                ...(text.cons !== undefined ? { cons: text.cons } : {}),
+                ...(text.comment !== undefined ? { comment: text.comment } : {}),
+                moderationStatus: 'PENDING',
+                moderationNotes: null,
+                moderatedAt: null,
+                moderatedById: null,
+                status: client_1.ReviewStatus.PENDING
+            },
+            include: buildReviewInclude({ currentUserId: actorId, isAdmin })
+        });
+        return mapReview({ ...updated, currentUserReaction: null }, { currentUserId: actorId, isAdmin });
+    },
+    async deleteReview(reviewId, actorId, isAdmin = false) {
+        const review = await prisma_1.prisma.review.findUnique({ where: { id: reviewId } });
+        if (!review)
+            throw new Error('NOT_FOUND');
+        if (!isAdmin && review.userId !== actorId)
+            throw new Error('FORBIDDEN_REVIEW_OBJECT');
+        await prisma_1.prisma.reviewReply.deleteMany({ where: { reviewId } });
+        await prisma_1.prisma.reviewReaction.deleteMany({ where: { reviewId } });
+        await prisma_1.prisma.review.delete({ where: { id: reviewId } });
+        // Пересчитываем рейтинг продукта после удаления отзыва
+        const aggregate = await prisma_1.prisma.review.aggregate({
+            where: { productId: review.productId, moderationStatus: 'APPROVED', isPublic: true },
+            _avg: { rating: true },
+            _count: { _all: true }
+        });
+        await prisma_1.prisma.product.update({
+            where: { id: review.productId },
+            data: {
+                ratingAvg: aggregate._avg.rating ?? 0,
+                ratingCount: aggregate._count._all ?? 0
+            }
+        });
+        return { id: reviewId, deleted: true };
+    },
+    async updateReply(replyId, actorId, text, isAdmin = false) {
+        const reply = await prisma_1.prisma.reviewReply.findUnique({ where: { id: replyId } });
+        if (!reply)
+            throw new Error('REVIEW_REPLY_NOT_FOUND');
+        if (!isAdmin && reply.authorId !== actorId)
+            throw new Error('FORBIDDEN_REVIEW_OBJECT');
+        const updated = await prisma_1.prisma.reviewReply.update({
+            where: { id: replyId },
+            data: {
+                text,
+                moderationStatus: 'PENDING'
+            },
+            include: {
+                author: {
+                    select: {
+                        id: true,
+                        name: true,
+                        sellerProfile: { select: { storeName: true } }
+                    }
+                }
+            }
+        });
+        return mapReviewReply(updated, { currentUserId: actorId, isAdmin });
+    },
+    async deleteReply(replyId, actorId, isAdmin = false) {
+        const reply = await prisma_1.prisma.reviewReply.findUnique({ where: { id: replyId } });
+        if (!reply)
+            throw new Error('REVIEW_REPLY_NOT_FOUND');
+        if (!isAdmin && reply.authorId !== actorId)
+            throw new Error('FORBIDDEN_REVIEW_OBJECT');
+        await prisma_1.prisma.reviewReply.delete({ where: { id: replyId } });
+        return { id: replyId, deleted: true };
+    }
+};

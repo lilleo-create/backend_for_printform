@@ -601,6 +601,19 @@ export const reviewService = {
     await prisma.reviewReply.deleteMany({ where: { reviewId } });
     await prisma.reviewReaction.deleteMany({ where: { reviewId } });
     await prisma.review.delete({ where: { id: reviewId } });
+    // Пересчитываем рейтинг продукта после удаления отзыва
+    const aggregate = await prisma.review.aggregate({
+      where: { productId: review.productId, moderationStatus: 'APPROVED', isPublic: true },
+      _avg: { rating: true },
+      _count: { _all: true }
+    });
+    await prisma.product.update({
+      where: { id: review.productId },
+      data: {
+        ratingAvg: aggregate._avg.rating ?? 0,
+        ratingCount: aggregate._count._all ?? 0
+      }
+    });
     return { id: reviewId, deleted: true };
   },
   async updateReply(replyId: string, actorId: string, text: string, isAdmin = false) {
