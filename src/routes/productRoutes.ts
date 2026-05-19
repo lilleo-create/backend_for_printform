@@ -180,7 +180,7 @@ export const sellerProductCreateSchema = z.object({
   specifications: z.array(productSpecificationSchema).optional(),
   description: z.string().min(5),
   descriptionShort: z.string().min(5).optional(),
-  descriptionFull: z.string().min(10).optional(),
+  descriptionFull: z.string().min(5),
   sku: z.string().min(3).optional(),
   currency: z.string().min(1).optional(),
   material: z.string().min(2),

@@ -166,7 +166,7 @@ exports.sellerProductCreateSchema = zod_1.z.object({
     specifications: zod_1.z.array(productSpecificationSchema).optional(),
     description: zod_1.z.string().min(5),
     descriptionShort: zod_1.z.string().min(5).optional(),
-    descriptionFull: zod_1.z.string().min(10).optional(),
+    descriptionFull: zod_1.z.string().min(5),
     sku: zod_1.z.string().min(3).optional(),
     currency: zod_1.z.string().min(1).optional(),
     material: zod_1.z.string().min(2),

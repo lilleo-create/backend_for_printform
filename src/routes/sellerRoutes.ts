@@ -913,6 +913,14 @@ sellerRoutes.post('/products', writeLimiter, async (req: AuthRequest, res, next)
     }
 
     const payload = sellerProductCreateSchema.parse(req.body);
+
+    if (payload.sku && payload.sku.trim() !== '') {
+      const skuExists = await prisma.product.findFirst({ where: { sku: payload.sku, deletedAt: null } });
+      if (skuExists) {
+        return res.status(409).json({ error: { code: 'SKU_CONFLICT', message: 'Артикул уже занят' } });
+      }
+    }
+
     const normalizedCategory = await ensureReferenceCategory(payload.category);
     const skuFallback = payload.sku ?? generateSkuFallback();
 
@@ -964,6 +972,15 @@ sellerRoutes.put('/products/:id', writeLimiter, async (req: AuthRequest, res, ne
 
     const payload = sellerProductUpdateSchema.parse(req.body);
     const productAccessResult = await productUseCases.getForSellerEdit(req.params.id, req.user!.userId);
+
+    if (payload.sku && payload.sku.trim() !== '') {
+      const skuExists = await prisma.product.findFirst({
+        where: { sku: payload.sku, id: { not: req.params.id }, deletedAt: null }
+      });
+      if (skuExists) {
+        return res.status(409).json({ error: { code: 'SKU_CONFLICT', message: 'Артикул уже занят' } });
+      }
+    }
 
     if (productAccessResult.code === 'NOT_FOUND') {
       return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Товар не найден.' } });

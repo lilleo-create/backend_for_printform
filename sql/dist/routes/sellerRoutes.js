@@ -825,6 +825,12 @@ exports.sellerRoutes.post('/products', rateLimiters_1.writeLimiter, async (req, 
             return res.status(403).json({ error: { code: 'KYC_NOT_APPROVED', message: 'KYC not approved' } });
         }
         const payload = productRoutes_1.sellerProductCreateSchema.parse(req.body);
+        if (payload.sku && payload.sku.trim() !== '') {
+            const skuExists = await prisma_1.prisma.product.findFirst({ where: { sku: payload.sku, deletedAt: null } });
+            if (skuExists) {
+                return res.status(409).json({ error: { code: 'SKU_CONFLICT', message: 'Артикул уже занят' } });
+            }
+        }
         const normalizedCategory = await ensureReferenceCategory(payload.category);
         const skuFallback = payload.sku ?? generateSkuFallback();
         const media = normalizeProductMediaInput(payload);
@@ -869,6 +875,14 @@ exports.sellerRoutes.put('/products/:id', rateLimiters_1.writeLimiter, async (re
         }
         const payload = productRoutes_1.sellerProductUpdateSchema.parse(req.body);
         const productAccessResult = await productUseCases_1.productUseCases.getForSellerEdit(req.params.id, req.user.userId);
+        if (payload.sku && payload.sku.trim() !== '') {
+            const skuExists = await prisma_1.prisma.product.findFirst({
+                where: { sku: payload.sku, id: { not: req.params.id }, deletedAt: null }
+            });
+            if (skuExists) {
+                return res.status(409).json({ error: { code: 'SKU_CONFLICT', message: 'Артикул уже занят' } });
+            }
+        }
         if (productAccessResult.code === 'NOT_FOUND') {
             return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Товар не найден.' } });
         }
