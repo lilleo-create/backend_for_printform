@@ -152,16 +152,19 @@ const trustedDeviceCookieClearOptions = {
     ...trustedDeviceCookieOptions,
     maxAge: undefined,
 };
-const verifyTurnstile = async (token) => {
+const verifyTurnstile = async (token, remoteip) => {
     if (!env_1.env.turnstileSecretKey)
         return true;
+    const params = new URLSearchParams({
+        secret: env_1.env.turnstileSecretKey,
+        response: token,
+    });
+    if (remoteip)
+        params.set("remoteip", remoteip);
     const response = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-            secret: env_1.env.turnstileSecretKey,
-            response: token,
-        }),
+        body: params,
     });
     if (!response.ok)
         return false;
@@ -500,6 +503,12 @@ const verifyPurposeAccess = async (purpose, decoded, phoneRaw) => {
 };
 exports.authRoutes.post("/register", rateLimiters_1.authLimiter, async (req, res, next) => {
     try {
+        const captchaToken = typeof req.body?.captchaToken === "string" ? req.body.captchaToken.trim() : undefined;
+        if (captchaToken) {
+            const verified = await verifyTurnstile(captchaToken, req.ip);
+            if (!verified)
+                return res.status(400).json({ ok: false, error: { code: "CAPTCHA_FAILED", message: "Captcha verification failed" } });
+        }
         const payload = registerSchema.parse(req.body);
         const phone = (0, phone_1.normalizePhone)(payload.phone);
         const result = await authService_1.authService.startRegistration(payload.name, payload.fullName, payload.email, payload.password, payload.role, phone, payload.address);
@@ -520,6 +529,12 @@ exports.authRoutes.post("/register", rateLimiters_1.authLimiter, async (req, res
 exports.authRoutes.post("/login", rateLimiters_1.authLimiter, async (req, res, next) => {
     try {
         await deviceTrustService_1.deviceTrustService.cleanupExpired();
+        const captchaToken = typeof req.body?.captchaToken === "string" ? req.body.captchaToken.trim() : undefined;
+        if (captchaToken) {
+            const verified = await verifyTurnstile(captchaToken, req.ip);
+            if (!verified)
+                return res.status(400).json({ ok: false, error: { code: "CAPTCHA_FAILED", message: "Captcha verification failed" } });
+        }
         const payload = loginSchema.parse(req.body);
         if (!payload.phone)
             return res.status(400).json({
@@ -1052,10 +1067,13 @@ exports.authRoutes.get("/yandex/callback", async (req, res) => {
             }
             catch { /* invalid phone from Yandex — skip */ }
         }
+        console.info('[Yandex OAuth] profile phone raw:', profile.phone, '| normalized:', yandexPhone, '| user.phone:', user?.phone ?? null);
         const resolveYandexPhone = async () => {
             if (!yandexPhone)
                 return null;
             const inUse = await userRepository_1.userRepository.findByPhone(yandexPhone);
+            if (inUse)
+                console.info('[Yandex OAuth] phone already taken by userId:', inUse.id);
             return inUse ? null : yandexPhone;
         };
         if (!user) {

@@ -199,17 +199,19 @@ const trustedDeviceCookieClearOptions = {
   maxAge: undefined,
 } as const;
 
-const verifyTurnstile = async (token: string) => {
+const verifyTurnstile = async (token: string, remoteip?: string) => {
   if (!env.turnstileSecretKey) return true;
+  const params = new URLSearchParams({
+    secret: env.turnstileSecretKey,
+    response: token,
+  });
+  if (remoteip) params.set("remoteip", remoteip);
   const response = await fetch(
     "https://challenges.cloudflare.com/turnstile/v0/siteverify",
     {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        secret: env.turnstileSecretKey,
-        response: token,
-      }),
+      body: params,
     },
   );
   if (!response.ok) return false;
@@ -650,6 +652,11 @@ const verifyPurposeAccess = async (
 
 authRoutes.post("/register", authLimiter, async (req, res, next) => {
   try {
+    const captchaToken = typeof req.body?.captchaToken === "string" ? req.body.captchaToken.trim() : undefined;
+    if (captchaToken) {
+      const verified = await verifyTurnstile(captchaToken, req.ip);
+      if (!verified) return res.status(400).json({ ok: false, error: { code: "CAPTCHA_FAILED", message: "Captcha verification failed" } });
+    }
     const payload = registerSchema.parse(req.body);
     const phone = normalizePhone(payload.phone);
     const result = await authService.startRegistration(
@@ -678,6 +685,11 @@ authRoutes.post("/register", authLimiter, async (req, res, next) => {
 authRoutes.post("/login", authLimiter, async (req, res, next) => {
   try {
     await deviceTrustService.cleanupExpired();
+    const captchaToken = typeof req.body?.captchaToken === "string" ? req.body.captchaToken.trim() : undefined;
+    if (captchaToken) {
+      const verified = await verifyTurnstile(captchaToken, req.ip);
+      if (!verified) return res.status(400).json({ ok: false, error: { code: "CAPTCHA_FAILED", message: "Captcha verification failed" } });
+    }
     const payload = loginSchema.parse(req.body);
     if (!payload.phone)
       return res.status(400).json({

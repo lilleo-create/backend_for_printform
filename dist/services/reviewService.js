@@ -516,19 +516,6 @@ exports.reviewService = {
         await prisma_1.prisma.reviewReply.deleteMany({ where: { reviewId } });
         await prisma_1.prisma.reviewReaction.deleteMany({ where: { reviewId } });
         await prisma_1.prisma.review.delete({ where: { id: reviewId } });
-        // Пересчитываем рейтинг продукта после удаления отзыва
-        const aggregate = await prisma_1.prisma.review.aggregate({
-            where: { productId: review.productId, moderationStatus: 'APPROVED', isPublic: true },
-            _avg: { rating: true },
-            _count: { _all: true }
-        });
-        await prisma_1.prisma.product.update({
-            where: { id: review.productId },
-            data: {
-                ratingAvg: aggregate._avg.rating ?? 0,
-                ratingCount: aggregate._count._all ?? 0
-            }
-        });
         return { id: reviewId, deleted: true };
     },
     async updateReply(replyId, actorId, text, isAdmin = false) {

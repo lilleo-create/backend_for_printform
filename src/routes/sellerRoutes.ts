@@ -53,6 +53,7 @@ const IMAGE_UPLOAD_RULES: ReadonlyArray<{ mime: string; extensions: string[] }> 
   { mime: "image/jpeg", extensions: [".jpg", ".jpeg"] },
   { mime: "image/png", extensions: [".png"] },
   { mime: "image/webp", extensions: [".webp"] },
+  { mime: "image/gif", extensions: [".gif"] },
   { mime: "image/heic", extensions: [".heic"] },
   { mime: "image/heif", extensions: [".heif"] }
 ];
@@ -60,13 +61,14 @@ const IMAGE_UPLOAD_RULES: ReadonlyArray<{ mime: string; extensions: string[] }> 
 const VIDEO_UPLOAD_RULES: ReadonlyArray<{ mime: string; extensions: string[] }> = [
   { mime: "video/mp4", extensions: [".mp4", ".m4v"] },
   { mime: "video/quicktime", extensions: [".mov", ".qt"] },
+  { mime: "video/x-msvideo", extensions: [".avi"] },
   { mime: "video/webm", extensions: [".webm"] }
 ];
 
 const allowedImageTypes = IMAGE_UPLOAD_RULES.map((rule) => rule.mime);
 const allowedVideoTypes = VIDEO_UPLOAD_RULES.map((rule) => rule.mime);
-const maxImageSize = 10 * 1024 * 1024;
-const maxVideoSize = 100 * 1024 * 1024;
+const maxImageSize = 15 * 1024 * 1024;
+const maxVideoSize = 200 * 1024 * 1024;
 
 const resolveUploadKind = (file: Pick<Express.Multer.File, "mimetype" | "originalname">): "IMAGE" | "VIDEO" | null => {
   const extension = path.extname(file.originalname ?? "").toLowerCase();
