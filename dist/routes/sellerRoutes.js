@@ -29,6 +29,8 @@ const orderPayment_1 = require("../utils/orderPayment");
 const statusLabels_1 = require("../utils/statusLabels");
 const money_1 = require("../utils/money");
 const orderPublicId_1 = require("../utils/orderPublicId");
+const serializers_1 = require("../utils/serializers");
+const deliveryLabels_1 = require("../utils/deliveryLabels");
 const authService_1 = require("../services/authService");
 exports.sellerRoutes = (0, express_1.Router)();
 // ---------------------------------------------------------
@@ -442,7 +444,7 @@ exports.sellerRoutes.get('/onboarding/prefill', authMiddleware_1.requireAuth, as
     try {
         const user = await prisma_1.prisma.user.findUnique({
             where: { id: req.user.userId },
-            select: { name: true, email: true, phone: true, phoneVerifiedAt: true, googleId: true, yandexId: true }
+            select: { name: true, email: true, phone: true, phoneVerifiedAt: true, googleId: true }
         });
         if (!user)
             return res.status(404).json({ error: { code: 'NOT_FOUND' } });
@@ -451,7 +453,7 @@ exports.sellerRoutes.get('/onboarding/prefill', authMiddleware_1.requireAuth, as
                 name: user.name ?? '',
                 email: user.email ?? '',
                 phone: user.phone ?? null,
-                phoneVerified: Boolean(user.phoneVerifiedAt || user.googleId || user.yandexId)
+                phoneVerified: Boolean(user.phoneVerifiedAt || user.googleId)
             }
         });
     }
@@ -464,11 +466,11 @@ exports.sellerRoutes.post('/onboarding', authMiddleware_1.requireAuth, rateLimit
         const payload = sellerOnboardingSchema.parse(req.body);
         const user = await prisma_1.prisma.user.findUnique({
             where: { id: req.user.userId },
-            select: { phoneVerifiedAt: true, phone: true, email: true, googleId: true, yandexId: true }
+            select: { phoneVerifiedAt: true, phone: true, email: true, googleId: true }
         });
         if (!user)
             return res.status(404).json({ error: { code: 'NOT_FOUND' } });
-        const isVerified = Boolean(user.phoneVerifiedAt || user.googleId || user.yandexId);
+        const isVerified = Boolean(user.phoneVerifiedAt || user.googleId);
         if (!isVerified)
             return res.status(403).json({ error: { code: 'PHONE_NOT_VERIFIED' } });
         const phone = payload.phone || user.phone || '';
@@ -1187,7 +1189,12 @@ exports.sellerRoutes.get('/orders', async (req, res, next) => {
                 ...(0, orderPublicId_1.withOrderPublicId)(o),
                 ...(0, orderPayment_1.computePaymentTiming)(o),
                 paymentExpiresAt: o.paymentExpiresAt,
-                shipment: toShipmentView(shipments.get(o.id) ?? null)
+                shipment: toShipmentView(shipments.get(o.id) ?? null),
+                financials: (0, serializers_1.financialsForSeller)(o),
+                deliveryStatusLabel: (0, deliveryLabels_1.resolveDeliveryStatusLabel)(o),
+                deliveryEta: o.deliveryDaysMin && o.deliveryDaysMax
+                    ? { daysMin: o.deliveryDaysMin, daysMax: o.deliveryDaysMax, text: o.deliveryEtaText ?? null }
+                    : null
             }))
         });
     }
@@ -2028,7 +2035,7 @@ exports.sellerRoutes.patch('/orders/:id/status', rateLimiters_1.writeLimiter, as
                 items: { where: { product: { sellerId: req.user.userId } }, include: { product: true, variant: true } },
                 contact: true,
                 shippingAddress: true,
-                buyer: true
+                buyer: { select: serializers_1.BUYER_PUBLIC_SELECT }
             }
         });
         if (!order)
@@ -2062,7 +2069,7 @@ exports.sellerRoutes.patch('/orders/:id/status', rateLimiters_1.writeLimiter, as
                     items: { where: { product: { sellerId: req.user.userId } }, include: { product: true, variant: true } },
                     contact: true,
                     shippingAddress: true,
-                    buyer: true
+                    buyer: { select: serializers_1.BUYER_PUBLIC_SELECT }
                 }
             });
             if (payload.status === 'DELIVERED') {

@@ -67,8 +67,6 @@ const toShopView = (user, ratingSummary) => {
             name: displayName,
             status: profile.status,
             sellerType: profile.sellerType ?? profile.legalType ?? null,
-            phone: profile.phone,
-            city: profile.city,
             referenceCategory: profile.referenceCategory
         }
     };

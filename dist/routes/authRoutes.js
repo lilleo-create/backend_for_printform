@@ -18,7 +18,6 @@ const rateLimiters_1 = require("../middleware/rateLimiters");
 const prisma_1 = require("../lib/prisma");
 const deviceTrustService_1 = require("../services/deviceTrustService");
 const googleOAuthService_1 = require("../services/googleOAuthService");
-const yandexOAuthService_1 = require("../services/yandexOAuthService");
 exports.authRoutes = (0, express_1.Router)();
 const loginIdentifierSchema = zod_1.z
     .object({
@@ -1040,74 +1039,6 @@ exports.authRoutes.get("/google/callback", async (req, res) => {
         return res.redirect(302, redirectError);
     }
 });
-exports.authRoutes.get("/yandex", (_req, res) => {
-    if (!env_1.env.yandexClientId || !env_1.env.yandexClientSecret) {
-        return res.status(503).json({ error: { code: "OAUTH_NOT_CONFIGURED" } });
-    }
-    return res.redirect(302, yandexOAuthService_1.yandexOAuthService.getAuthUrl());
-});
-exports.authRoutes.get("/yandex/callback", async (req, res) => {
-    const redirectError = `${env_1.env.frontendUrl}/auth?error=yandex_failed`;
-    const code = req.query.code;
-    if (!code) {
-        console.error("[OAuth] Yandex no code in callback", {
-            error: req.query.error,
-            error_description: req.query.error_description,
-            query: req.query
-        });
-        return res.redirect(302, redirectError);
-    }
-    try {
-        const profile = await yandexOAuthService_1.yandexOAuthService.getUserProfile(code);
-        let user = await userRepository_1.userRepository.findByYandexId(profile.yandexId);
-        let yandexPhone = null;
-        if (profile.phone) {
-            try {
-                yandexPhone = (0, phone_1.normalizePhone)(profile.phone);
-            }
-            catch { /* invalid phone from Yandex — skip */ }
-        }
-        console.info('[Yandex OAuth] profile phone raw:', profile.phone, '| normalized:', yandexPhone, '| user.phone:', user?.phone ?? null);
-        const resolveYandexPhone = async () => {
-            if (!yandexPhone)
-                return null;
-            const inUse = await userRepository_1.userRepository.findByPhone(yandexPhone);
-            if (inUse)
-                console.info('[Yandex OAuth] phone already taken by userId:', inUse.id);
-            return inUse ? null : yandexPhone;
-        };
-        if (!user) {
-            const byEmail = await userRepository_1.userRepository.findByEmail(profile.email);
-            if (byEmail) {
-                const phoneForLink = byEmail.phone ? null : await resolveYandexPhone();
-                const verifiedAt = phoneForLink ? new Date() : null;
-                user = await userRepository_1.userRepository.linkYandexAccount(byEmail.id, profile.yandexId, profile.avatarUrl, phoneForLink, verifiedAt);
-            }
-            else {
-                const phoneForCreate = await resolveYandexPhone();
-                user = await userRepository_1.userRepository.createOAuthUser({
-                    ...profile,
-                    phone: phoneForCreate,
-                    phoneVerifiedAt: phoneForCreate ? new Date() : null
-                });
-            }
-        }
-        else if (yandexPhone && !user.phone) {
-            const phoneForUpdate = await resolveYandexPhone();
-            if (phoneForUpdate) {
-                user = await userRepository_1.userRepository.updateProfile(user.id, { phone: phoneForUpdate, phoneVerifiedAt: new Date() });
-            }
-        }
-        const tokens = await authService_1.authService.issueOAuthTokens(user);
-        res.cookie(env_1.env.authRefreshCookieName, tokens.refreshToken, refreshCookieOptions);
-        return res.redirect(302, `${env_1.env.frontendUrl}/auth/oauth-callback?token=${tokens.accessToken}`);
-    }
-    catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        console.error("[OAuth] Yandex callback failed:", msg, error);
-        return res.redirect(302, redirectError);
-    }
-});
 exports.authRoutes.get("/me", authMiddleware_1.authenticate, async (req, res, next) => {
     try {
         const user = await userRepository_1.userRepository.findById(req.user.userId);
@@ -1122,7 +1053,7 @@ exports.authRoutes.get("/me", authMiddleware_1.authenticate, async (req, res, ne
                 phone: user.phone ?? null,
                 role: user.role.toLowerCase(),
                 avatar_url: user.avatarUrl ?? null,
-                is_verified: user.phoneVerifiedAt != null || user.googleId != null || user.yandexId != null
+                is_verified: user.phoneVerifiedAt != null || user.googleId != null
             },
         });
     }

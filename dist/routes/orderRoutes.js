@@ -10,6 +10,27 @@ const orderUseCases_1 = require("../usecases/orderUseCases");
 const orderPayment_1 = require("../utils/orderPayment");
 const paymentFlowService_1 = require("../services/paymentFlowService");
 const orderPublicId_1 = require("../utils/orderPublicId");
+const cdekService_1 = require("../services/cdekService");
+const deliveryLabels_1 = require("../utils/deliveryLabels");
+// Extracts city_code from CDEK PVZ metadata regardless of nesting depth
+const extractCityCode = (meta) => {
+    const rec = (v) => v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+    const num = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : 0; };
+    const m = rec(meta);
+    const r = rec(m.raw);
+    const rr = rec(r.raw);
+    const loc = rec(r.location);
+    const rrloc = rec(rr.location);
+    return (num(m.cityCode) ||
+        num(m.city_code) ||
+        num(r.cityCode) ||
+        num(r.city_code) ||
+        num(loc.city_code) ||
+        num(rr.city_code) ||
+        num(rrloc.city_code) ||
+        0);
+};
+const serializers_1 = require("../utils/serializers");
 exports.orderRoutes = (0, express_1.Router)();
 const buyerPvzSelectionSchema = zod_1.z.object({
     provider: zod_1.z.string().optional(),
@@ -74,13 +95,12 @@ exports.orderRoutes.post('/', authMiddleware_1.authenticate, rateLimiters_1.writ
         }
         const sellerSettings = await prisma_1.prisma.sellerSettings.findUnique({ where: { sellerId: sellerIds[0] } });
         if (sellerSettings?.defaultDropoffPvzId) {
-            const raw = sellerSettings.defaultDropoffPvzMeta?.raw;
-            const cityCode = raw && typeof raw === 'object' ? Number(raw.city_code ?? 0) : 0;
-            if (!Number.isFinite(cityCode) || cityCode <= 0) {
+            const cityCode = extractCityCode(sellerSettings.defaultDropoffPvzMeta);
+            if (cityCode <= 0) {
                 return res.status(400).json({
                     error: {
                         code: 'CITY_CODE_MISSING',
-                        message: 'seller CDEK dropoff PVZ meta must contain raw.city_code',
+                        message: 'seller CDEK dropoff PVZ meta must contain city_code',
                         details: { sellerId: sellerIds[0] }
                     }
                 });
@@ -93,6 +113,29 @@ exports.orderRoutes.post('/', authMiddleware_1.authenticate, rateLimiters_1.writ
         const sellerDropoffAddress = sellerDropoffMeta && typeof sellerDropoffMeta === 'object'
             ? String(sellerDropoffMeta.addressFull ?? '')
             : undefined;
+        // Calculate delivery cost before creating the order so seller sees it immediately
+        let deliveryAmountKopecks = 0;
+        let deliveryDaysMin;
+        let deliveryDaysMax;
+        const sellerCityCode = extractCityCode(sellerDropoffMeta);
+        const buyerCityCode = resolvedBuyerCityCode > 0
+            ? resolvedBuyerCityCode
+            : extractCityCode(payload.buyerPickupPvz);
+        if (sellerCityCode > 0 && buyerCityCode > 0) {
+            try {
+                const quote = await cdekService_1.cdekService.calculateDelivery({
+                    fromCityCode: sellerCityCode,
+                    toCityCode: buyerCityCode,
+                    weightGrams: 500
+                });
+                deliveryAmountKopecks = Math.round(quote.totalSum * 100);
+                deliveryDaysMin = quote.deliveryDaysMin || undefined;
+                deliveryDaysMax = quote.deliveryDaysMax || undefined;
+            }
+            catch (calcErr) {
+                console.warn('[ORDER][delivery-cost-calc-failed]', { sellerCityCode, buyerCityCode: resolvedBuyerCityCode, calcErr });
+            }
+        }
         const order = await orderUseCases_1.orderUseCases.create({
             buyerId: req.user.userId,
             contactId: payload.contactId,
@@ -129,7 +172,10 @@ exports.orderRoutes.post('/', authMiddleware_1.authenticate, rateLimiters_1.writ
                     raw: sellerDropoffRaw,
                     addressFull: sellerDropoffAddress
                 }
-                : undefined
+                : undefined,
+            deliveryAmountKopecks,
+            deliveryDaysMin,
+            deliveryDaysMax
         });
         return res.status(201).json({ data: (0, orderPublicId_1.withOrderPublicId)(order), orderId: order.id });
     }
@@ -221,11 +267,17 @@ exports.orderRoutes.get('/me', authMiddleware_1.authenticate, async (req, res, n
         res.json({
             data: orders.map((order) => {
                 const timing = (0, orderPayment_1.computePaymentTiming)(order);
+                const base = (0, serializers_1.stripInternalOrderFields)((0, orderPublicId_1.withOrderPublicId)(order));
                 return {
-                    ...(0, orderPublicId_1.withOrderPublicId)(order),
+                    ...base,
                     ...timing,
                     canRetryPayment: (0, orderPayment_1.canRetryPayment)(order),
-                    retryPaymentAvailable: (0, orderPayment_1.canRetryPayment)(order)
+                    retryPaymentAvailable: (0, orderPayment_1.canRetryPayment)(order),
+                    financials: (0, serializers_1.financialsForBuyer)(order),
+                    deliveryStatusLabel: (0, deliveryLabels_1.resolveDeliveryStatusLabel)(order),
+                    deliveryEta: order.deliveryDaysMin && order.deliveryDaysMax
+                        ? { daysMin: order.deliveryDaysMin, daysMax: order.deliveryDaysMax, text: order.deliveryEtaText ?? null }
+                        : null
                 };
             })
         });
@@ -254,23 +306,42 @@ exports.orderRoutes.get('/:id/delivery/history', authMiddleware_1.authenticate, 
 });
 exports.orderRoutes.get('/:id', authMiddleware_1.authenticate, async (req, res, next) => {
     try {
+        const userId = req.user.userId;
         const order = await prisma_1.prisma.order.findFirst({
             where: {
                 id: req.params.id,
-                OR: [{ buyerId: req.user.userId }, { items: { some: { product: { sellerId: req.user.userId } } } }]
+                OR: [{ buyerId: userId }, { items: { some: { product: { sellerId: userId } } } }]
             },
             include: {
                 items: { include: { product: true, variant: true } },
                 contact: true,
                 shippingAddress: true,
-                buyer: true,
+                buyer: { select: serializers_1.BUYER_PUBLIC_SELECT },
                 deliveryEvents: { orderBy: { createdAt: 'desc' } }
             }
         });
         if (!order) {
             return res.status(404).json({ error: { code: 'NOT_FOUND' } });
         }
-        return res.json({ data: (0, orderPublicId_1.withOrderPublicId)(order) });
+        const isSeller = order.items.some((item) => item.product.sellerId === userId);
+        const base = (0, orderPublicId_1.withOrderPublicId)(order);
+        const deliveryStatusLabel = (0, deliveryLabels_1.resolveDeliveryStatusLabel)(order);
+        const deliveryEta = order.deliveryDaysMin && order.deliveryDaysMax
+            ? { daysMin: order.deliveryDaysMin, daysMax: order.deliveryDaysMax, text: order.deliveryEtaText ?? null }
+            : null;
+        if (isSeller) {
+            return res.json({
+                data: { ...base, financials: (0, serializers_1.financialsForSeller)(order), deliveryStatusLabel, deliveryEta }
+            });
+        }
+        return res.json({
+            data: {
+                ...(0, serializers_1.stripInternalOrderFields)(base),
+                financials: (0, serializers_1.financialsForBuyer)(order),
+                deliveryStatusLabel,
+                deliveryEta
+            }
+        });
     }
     catch (error) {
         return next(error);

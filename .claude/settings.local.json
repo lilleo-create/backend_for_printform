@@ -6,7 +6,15 @@
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
       "Bash(git push *)",
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\Funtik Funy Cat\\\\Desktop\\\\Frontend\\\\backend_for_printform\" -Recurse -Directory | Select-Object -First 20 | ForEach-Object { $_.FullName })",
+      "Bash(Get-Content \"c:\\\\Users\\\\Funtik Funy Cat\\\\Desktop\\\\Frontend\\\\backend_for_printform\\\\prisma\\\\migrations\\\\20260302121623_init\\\\migration.sql\" -TotalCount 200)",
+      "Bash(npx prisma *)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d.get\\('scripts',{}\\), indent=2\\)\\)\")",
+      "Bash(npm run *)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\Funtik Funy Cat\\\\Desktop\\\\Frontend\\\\backend_for_printform\" -Recurse -Include \"*.sql\")",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(del \"c:\\\\Users\\\\Funtik Funy Cat\\\\Desktop\\\\Frontend\\\\backend_for_printform\\\\src\\\\services\\\\yandexOAuthService.ts\")"
     ]
   }
 }

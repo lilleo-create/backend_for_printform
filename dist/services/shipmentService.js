@@ -4,6 +4,7 @@ exports.shipmentService = exports.markReadyToShipCdek = exports.createShipmentCd
 const node_crypto_1 = require("node:crypto");
 const prisma_1 = require("../lib/prisma");
 const cdekService_1 = require("./cdekService");
+const serializers_1 = require("../utils/serializers");
 const FINAL_STATUSES = ['DELIVERED', 'CANCELLED', 'FAILED'];
 const CDEK_PVZ_CODE_REGEX = /^[A-Z0-9]{3,20}$/;
 const normalizeCdekPvzCode = (value) => String(value ?? '').trim().toUpperCase();
@@ -151,7 +152,7 @@ const loadOrderForCdekShipment = async (orderId, sellerId) => {
         where: { id: orderId },
         include: {
             items: { include: { product: true, variant: true } },
-            buyer: true,
+            buyer: { select: serializers_1.BUYER_SHIPMENT_SELECT },
             contact: true
         }
     });
@@ -212,6 +213,11 @@ const loadOrderForCdekShipment = async (orderId, sellerId) => {
         totalWeight,
         firstProduct
     };
+};
+const extractCityCode = (pvzMeta) => {
+    const meta = safeRecord(pvzMeta);
+    const raw = safeRecord(meta.raw);
+    return Number(raw.city_code ?? meta.city_code ?? 0);
 };
 const createShipmentCdek = async (orderId, sellerId) => {
     const { order, fromPvzCodeRaw, toPvzCodeRaw, fromPvzCode, toPvzCode, recipientName, recipientPhone, items, totalWeight, firstProduct } = await loadOrderForCdekShipment(orderId, sellerId);
@@ -320,6 +326,33 @@ const createShipmentCdek = async (orderId, sellerId) => {
         catch (syncError) {
             console.warn('[CDEK][createShipmentCdek] immediate sync failed', { orderId: order.id, syncError });
         }
+        try {
+            const fromCityCode = extractCityCode(order.sellerDropoffPvzMeta);
+            const toCityCode = extractCityCode(order.buyerPickupPvzMeta);
+            if (fromCityCode > 0 && toCityCode > 0) {
+                const deliveryCalc = await cdekService_1.cdekService.calculateDelivery({
+                    fromCityCode,
+                    toCityCode,
+                    weightGrams: totalWeight > 0 ? totalWeight : 500,
+                    lengthCm: firstProduct?.dxCm ?? undefined,
+                    widthCm: firstProduct?.dyCm ?? undefined,
+                    heightCm: firstProduct?.dzCm ?? undefined
+                });
+                await prisma_1.prisma.order.update({
+                    where: { id: order.id },
+                    data: {
+                        deliveryAmountKopecks: Math.round(deliveryCalc.totalSum * 100),
+                        deliveryTariffCode: deliveryCalc.tariffCode,
+                        deliveryDaysMin: deliveryCalc.deliveryDaysMin,
+                        deliveryDaysMax: deliveryCalc.deliveryDaysMax,
+                        deliveryCalculatedAt: new Date()
+                    }
+                });
+            }
+        }
+        catch (calcError) {
+            console.warn('[CDEK][createShipmentCdek] delivery cost calculation failed', { orderId: order.id, calcError });
+        }
         return {
             shipment: synced?.shipment ?? shipment,
             cdek: {
@@ -365,7 +398,7 @@ const markReadyToShipCdek = async (orderId, sellerId) => {
             where: { id: order.id },
             data: {
                 readyForShipmentAt: now,
-                status: 'HANDED_TO_DELIVERY',
+                status: 'READY_FOR_SHIPMENT',
                 statusUpdatedAt: now,
                 cdekOrderId: cdekOrderId,
                 cdekOrderUuid: cdekOrderId,

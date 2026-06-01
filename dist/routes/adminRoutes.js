@@ -367,6 +367,20 @@ const updateProductRating = async (productId) => {
         }
     });
 };
+exports.adminRoutes.post('/reviews/recalculate-ratings', authMiddleware_1.requireAdmin, async (_req, res, next) => {
+    try {
+        const products = await prisma_1.prisma.product.findMany({ select: { id: true } });
+        let updated = 0;
+        for (const product of products) {
+            await updateProductRating(product.id);
+            updated++;
+        }
+        return res.json({ ok: true, updated });
+    }
+    catch (error) {
+        return next(error);
+    }
+});
 exports.adminRoutes.get('/reviews', async (req, res, next) => {
     try {
         const status = reviewStatusSchema.parse(req.query.status ?? 'PENDING');

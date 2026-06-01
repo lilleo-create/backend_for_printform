@@ -5,6 +5,7 @@ const prisma_1 = require("../lib/prisma");
 const orderPayment_1 = require("../utils/orderPayment");
 const orderEconomics_1 = require("../utils/orderEconomics");
 const orderPublicId_1 = require("../utils/orderPublicId");
+const serializers_1 = require("../utils/serializers");
 exports.orderRepository = {
     create: (data) => prisma_1.prisma.$transaction(async (tx) => {
         const productIds = data.items.map((item) => item.productId);
@@ -32,7 +33,9 @@ exports.orderRepository = {
                 currency: product.currency
             };
         });
-        const total = itemsWithPrice.reduce((sum, item) => sum + item.priceAtPurchase * item.quantity, 0);
+        const itemsSubtotal = itemsWithPrice.reduce((sum, item) => sum + item.priceAtPurchase * item.quantity, 0);
+        const deliveryAmountKopecks = data.deliveryAmountKopecks ?? 0;
+        const total = itemsSubtotal + deliveryAmountKopecks;
         const economics = (0, orderEconomics_1.calculateOrderEconomics)(total);
         const normalizePvzMeta = (pvz) => {
             if (!pvz)
@@ -77,11 +80,19 @@ exports.orderRepository = {
                 packagesCount: data.packagesCount ?? 1,
                 orderLabels: data.orderLabels ?? undefined,
                 total,
+                // Only include when non-zero so old Prisma clients use DB default(0) safely
+                ...(deliveryAmountKopecks > 0 ? { deliveryAmountKopecks } : {}),
+                ...(data.deliveryDaysMin != null && data.deliveryDaysMin > 0 ? { deliveryDaysMin: data.deliveryDaysMin } : {}),
+                ...(data.deliveryDaysMax != null && data.deliveryDaysMax > 0 ? { deliveryDaysMax: data.deliveryDaysMax } : {}),
+                ...(data.deliveryDaysMin != null && data.deliveryDaysMax != null && data.deliveryDaysMin > 0
+                    ? { deliveryEtaText: `${data.deliveryDaysMin}–${data.deliveryDaysMax} дней` }
+                    : {}),
                 grossAmountKopecks: economics.grossAmountKopecks,
                 serviceFeeKopecks: economics.serviceFeeKopecks,
                 platformFeeKopecks: economics.platformFeeKopecks,
                 acquiringFeeKopecks: economics.acquiringFeeKopecks,
                 sellerNetAmountKopecks: economics.sellerNetAmountKopecks,
+                ...(economics.platformFeePercent > 0 ? { platformFeePercent: economics.platformFeePercent } : {}),
                 paymentStatus: 'PENDING_PAYMENT',
                 paymentExpiresAt: (0, orderPayment_1.nextPaymentExpiryDate)(),
                 expiredAt: null,
@@ -130,7 +141,7 @@ exports.orderRepository = {
                 },
                 contact: true,
                 shippingAddress: true,
-                buyer: true
+                buyer: { select: serializers_1.BUYER_PUBLIC_SELECT }
             },
             orderBy: { createdAt: 'desc' },
             skip: options?.offset ?? 0,

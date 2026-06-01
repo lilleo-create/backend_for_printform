@@ -77,6 +77,22 @@ class CdekService {
         };
         return response.access_token;
     }
+    // Resolves city_code for a buyer PVZ when the CDEK widget doesn't return it
+    async getCityCodeByPvzCode(pvzCode) {
+        const code = String(pvzCode ?? '').trim().toUpperCase();
+        if (!code)
+            return null;
+        const token = await this.getToken();
+        const { baseUrl } = (0, cdek_1.getCdekConfig)();
+        const response = await this.request('getCityCodeByPvzCode', {
+            method: 'GET',
+            url: `${baseUrl}/v2/deliverypoints`,
+            params: { code, type: 'PVZ' },
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        const cityCode = Number(Array.isArray(response) ? response[0]?.location?.city_code : null);
+        return Number.isFinite(cityCode) && cityCode > 0 ? cityCode : null;
+    }
     async getPickupPoints(cityCode, city) {
         const token = await this.getToken();
         const { baseUrl } = (0, cdek_1.getCdekConfig)();
@@ -219,6 +235,75 @@ class CdekService {
             deliveryDaysMax: Number(response.period_max ?? 0),
             tariffCode: 136,
         };
+    }
+    async calculateTariffList(params) {
+        const token = await this.getToken();
+        const { baseUrl } = (0, cdek_1.getCdekConfig)();
+        const response = await this.request("calculateTariffList", {
+            method: "POST",
+            url: `${baseUrl}/v2/calculator/tarifflist`,
+            headers: { Authorization: `Bearer ${token}` },
+            data: {
+                type: 1,
+                from_location: { code: params.fromCityCode },
+                to_location: { code: params.toCityCode },
+                ...(params.shipmentPoint ? { shipment_point: params.shipmentPoint } : {}),
+                ...(params.deliveryPoint ? { delivery_point: params.deliveryPoint } : {}),
+                packages: [
+                    {
+                        weight: params.weightGrams,
+                        length: params.lengthCm ?? 10,
+                        width: params.widthCm ?? 10,
+                        height: params.heightCm ?? 10,
+                    },
+                ],
+            },
+        });
+        return (response.tariff_codes ?? []).map((t) => ({
+            tariffCode: t.tariff_code,
+            tariffName: t.tariff_name,
+            tariffDescription: t.tariff_description ?? null,
+            deliveryMode: t.delivery_mode ?? null,
+            totalSum: Number(t.delivery_sum ?? 0),
+            deliveryDaysMin: Number(t.period_min ?? 0),
+            deliveryDaysMax: Number(t.period_max ?? 0),
+        }));
+    }
+    async deleteOrder(cdekOrderUuid) {
+        const uuid = String(cdekOrderUuid ?? '').trim();
+        if (!uuid)
+            throw new Error('CDEK_ORDER_UUID_REQUIRED');
+        const token = await this.getToken();
+        const { baseUrl } = (0, cdek_1.getCdekConfig)();
+        await this.request('deleteOrder', {
+            method: 'DELETE',
+            url: `${baseUrl}/v2/orders/${encodeURIComponent(uuid)}`,
+            headers: { Authorization: `Bearer ${token}` },
+        });
+    }
+    async updateOrder(params) {
+        const uuid = String(params.uuid ?? '').trim();
+        if (!uuid)
+            throw new Error('CDEK_ORDER_UUID_REQUIRED');
+        const token = await this.getToken();
+        const { baseUrl } = (0, cdek_1.getCdekConfig)();
+        const response = await this.request('updateOrder', {
+            method: 'PATCH',
+            url: `${baseUrl}/v2/orders`,
+            headers: { Authorization: `Bearer ${token}` },
+            data: {
+                uuid,
+                type: 1,
+                tariff_code: 136,
+                recipient: params.recipient,
+                ...(params.packages ? { packages: params.packages } : {}),
+                ...(params.comment ? { comment: params.comment } : {}),
+            },
+        });
+        const requestInfo = response?.requests?.[0];
+        const state = String(requestInfo?.state ?? '').trim();
+        const errors = requestInfo?.errors ?? [];
+        return { state, errors, raw: response };
     }
     async createOrder(params) {
         // ✅ валидации ДО запроса

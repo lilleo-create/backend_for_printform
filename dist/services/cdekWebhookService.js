@@ -9,6 +9,8 @@ const orderCompletionService_1 = require("./orderCompletionService");
 const toOrderStatus = (deliveryState) => {
     if (deliveryState === 'READY_FOR_SHIPMENT')
         return 'READY_FOR_SHIPMENT';
+    if (deliveryState === 'HANDED_TO_DELIVERY')
+        return 'HANDED_TO_DELIVERY';
     if (deliveryState === 'IN_TRANSIT' || deliveryState === 'READY_FOR_PICKUP')
         return 'IN_TRANSIT';
     if (deliveryState === 'DELIVERED')

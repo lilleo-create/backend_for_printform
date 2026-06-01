@@ -7,7 +7,6 @@ exports.userRepository = {
     findByPhone: (phone) => prisma_1.prisma.user.findUnique({ where: { phone } }),
     findById: (id) => prisma_1.prisma.user.findUnique({ where: { id } }),
     findByGoogleId: (googleId) => prisma_1.prisma.user.findUnique({ where: { googleId } }),
-    findByYandexId: (yandexId) => prisma_1.prisma.user.findUnique({ where: { yandexId } }),
     create: (data) => prisma_1.prisma.user.create({
         data: {
             ...data,
@@ -19,7 +18,6 @@ exports.userRepository = {
             email: data.email,
             name: data.name,
             googleId: data.googleId ?? null,
-            yandexId: data.yandexId ?? null,
             avatarUrl: data.avatarUrl ?? null,
             phone: data.phone ?? null,
             phoneVerifiedAt: data.phoneVerifiedAt ?? null,
@@ -29,14 +27,6 @@ exports.userRepository = {
     linkGoogleAccount: (id, googleId, avatarUrl) => prisma_1.prisma.user.update({
         where: { id },
         data: { googleId, ...(avatarUrl !== undefined ? { avatarUrl } : {}) }
-    }),
-    linkYandexAccount: (id, yandexId, avatarUrl, phone, phoneVerifiedAt) => prisma_1.prisma.user.update({
-        where: { id },
-        data: {
-            yandexId,
-            ...(avatarUrl !== undefined ? { avatarUrl } : {}),
-            ...(phone ? { phone, phoneVerifiedAt: phoneVerifiedAt ?? null } : {})
-        }
     }),
     updateProfile: (id, payload) => prisma_1.prisma.user.update({
         where: { id },

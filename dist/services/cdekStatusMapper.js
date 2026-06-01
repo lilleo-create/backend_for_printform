@@ -13,11 +13,14 @@ const READY_FOR_PICKUP_CODES = new Set([
     'READY_FOR_PICKUP',
     'DELIVERY_ARRIVED_PICKUP_POINT'
 ]);
-const IN_TRANSIT_CODES = new Set([
-    'ACCEPTED',
+// Package physically received by CDEK (seller has dropped it off or courier picked it up)
+const HANDED_TO_DELIVERY_CODES = new Set([
     'RECEIVED_AT_SHIPMENT_WAREHOUSE',
+    'RECEIVED_AT_SOURCE_WAREHOUSE',
+    'TAKEN_BY_TRANSPORTER_FROM_SENDER'
+]);
+const IN_TRANSIT_CODES = new Set([
     'READY_FOR_SHIPMENT_IN_SENDER_CITY',
-    'TAKEN_BY_TRANSPORTER_FROM_SENDER',
     'SENT_TO_TRANSIT_CITY',
     'ACCEPTED_IN_TRANSIT_CITY',
     'ACCEPTED_AT_RECIPIENT_CITY_WAREHOUSE',
@@ -69,12 +72,12 @@ const mapCdekStatusToInternalDeliveryState = (statusCode) => {
     const code = String(statusCode ?? '').trim().toUpperCase();
     if (!code)
         return 'UNKNOWN';
-    if (code === 'ACCEPTED')
-        return 'HANDED_TO_DELIVERY';
     if (RECEIPT_CONFIRMED_CODES.has(code))
         return 'DELIVERED';
     if (READY_FOR_PICKUP_CODES.has(code))
         return 'READY_FOR_PICKUP';
+    if (HANDED_TO_DELIVERY_CODES.has(code))
+        return 'HANDED_TO_DELIVERY';
     if (IN_TRANSIT_CODES.has(code))
         return 'IN_TRANSIT';
     if (FAILURE_CODES.has(code))
@@ -83,7 +86,8 @@ const mapCdekStatusToInternalDeliveryState = (statusCode) => {
         return 'RETURNED';
     if (CANCEL_CODES.has(code))
         return 'CANCELLED';
-    if (code === 'CREATED')
+    // CREATED and ACCEPTED — order exists in CDEK but not yet received physically
+    if (code === 'CREATED' || code === 'ACCEPTED')
         return 'READY_FOR_SHIPMENT';
     return 'UNKNOWN';
 };
