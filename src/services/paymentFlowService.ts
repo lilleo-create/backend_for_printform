@@ -5,6 +5,7 @@ import { expirePendingPayments, nextPaymentExpiryDate } from '../utils/orderPaym
 import { money, rublesToKopecks } from '../utils/money';
 import { env } from '../config/env';
 import { yookassaService } from './yookassaService';
+import { cdekService } from './cdekService';
 
 type StartPaymentInput = {
   buyerId: string;
@@ -29,6 +30,23 @@ type StartPaymentInput = {
 const asRecord = (value: unknown): Record<string, unknown> | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+};
+
+const extractCityCodeFromMeta = (meta: unknown): number => {
+  const rec = (v: unknown) => asRecord(v) ?? {};
+  const num = (v: unknown) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : 0; };
+  const m = rec(meta);
+  const r = rec(m.raw);
+  const rr = rec(r.raw);
+  const loc = rec(r.location);
+  const rrloc = rec(rr.location);
+  return (
+    num(m.cityCode) || num(m.city_code) ||
+    num(r.cityCode) || num(r.city_code) ||
+    num(loc.city_code) ||
+    num(rr.city_code) || num(rrloc.city_code) ||
+    0
+  );
 };
 
 const normalizeUuid = (value: unknown): string | null => {
@@ -194,6 +212,29 @@ export const paymentFlowService = {
 
         try {
           const normalizedBuyerPickupPvz = normalizeBuyerPickupPvz(input.buyerPickupPvz);
+
+          // Calculate delivery cost before creating order
+          let deliveryAmountKopecks = 0;
+          let deliveryDaysMin: number | undefined;
+          let deliveryDaysMax: number | undefined;
+          const buyerCityCode = extractCityCodeFromMeta(input.buyerPickupPvz.raw) ||
+            extractCityCodeFromMeta(normalizedBuyerPickupPvz.raw);
+          const sellerCityCode = extractCityCodeFromMeta(sellerSettings?.defaultDropoffPvzMeta);
+          if (buyerCityCode > 0 && sellerCityCode > 0) {
+            try {
+              const quote = await cdekService.calculateDelivery({
+                fromCityCode: sellerCityCode,
+                toCityCode: buyerCityCode,
+                weightGrams: 500
+              });
+              deliveryAmountKopecks = Math.round(quote.totalSum * 100);
+              deliveryDaysMin = quote.deliveryDaysMin || undefined;
+              deliveryDaysMax = quote.deliveryDaysMax || undefined;
+            } catch (calcErr) {
+              console.warn('[PAYMENT][delivery-cost-calc-failed]', { sellerCityCode, buyerCityCode, calcErr });
+            }
+          }
+
           const orderCreateInput = {
             buyerId: input.buyerId,
             paymentAttemptKey: input.paymentAttemptKey,
@@ -216,7 +257,10 @@ export const paymentFlowService = {
             },
             packagesCount: input.packagesCount ?? 1,
             orderLabels: [],
-            items: input.items
+            items: input.items,
+            deliveryAmountKopecks,
+            deliveryDaysMin,
+            deliveryDaysMax
           };
 
           console.info('[PAYMENT][ORDER_CREATE_INPUT]', {

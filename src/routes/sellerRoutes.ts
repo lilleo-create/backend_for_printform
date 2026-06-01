@@ -24,6 +24,9 @@ import { computePaymentTiming, expirePendingPayments } from "../utils/orderPayme
 import { getKycStatusLabelRu } from "../utils/statusLabels";
 import { money } from '../utils/money';
 import { withOrderPublicId } from '../utils/orderPublicId';
+import { formatOrderFinancials } from '../utils/orderFinancials';
+import { BUYER_PUBLIC_SELECT, financialsForSeller } from '../utils/serializers';
+import { resolveDeliveryStatusLabel } from '../utils/deliveryLabels';
 import { authService } from '../services/authService';
 export const sellerRoutes = Router();
 
@@ -508,7 +511,7 @@ sellerRoutes.get('/onboarding/prefill', requireAuth, async (req: AuthRequest, re
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user!.userId },
-      select: { name: true, email: true, phone: true, phoneVerifiedAt: true, googleId: true, yandexId: true }
+      select: { name: true, email: true, phone: true, phoneVerifiedAt: true, googleId: true }
     });
     if (!user) return res.status(404).json({ error: { code: 'NOT_FOUND' } });
     return res.json({
@@ -516,7 +519,7 @@ sellerRoutes.get('/onboarding/prefill', requireAuth, async (req: AuthRequest, re
         name: user.name ?? '',
         email: user.email ?? '',
         phone: user.phone ?? null,
-        phoneVerified: Boolean(user.phoneVerifiedAt || user.googleId || user.yandexId)
+        phoneVerified: Boolean(user.phoneVerifiedAt || user.googleId)
       }
     });
   } catch (error) {
@@ -530,10 +533,10 @@ sellerRoutes.post('/onboarding', requireAuth, writeLimiter, async (req: AuthRequ
 
     const user = await prisma.user.findUnique({
       where: { id: req.user!.userId },
-      select: { phoneVerifiedAt: true, phone: true, email: true, googleId: true, yandexId: true }
+      select: { phoneVerifiedAt: true, phone: true, email: true, googleId: true }
     });
     if (!user) return res.status(404).json({ error: { code: 'NOT_FOUND' } });
-    const isVerified = Boolean(user.phoneVerifiedAt || user.googleId || user.yandexId);
+    const isVerified = Boolean(user.phoneVerifiedAt || user.googleId);
     if (!isVerified) return res.status(403).json({ error: { code: 'PHONE_NOT_VERIFIED' } });
 
     const phone = payload.phone || user.phone || '';
@@ -1330,7 +1333,12 @@ sellerRoutes.get('/orders', async (req: AuthRequest, res, next) => {
         ...withOrderPublicId(o),
         ...computePaymentTiming(o),
         paymentExpiresAt: o.paymentExpiresAt,
-        shipment: toShipmentView(shipments.get(o.id) ?? null)
+        shipment: toShipmentView(shipments.get(o.id) ?? null),
+        financials: financialsForSeller(o),
+        deliveryStatusLabel: resolveDeliveryStatusLabel(o),
+        deliveryEta: o.deliveryDaysMin && o.deliveryDaysMax
+          ? { daysMin: o.deliveryDaysMin, daysMax: o.deliveryDaysMax, text: o.deliveryEtaText ?? null }
+          : null
       }))
     });
   } catch (error) {
@@ -2213,7 +2221,7 @@ sellerRoutes.patch('/orders/:id/status', writeLimiter, async (req: AuthRequest, 
         items: { where: { product: { sellerId: req.user!.userId } }, include: { product: true, variant: true } },
         contact: true,
         shippingAddress: true,
-        buyer: true
+        buyer: { select: BUYER_PUBLIC_SELECT }
       }
     });
 
@@ -2247,7 +2255,7 @@ sellerRoutes.patch('/orders/:id/status', writeLimiter, async (req: AuthRequest, 
           items: { where: { product: { sellerId: req.user!.userId } }, include: { product: true, variant: true } },
           contact: true,
           shippingAddress: true,
-          buyer: true
+          buyer: { select: BUYER_PUBLIC_SELECT }
         }
       });
 

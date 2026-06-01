@@ -3,6 +3,7 @@ import { prisma } from '../lib/prisma';
 import { nextPaymentExpiryDate } from '../utils/orderPayment';
 import { calculateOrderEconomics } from '../utils/orderEconomics';
 import { formatOrderPublicNumber } from '../utils/orderPublicId';
+import { BUYER_PUBLIC_SELECT } from '../utils/serializers';
 
 export const orderRepository = {
   create: (data: {
@@ -15,6 +16,9 @@ export const orderRepository = {
     recipient?: { name: string; phone: string; email?: string | null };
     packagesCount?: number;
     orderLabels?: { packageNo: number; code: string }[];
+    deliveryAmountKopecks?: number;
+    deliveryDaysMin?: number;
+    deliveryDaysMax?: number;
     items: { productId: string; variantId?: string; quantity: number }[];
   }) =>
     prisma.$transaction(async (tx) => {
@@ -46,7 +50,9 @@ export const orderRepository = {
         };
       });
 
-      const total = itemsWithPrice.reduce((sum, item) => sum + item.priceAtPurchase * item.quantity, 0);
+      const itemsSubtotal = itemsWithPrice.reduce((sum, item) => sum + item.priceAtPurchase * item.quantity, 0);
+      const deliveryAmountKopecks = data.deliveryAmountKopecks ?? 0;
+      const total = itemsSubtotal + deliveryAmountKopecks;
       const economics = calculateOrderEconomics(total);
 
       const normalizePvzMeta = (pvz?: { pvzId: string; raw: unknown; addressFull?: string; provider?: 'CDEK' }) => {
@@ -94,11 +100,19 @@ export const orderRepository = {
           packagesCount: data.packagesCount ?? 1,
           orderLabels: (data.orderLabels as unknown as object | undefined) ?? undefined,
           total,
+          // Only include when non-zero so old Prisma clients use DB default(0) safely
+          ...(deliveryAmountKopecks > 0 ? { deliveryAmountKopecks } : {}),
+          ...(data.deliveryDaysMin != null && data.deliveryDaysMin > 0 ? { deliveryDaysMin: data.deliveryDaysMin } : {}),
+          ...(data.deliveryDaysMax != null && data.deliveryDaysMax > 0 ? { deliveryDaysMax: data.deliveryDaysMax } : {}),
+          ...(data.deliveryDaysMin != null && data.deliveryDaysMax != null && data.deliveryDaysMin > 0
+            ? { deliveryEtaText: `${data.deliveryDaysMin}–${data.deliveryDaysMax} дней` }
+            : {}),
           grossAmountKopecks: economics.grossAmountKopecks,
           serviceFeeKopecks: economics.serviceFeeKopecks,
           platformFeeKopecks: economics.platformFeeKopecks,
           acquiringFeeKopecks: economics.acquiringFeeKopecks,
           sellerNetAmountKopecks: economics.sellerNetAmountKopecks,
+          ...(economics.platformFeePercent > 0 ? { platformFeePercent: economics.platformFeePercent } : {}),
           paymentStatus: 'PENDING_PAYMENT',
           paymentExpiresAt: nextPaymentExpiryDate(),
           expiredAt: null,
@@ -159,7 +173,7 @@ export const orderRepository = {
           },
           contact: true,
           shippingAddress: true,
-          buyer: true
+          buyer: { select: BUYER_PUBLIC_SELECT }
         },
         orderBy: { createdAt: 'desc' },
         skip: options?.offset ?? 0,

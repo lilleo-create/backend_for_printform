@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authenticateOptional, type AuthRequest, requireAuth } from '../middleware/authMiddleware';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { prisma } from '../lib/prisma';
+import { cdekService } from '../services/cdekService';
 
 export const checkoutRoutes = Router();
 
@@ -63,6 +64,14 @@ const pickupPointSchema = z.object({
   street: z.string().optional(),
   house: z.string().optional(),
   comment: z.string().optional(),
+  city_code: z.number().int().positive().optional(),
+  location: z.object({
+    city_code: z.number().int().positive().optional(),
+    city: z.string().optional(),
+    latitude: z.number().optional(),
+    longitude: z.number().optional(),
+    address_full: z.string().optional()
+  }).passthrough().optional(),
   position: z
     .object({
       lat: z.number().optional(),
@@ -447,6 +456,12 @@ const getCheckoutData = async ({
     .filter((item): item is NonNullable<typeof item> => Boolean(item));
 
   const parsedPickupPoint = pickupPointSchema.safeParse(prefs?.pickup_point_json);
+  const pickupPointRaw = prefs?.pickup_point_json as Record<string, unknown> | null | undefined;
+  const savedCityCode =
+    Number((pickupPointRaw as any)?.cityCode ?? 0) ||
+    Number((pickupPointRaw as any)?.city_code ?? 0) ||
+    Number((pickupPointRaw as any)?.location?.city_code ?? 0) ||
+    0;
 
   return {
     source,
@@ -466,7 +481,9 @@ const getCheckoutData = async ({
           comment: defaultAddress.courierComment ?? null
         }
       : null,
-    selectedPickupPoint: parsedPickupPoint.success ? parsedPickupPoint.data : null,
+    selectedPickupPoint: parsedPickupPoint.success
+      ? { ...parsedPickupPoint.data, cityCode: savedCityCode > 0 ? savedCityCode : undefined }
+      : null,
     selectedDeliveryMethod: normalizeDeliveryMethod(prefs?.delivery_method),
     selectedDeliverySubType: prefs?.delivery_sub_type ?? null,
     selectedPaymentMethod: prefs?.payment_method ?? 'CARD',
@@ -649,11 +666,28 @@ checkoutRoutes.put('/pickup', requireAuth, writeLimiter, async (req: AuthRequest
       });
     }
 
+    // Try to get city_code from payload first (may not be present if coming from CDEK widget v3)
+    let cityCode =
+      Number(payload.pickupPoint.city_code ?? 0) ||
+      Number(payload.pickupPoint.location?.city_code ?? 0) ||
+      0;
+
+    // Widget v3 doesn't return city_code — resolve it from CDEK API by PVZ code
+    if (cityCode <= 0) {
+      try {
+        const resolved = await cdekService.getCityCodeByPvzCode(buyerPickupPvzId);
+        if (resolved) cityCode = resolved;
+      } catch (err) {
+        console.warn('[CHECKOUT][pickup] failed to resolve city_code from CDEK', { pvzCode: buyerPickupPvzId, err });
+      }
+    }
+
     const pickupPointJson = {
       ...payload.pickupPoint,
       id: buyerPickupPvzId,
       buyerPickupPvzId,
-      addressFull: payload.pickupPoint.fullAddress
+      addressFull: payload.pickupPoint.fullAddress,
+      ...(cityCode > 0 ? { cityCode, city_code: cityCode } : {})
     };
 
     await ensureCheckoutTables();

@@ -7,6 +7,37 @@ import { orderUseCases } from '../usecases/orderUseCases';
 import { canRetryPayment, computePaymentTiming, expirePendingPayments } from '../utils/orderPayment';
 import { paymentFlowService } from '../services/paymentFlowService';
 import { withOrderPublicId } from '../utils/orderPublicId';
+import { formatOrderFinancials } from '../utils/orderFinancials';
+import { cdekService } from '../services/cdekService';
+import { resolveDeliveryStatusLabel } from '../utils/deliveryLabels';
+
+// Extracts city_code from CDEK PVZ metadata regardless of nesting depth
+const extractCityCode = (meta: unknown): number => {
+  const rec = (v: unknown): Record<string, unknown> =>
+    v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  const num = (v: unknown) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : 0; };
+  const m = rec(meta);
+  const r = rec(m.raw);
+  const rr = rec(r.raw);
+  const loc = rec(r.location);
+  const rrloc = rec(rr.location);
+  return (
+    num(m.cityCode) ||
+    num(m.city_code) ||
+    num(r.cityCode) ||
+    num(r.city_code) ||
+    num(loc.city_code) ||
+    num(rr.city_code) ||
+    num(rrloc.city_code) ||
+    0
+  );
+};
+import {
+  BUYER_PUBLIC_SELECT,
+  financialsForBuyer,
+  financialsForSeller,
+  stripInternalOrderFields
+} from '../utils/serializers';
 
 export const orderRoutes = Router();
 
@@ -91,13 +122,12 @@ orderRoutes.post('/', authenticate, writeLimiter, async (req: AuthRequest, res, 
     const sellerSettings = await prisma.sellerSettings.findUnique({ where: { sellerId: sellerIds[0] } });
 
     if (sellerSettings?.defaultDropoffPvzId) {
-      const raw = (sellerSettings.defaultDropoffPvzMeta as Record<string, unknown> | null)?.raw;
-      const cityCode = raw && typeof raw === 'object' ? Number((raw as Record<string, unknown>).city_code ?? 0) : 0;
-      if (!Number.isFinite(cityCode) || cityCode <= 0) {
+      const cityCode = extractCityCode(sellerSettings.defaultDropoffPvzMeta);
+      if (cityCode <= 0) {
         return res.status(400).json({
           error: {
             code: 'CITY_CODE_MISSING',
-            message: 'seller CDEK dropoff PVZ meta must contain raw.city_code',
+            message: 'seller CDEK dropoff PVZ meta must contain city_code',
             details: { sellerId: sellerIds[0] }
           }
         });
@@ -111,6 +141,29 @@ orderRoutes.post('/', authenticate, writeLimiter, async (req: AuthRequest, res, 
     const sellerDropoffAddress = sellerDropoffMeta && typeof sellerDropoffMeta === 'object'
       ? String(sellerDropoffMeta.addressFull ?? '')
       : undefined;
+
+    // Calculate delivery cost before creating the order so seller sees it immediately
+    let deliveryAmountKopecks = 0;
+    let deliveryDaysMin: number | undefined;
+    let deliveryDaysMax: number | undefined;
+    const sellerCityCode = extractCityCode(sellerDropoffMeta);
+    const buyerCityCode = resolvedBuyerCityCode > 0
+      ? resolvedBuyerCityCode
+      : extractCityCode(payload.buyerPickupPvz);
+    if (sellerCityCode > 0 && buyerCityCode > 0) {
+      try {
+        const quote = await cdekService.calculateDelivery({
+          fromCityCode: sellerCityCode,
+          toCityCode: buyerCityCode,
+          weightGrams: 500
+        });
+        deliveryAmountKopecks = Math.round(quote.totalSum * 100);
+        deliveryDaysMin = quote.deliveryDaysMin || undefined;
+        deliveryDaysMax = quote.deliveryDaysMax || undefined;
+      } catch (calcErr) {
+        console.warn('[ORDER][delivery-cost-calc-failed]', { sellerCityCode, buyerCityCode: resolvedBuyerCityCode, calcErr });
+      }
+    }
 
     const order = await orderUseCases.create({
       buyerId: req.user!.userId,
@@ -148,7 +201,10 @@ orderRoutes.post('/', authenticate, writeLimiter, async (req: AuthRequest, res, 
             raw: sellerDropoffRaw,
             addressFull: sellerDropoffAddress
           }
-        : undefined
+        : undefined,
+      deliveryAmountKopecks,
+      deliveryDaysMin,
+      deliveryDaysMax
     });
 
     return res.status(201).json({ data: withOrderPublicId(order), orderId: order.id });
@@ -247,11 +303,17 @@ orderRoutes.get('/me', authenticate, async (req: AuthRequest, res, next) => {
     res.json({
       data: orders.map((order) => {
         const timing = computePaymentTiming(order);
+        const base = stripInternalOrderFields(withOrderPublicId(order) as Record<string, unknown>);
         return {
-          ...withOrderPublicId(order),
+          ...base,
           ...timing,
           canRetryPayment: canRetryPayment(order),
-          retryPaymentAvailable: canRetryPayment(order)
+          retryPaymentAvailable: canRetryPayment(order),
+          financials: financialsForBuyer(order),
+          deliveryStatusLabel: resolveDeliveryStatusLabel(order),
+          deliveryEta: order.deliveryDaysMin && order.deliveryDaysMax
+            ? { daysMin: order.deliveryDaysMin, daysMax: order.deliveryDaysMax, text: order.deliveryEtaText ?? null }
+            : null
         };
       })
     });
@@ -280,23 +342,45 @@ orderRoutes.get('/:id/delivery/history', authenticate, async (req: AuthRequest, 
 
 orderRoutes.get('/:id', authenticate, async (req, res, next) => {
   try {
+    const userId = req.user!.userId;
     const order = await prisma.order.findFirst({
       where: {
         id: req.params.id,
-        OR: [{ buyerId: req.user!.userId }, { items: { some: { product: { sellerId: req.user!.userId } } } }]
+        OR: [{ buyerId: userId }, { items: { some: { product: { sellerId: userId } } } }]
       },
       include: {
         items: { include: { product: true, variant: true } },
         contact: true,
         shippingAddress: true,
-        buyer: true,
+        buyer: { select: BUYER_PUBLIC_SELECT },
         deliveryEvents: { orderBy: { createdAt: 'desc' } }
       }
     });
     if (!order) {
       return res.status(404).json({ error: { code: 'NOT_FOUND' } });
     }
-    return res.json({ data: withOrderPublicId(order) });
+
+    const isSeller = order.items.some((item) => item.product.sellerId === userId);
+    const base = withOrderPublicId(order) as Record<string, unknown>;
+    const deliveryStatusLabel = resolveDeliveryStatusLabel(order);
+    const deliveryEta = order.deliveryDaysMin && order.deliveryDaysMax
+      ? { daysMin: order.deliveryDaysMin, daysMax: order.deliveryDaysMax, text: order.deliveryEtaText ?? null }
+      : null;
+
+    if (isSeller) {
+      return res.json({
+        data: { ...base, financials: financialsForSeller(order), deliveryStatusLabel, deliveryEta }
+      });
+    }
+
+    return res.json({
+      data: {
+        ...stripInternalOrderFields(base),
+        financials: financialsForBuyer(order),
+        deliveryStatusLabel,
+        deliveryEta
+      }
+    });
   } catch (error) {
     return next(error);
   }

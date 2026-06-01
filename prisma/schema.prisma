@@ -12,7 +12,6 @@ model User {
   email                  String                 @unique
   passwordHash           String?
   googleId               String?                @unique
-  yandexId               String?                @unique
   avatarUrl              String?
   name                   String
   fullName               String?
@@ -86,11 +85,6 @@ model SellerProfile {
   acceptedPersonalDataAt   DateTime?
   acceptedPersonalDataSlug String?
 
-  // Состояние регистрации в Яндекс NDD
-  yandexMerchantRegistrationId String?
-  yandexMerchantId             String?
-  yandexMerchantStatus         String? // in_progress | success | validation_error
-  yandexMerchantError          Json?
 }
 
 model City {
@@ -286,13 +280,6 @@ model Order {
   buyerPickupPvzMeta         Json?
   sellerDropoffPvzId         String?
   sellerDropoffPvzMeta       Json?
-  yandexOfferId              String?
-  yandexRequestId            String?
-  yandexStatus               String?
-  yandexSharingUrl           String?
-  yandexCourierOrderId       String?
-  yandexSelfPickupCode       Json?
-  yandexActualInfo           Json?
   cdekOrderId                String?
   cdekOrderUuid              String?
   cdekNumber                 String?
@@ -336,6 +323,8 @@ model Order {
   platformFeeKopecks         Int?
   acquiringFeeKopecks        Int?
   sellerNetAmountKopecks     Int?
+  deliveryAmountKopecks      Int?                 @default(0)
+  platformFeePercent         Float?
   grossAmountMinor           Int?
   platformFeeMinor           Int?
   providerFeeMinor           Int?

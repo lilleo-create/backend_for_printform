@@ -14,6 +14,9 @@ export const orderUseCases = {
     recipient?: { name: string; phone: string; email?: string | null };
     packagesCount?: number;
     orderLabels?: { packageNo: number; code: string }[];
+    deliveryAmountKopecks?: number;
+    deliveryDaysMin?: number;
+    deliveryDaysMax?: number;
     items: { productId: string; variantId?: string; quantity: number }[];
   }) => {
     let order: any;

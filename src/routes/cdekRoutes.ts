@@ -162,6 +162,231 @@ cdekRoutes.post('/calculate', async (req, res) => {
   }
 });
 
+// ─── Tariff list ──────────────────────────────────────────────────────────────
+// POST /api/cdek/calculate-tariff-list
+// Returns all available tariffs with costs and timeframes for a route.
+// Used to show delivery options to seller/buyer before creating CDEK order.
+
+const calculateTariffListSchema = z.object({
+  fromCityCode: z.number().int().positive(),
+  toCityCode: z.number().int().positive(),
+  weightGrams: z.number().int().positive(),
+  lengthCm: z.number().int().positive().optional(),
+  widthCm: z.number().int().positive().optional(),
+  heightCm: z.number().int().positive().optional(),
+  shipmentPoint: z.string().optional(),
+  deliveryPoint: z.string().optional()
+});
+
+cdekRoutes.post('/calculate-tariff-list', async (req, res) => {
+  try {
+    const params = calculateTariffListSchema.parse(req.body ?? {});
+    const tariffs = await cdekService.calculateTariffList(params);
+    return res.json({ data: tariffs });
+  } catch (error: any) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: { code: 'VALIDATION_ERROR', details: error.flatten() } });
+    }
+    return res.status(error?.response?.status ?? 502).json(toErrorResponse(error));
+  }
+});
+
+// ─── Delete CDEK order ────────────────────────────────────────────────────────
+// DELETE /api/cdek/orders/:orderId
+// Deletes CDEK order. Only possible while CDEK status is CREATED (before physical acceptance).
+// Resets order.status back to PAID so seller can re-create the CDEK order later.
+
+cdekRoutes.delete('/orders/:orderId', authenticate, async (req: AuthRequest, res) => {
+  try {
+    const order = await prisma.order.findFirst({
+      where: {
+        id: req.params.orderId,
+        items: { some: { product: { sellerId: req.user!.userId } } }
+      },
+      select: {
+        id: true,
+        cdekOrderId: true,
+        cdekStatus: true,
+        status: true,
+        publicNumber: true
+      }
+    });
+
+    if (!order) {
+      return res.status(404).json({ error: { code: 'ORDER_NOT_FOUND' } });
+    }
+
+    const cdekOrderUuid = String(order.cdekOrderId ?? '').trim();
+    if (!cdekOrderUuid) {
+      return res.status(400).json({ error: { code: 'CDEK_ORDER_NOT_CREATED', message: 'CDEK order has not been created yet' } });
+    }
+
+    // CDEK allows deletion only while status is CREATED (before warehouse acceptance)
+    const deletableStatuses = new Set(['CREATED', 'ACCEPTED', 'INVALID']);
+    const cdekStatus = String(order.cdekStatus ?? '').toUpperCase();
+    if (!deletableStatuses.has(cdekStatus)) {
+      return res.status(409).json({
+        error: {
+          code: 'CDEK_ORDER_NOT_DELETABLE',
+          message: 'CDEK order can only be deleted while status is CREATED or ACCEPTED',
+          details: { cdekStatus }
+        }
+      });
+    }
+
+    await cdekService.deleteOrder(cdekOrderUuid);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.order.update({
+        where: { id: order.id },
+        data: {
+          cdekOrderId: null,
+          cdekOrderUuid: null,
+          cdekNumber: null,
+          cdekStatus: null,
+          trackingNumber: null,
+          status: 'PAID' as any,
+          statusUpdatedAt: new Date(),
+          readyForShipmentAt: null,
+          deliveryProvider: null,
+          deliveryStatus: null,
+          deliveryStatusCode: null
+        }
+      });
+      await tx.orderShipment.deleteMany({ where: { orderId: order.id } });
+    });
+
+    console.info('[CDEK][deleteOrder]', {
+      orderId: order.id,
+      publicNumber: order.publicNumber,
+      cdekOrderUuid,
+      sellerId: req.user!.userId
+    });
+
+    return res.json({ ok: true, message: 'CDEK order deleted, seller can re-create it' });
+  } catch (error: any) {
+    return res.status(error?.response?.status ?? 502).json(toErrorResponse(error));
+  }
+});
+
+// ─── Update CDEK order ────────────────────────────────────────────────────────
+// PATCH /api/cdek/orders/:orderId
+// Updates recipient info and/or packages. Only possible while CDEK status is CREATED.
+
+const updateCdekOrderSchema = z.object({
+  recipient: z.object({
+    name: z.string().min(1),
+    phone: z.string().min(5),
+    email: z.string().email().optional().nullable()
+  }).optional(),
+  packages: z.array(z.object({
+    weight: z.number().int().positive(),
+    length: z.number().int().positive().optional(),
+    width: z.number().int().positive().optional(),
+    height: z.number().int().positive().optional()
+  })).min(1).optional(),
+  comment: z.string().max(255).optional()
+});
+
+cdekRoutes.patch('/orders/:orderId', authenticate, async (req: AuthRequest, res) => {
+  try {
+    const payload = updateCdekOrderSchema.parse(req.body ?? {});
+
+    const order = await prisma.order.findFirst({
+      where: {
+        id: req.params.orderId,
+        items: { some: { product: { sellerId: req.user!.userId } } }
+      },
+      select: {
+        id: true,
+        cdekOrderId: true,
+        cdekStatus: true,
+        publicNumber: true,
+        recipientName: true,
+        recipientPhone: true,
+        recipientEmail: true
+      }
+    });
+
+    if (!order) {
+      return res.status(404).json({ error: { code: 'ORDER_NOT_FOUND' } });
+    }
+
+    const cdekOrderUuid = String(order.cdekOrderId ?? '').trim();
+    if (!cdekOrderUuid) {
+      return res.status(400).json({ error: { code: 'CDEK_ORDER_NOT_CREATED' } });
+    }
+
+    const editableStatuses = new Set(['CREATED', 'ACCEPTED']);
+    const cdekStatus = String(order.cdekStatus ?? '').toUpperCase();
+    if (!editableStatuses.has(cdekStatus)) {
+      return res.status(409).json({
+        error: {
+          code: 'CDEK_ORDER_NOT_EDITABLE',
+          message: 'CDEK order can only be updated while status is CREATED or ACCEPTED',
+          details: { cdekStatus }
+        }
+      });
+    }
+
+    const recipientName = payload.recipient?.name ?? String(order.recipientName ?? '');
+    const recipientPhone = payload.recipient?.phone ?? String(order.recipientPhone ?? '');
+
+    const result = await cdekService.updateOrder({
+      uuid: cdekOrderUuid,
+      recipient: {
+        name: recipientName,
+        phones: [{ number: recipientPhone }],
+        email: payload.recipient?.email ?? order.recipientEmail ?? undefined
+      },
+      packages: payload.packages?.map((pkg, i) => ({
+        number: `${order.id}-${i + 1}`,
+        weight: pkg.weight,
+        length: pkg.length,
+        width: pkg.width,
+        height: pkg.height
+      })),
+      comment: payload.comment
+    });
+
+    // Save updated recipient to our DB if provided
+    if (payload.recipient) {
+      await prisma.order.update({
+        where: { id: order.id },
+        data: {
+          recipientName: payload.recipient.name,
+          recipientPhone: payload.recipient.phone,
+          ...(payload.recipient.email !== undefined ? { recipientEmail: payload.recipient.email } : {})
+        }
+      });
+    }
+
+    console.info('[CDEK][updateOrder]', {
+      orderId: order.id,
+      publicNumber: order.publicNumber,
+      cdekOrderUuid,
+      cdekState: result.state,
+      sellerId: req.user!.userId
+    });
+
+    return res.json({
+      ok: true,
+      state: result.state,
+      errors: result.errors,
+      message: result.state === 'ACCEPTED'
+        ? 'Update accepted by CDEK, check status later'
+        : result.state === 'SUCCESSFUL'
+          ? 'Order updated successfully'
+          : 'Update submitted'
+    });
+  } catch (error: any) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: { code: 'VALIDATION_ERROR', details: error.flatten() } });
+    }
+    return res.status(error?.response?.status ?? 502).json(toErrorResponse(error));
+  }
+});
+
 cdekRoutes.post('/webhooks/order-status', async (req, res) => {
   try {
     const result = await cdekWebhookService.applyIncomingStatus(req.body ?? {});

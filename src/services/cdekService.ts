@@ -215,6 +215,25 @@ class CdekService {
     return response.access_token;
   }
 
+  // Resolves city_code for a buyer PVZ when the CDEK widget doesn't return it
+  async getCityCodeByPvzCode(pvzCode: string): Promise<number | null> {
+    const code = String(pvzCode ?? '').trim().toUpperCase();
+    if (!code) return null;
+
+    const token = await this.getToken();
+    const { baseUrl } = getCdekConfig();
+
+    const response = await this.request<CdekPickupPoint[]>('getCityCodeByPvzCode', {
+      method: 'GET',
+      url: `${baseUrl}/v2/deliverypoints`,
+      params: { code, type: 'PVZ' },
+      headers: { Authorization: `Bearer ${token}` }
+    });
+
+    const cityCode = Number(Array.isArray(response) ? response[0]?.location?.city_code : null);
+    return Number.isFinite(cityCode) && cityCode > 0 ? cityCode : null;
+  }
+
   async getPickupPoints(cityCode?: number, city?: string) {
     const token = await this.getToken();
     const { baseUrl } = getCdekConfig();
@@ -379,6 +398,112 @@ class CdekService {
       deliveryDaysMax: Number(response.period_max ?? 0),
       tariffCode: 136 as const,
     };
+  }
+
+  async calculateTariffList(params: CalculateDeliveryParams & { shipmentPoint?: string; deliveryPoint?: string }) {
+    const token = await this.getToken();
+    const { baseUrl } = getCdekConfig();
+
+    const response = await this.request<{
+      tariff_codes: Array<{
+        tariff_code: number;
+        tariff_name: string;
+        tariff_description?: string;
+        delivery_mode?: string;
+        delivery_sum: number;
+        period_min: number;
+        period_max: number;
+        calendar_min?: number;
+        calendar_max?: number;
+      }>;
+      errors?: Array<{ code: string; message: string }>;
+    }>("calculateTariffList", {
+      method: "POST",
+      url: `${baseUrl}/v2/calculator/tarifflist`,
+      headers: { Authorization: `Bearer ${token}` },
+      data: {
+        type: 1,
+        from_location: { code: params.fromCityCode },
+        to_location: { code: params.toCityCode },
+        ...(params.shipmentPoint ? { shipment_point: params.shipmentPoint } : {}),
+        ...(params.deliveryPoint ? { delivery_point: params.deliveryPoint } : {}),
+        packages: [
+          {
+            weight: params.weightGrams,
+            length: params.lengthCm ?? 10,
+            width: params.widthCm ?? 10,
+            height: params.heightCm ?? 10,
+          },
+        ],
+      },
+    });
+
+    return (response.tariff_codes ?? []).map((t) => ({
+      tariffCode: t.tariff_code,
+      tariffName: t.tariff_name,
+      tariffDescription: t.tariff_description ?? null,
+      deliveryMode: t.delivery_mode ?? null,
+      totalSum: Number(t.delivery_sum ?? 0),
+      deliveryDaysMin: Number(t.period_min ?? 0),
+      deliveryDaysMax: Number(t.period_max ?? 0),
+    }));
+  }
+
+  async deleteOrder(cdekOrderUuid: string): Promise<void> {
+    const uuid = String(cdekOrderUuid ?? '').trim();
+    if (!uuid) throw new Error('CDEK_ORDER_UUID_REQUIRED');
+
+    const token = await this.getToken();
+    const { baseUrl } = getCdekConfig();
+
+    await this.request('deleteOrder', {
+      method: 'DELETE',
+      url: `${baseUrl}/v2/orders/${encodeURIComponent(uuid)}`,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  }
+
+  async updateOrder(params: {
+    uuid: string;
+    recipient: {
+      name: string;
+      phones: Array<{ number: string }>;
+      email?: string | null;
+    };
+    packages?: Array<{
+      number: string;
+      weight: number;
+      length?: number;
+      width?: number;
+      height?: number;
+    }>;
+    comment?: string;
+  }) {
+    const uuid = String(params.uuid ?? '').trim();
+    if (!uuid) throw new Error('CDEK_ORDER_UUID_REQUIRED');
+
+    const token = await this.getToken();
+    const { baseUrl } = getCdekConfig();
+
+    const response = await this.request<CdekOrderResponse>('updateOrder', {
+      method: 'PATCH',
+      url: `${baseUrl}/v2/orders`,
+      headers: { Authorization: `Bearer ${token}` },
+      data: {
+        uuid,
+        type: 1,
+        tariff_code: 136,
+        recipient: params.recipient,
+        ...(params.packages ? { packages: params.packages } : {}),
+        ...(params.comment ? { comment: params.comment } : {}),
+      },
+    });
+
+    const requestInfo = response?.requests?.[0];
+    const state = String(requestInfo?.state ?? '').trim();
+    const errors = requestInfo?.errors ?? [];
+
+    return { state, errors, raw: response };
   }
 
   async createOrder(params: CreateOrderParams) {

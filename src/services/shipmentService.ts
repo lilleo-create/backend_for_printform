@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Order, OrderShipment, Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { cdekService, type CdekOrderSnapshot } from './cdekService';
+import { BUYER_SHIPMENT_SELECT } from '../utils/serializers';
 
 export type ShipmentInternalStatus =
   | 'CREATED'
@@ -184,7 +185,7 @@ const loadOrderForCdekShipment = async (orderId: string, sellerId?: string) => {
     where: { id: orderId },
     include: {
       items: { include: { product: true, variant: true } },
-      buyer: true,
+      buyer: { select: BUYER_SHIPMENT_SELECT },
       contact: true
     }
   });
@@ -247,6 +248,12 @@ const loadOrderForCdekShipment = async (orderId: string, sellerId?: string) => {
     totalWeight,
     firstProduct
   };
+};
+
+const extractCityCode = (pvzMeta: unknown): number => {
+  const meta = safeRecord(pvzMeta);
+  const raw = safeRecord(meta.raw);
+  return Number(raw.city_code ?? meta.city_code ?? 0);
 };
 
 export const createShipmentCdek = async (orderId: string, sellerId?: string) => {
@@ -377,6 +384,33 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
       console.warn('[CDEK][createShipmentCdek] immediate sync failed', { orderId: order.id, syncError });
     }
 
+    try {
+      const fromCityCode = extractCityCode(order.sellerDropoffPvzMeta);
+      const toCityCode = extractCityCode(order.buyerPickupPvzMeta);
+      if (fromCityCode > 0 && toCityCode > 0) {
+        const deliveryCalc = await cdekService.calculateDelivery({
+          fromCityCode,
+          toCityCode,
+          weightGrams: totalWeight > 0 ? totalWeight : 500,
+          lengthCm: firstProduct?.dxCm ?? undefined,
+          widthCm: firstProduct?.dyCm ?? undefined,
+          heightCm: firstProduct?.dzCm ?? undefined
+        });
+        await prisma.order.update({
+          where: { id: order.id },
+          data: {
+            deliveryAmountKopecks: Math.round(deliveryCalc.totalSum * 100),
+            deliveryTariffCode: deliveryCalc.tariffCode,
+            deliveryDaysMin: deliveryCalc.deliveryDaysMin,
+            deliveryDaysMax: deliveryCalc.deliveryDaysMax,
+            deliveryCalculatedAt: new Date()
+          }
+        });
+      }
+    } catch (calcError) {
+      console.warn('[CDEK][createShipmentCdek] delivery cost calculation failed', { orderId: order.id, calcError });
+    }
+
     return {
       shipment: synced?.shipment ?? shipment,
       cdek: {
@@ -427,7 +461,7 @@ export const markReadyToShipCdek = async (orderId: string, sellerId?: string) =>
       where: { id: order.id },
       data: {
         readyForShipmentAt: now,
-        status: 'HANDED_TO_DELIVERY' as any,
+        status: 'READY_FOR_SHIPMENT' as any,
         statusUpdatedAt: now,
         cdekOrderId: cdekOrderId,
         cdekOrderUuid: cdekOrderId,

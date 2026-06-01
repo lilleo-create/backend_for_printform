@@ -11,6 +11,7 @@ import type { Prisma } from '@prisma/client';
 
 const toOrderStatus = (deliveryState: string): Prisma.OrderUpdateInput['status'] | undefined => {
   if (deliveryState === 'READY_FOR_SHIPMENT') return 'READY_FOR_SHIPMENT';
+  if (deliveryState === 'HANDED_TO_DELIVERY') return 'HANDED_TO_DELIVERY';
   if (deliveryState === 'IN_TRANSIT' || deliveryState === 'READY_FOR_PICKUP') return 'IN_TRANSIT';
   if (deliveryState === 'DELIVERED') return 'DELIVERED';
   if (deliveryState === 'CANCELLED') return 'CANCELLED';

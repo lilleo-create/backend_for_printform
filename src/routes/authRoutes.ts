@@ -20,7 +20,6 @@ import {
 import { prisma } from "../lib/prisma";
 import { deviceTrustService } from "../services/deviceTrustService";
 import { googleOAuthService } from "../services/googleOAuthService";
-import { yandexOAuthService } from "../services/yandexOAuthService";
 
 export const authRoutes = Router();
 
@@ -1271,75 +1270,6 @@ authRoutes.get("/google/callback", async (req, res) => {
   }
 });
 
-authRoutes.get("/yandex", (_req, res) => {
-  if (!env.yandexClientId || !env.yandexClientSecret) {
-    return res.status(503).json({ error: { code: "OAUTH_NOT_CONFIGURED" } });
-  }
-  return res.redirect(302, yandexOAuthService.getAuthUrl());
-});
-
-authRoutes.get("/yandex/callback", async (req, res) => {
-  const redirectError = `${env.frontendUrl}/auth?error=yandex_failed`;
-
-  const code = req.query.code as string | undefined;
-  if (!code) {
-    console.error("[OAuth] Yandex no code in callback", {
-      error: req.query.error,
-      error_description: req.query.error_description,
-      query: req.query
-    });
-    return res.redirect(302, redirectError);
-  }
-
-  try {
-    const profile = await yandexOAuthService.getUserProfile(code);
-
-    let user = await userRepository.findByYandexId(profile.yandexId);
-
-    let yandexPhone: string | null = null;
-    if (profile.phone) {
-      try { yandexPhone = normalizePhone(profile.phone); } catch { /* invalid phone from Yandex — skip */ }
-    }
-
-    const resolveYandexPhone = async (): Promise<string | null> => {
-      if (!yandexPhone) return null;
-      const inUse = await userRepository.findByPhone(yandexPhone);
-      return inUse ? null : yandexPhone;
-    };
-
-    if (!user) {
-      const byEmail = await userRepository.findByEmail(profile.email);
-      if (byEmail) {
-        const phoneForLink = byEmail.phone ? null : await resolveYandexPhone();
-        const verifiedAt = phoneForLink ? new Date() : null;
-        user = await userRepository.linkYandexAccount(byEmail.id, profile.yandexId, profile.avatarUrl, phoneForLink, verifiedAt);
-      } else {
-        const phoneForCreate = await resolveYandexPhone();
-        user = await userRepository.createOAuthUser({
-          ...profile,
-          phone: phoneForCreate,
-          phoneVerifiedAt: phoneForCreate ? new Date() : null
-        });
-      }
-    } else if (yandexPhone && !user.phone) {
-      const phoneForUpdate = await resolveYandexPhone();
-      if (phoneForUpdate) {
-        user = await userRepository.updateProfile(user.id, { phone: phoneForUpdate, phoneVerifiedAt: new Date() });
-      }
-    }
-
-    const tokens = await authService.issueOAuthTokens(user);
-
-    res.cookie(env.authRefreshCookieName, tokens.refreshToken, refreshCookieOptions);
-
-    return res.redirect(302, `${env.frontendUrl}/auth/oauth-callback?token=${tokens.accessToken}`);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error("[OAuth] Yandex callback failed:", msg, error);
-    return res.redirect(302, redirectError);
-  }
-});
-
 authRoutes.get("/me", authenticate, async (req: AuthRequest, res, next) => {
   try {
     const user = await userRepository.findById(req.user!.userId);
@@ -1353,7 +1283,7 @@ authRoutes.get("/me", authenticate, async (req: AuthRequest, res, next) => {
         phone: user.phone ?? null,
         role: user.role.toLowerCase(),
         avatar_url: user.avatarUrl ?? null,
-        is_verified: user.phoneVerifiedAt != null || user.googleId != null || user.yandexId != null
+        is_verified: user.phoneVerifiedAt != null || user.googleId != null
       },
     });
   } catch (error) {
