@@ -441,6 +441,9 @@ cdekRoutes.post('/calculate-for-order', authenticate, async (req: AuthRequest, r
       });
     }
 
+    const sellerPvzCode = String(order.sellerDropoffPvzId ?? '').trim().toUpperCase() || undefined;
+    const buyerPvzCode = String(order.buyerPickupPvzId ?? '').trim().toUpperCase() || undefined;
+
     let totalWeightGrams = 0;
     let maxDx = 10;
     let maxDy = 10;
@@ -474,17 +477,23 @@ cdekRoutes.post('/calculate-for-order', authenticate, async (req: AuthRequest, r
       weightGrams: totalWeightGrams,
       lengthCm: packageDx,
       widthCm: packageDy,
-      heightCm: packageDz
+      heightCm: packageDz,
+      shipmentPoint: sellerPvzCode,
+      deliveryPoint: buyerPvzCode
     });
 
-    const etaMin = new Date(order.createdAt);
-    etaMin.setDate(etaMin.getDate() + quote.deliveryDaysMin);
-    const etaMax = new Date(order.createdAt);
-    etaMax.setDate(etaMax.getDate() + quote.deliveryDaysMax);
+    const now = new Date();
+    const etaMin = quote.calendarMin
+      ? new Date(quote.calendarMin)
+      : (() => { const d = new Date(now); d.setDate(d.getDate() + quote.deliveryDaysMin); return d; })();
+    const etaMax = quote.calendarMax
+      ? new Date(quote.calendarMax)
+      : (() => { const d = new Date(now); d.setDate(d.getDate() + quote.deliveryDaysMax); return d; })();
 
     await prisma.order.update({
       where: { id: orderId },
       data: {
+        deliveryAmountKopecks: Math.round(quote.totalSum * 100),
         deliveryDaysMin: quote.deliveryDaysMin,
         deliveryDaysMax: quote.deliveryDaysMax,
         deliveryEtaText: `${quote.deliveryDaysMin}–${quote.deliveryDaysMax} дней`,
@@ -496,13 +505,21 @@ cdekRoutes.post('/calculate-for-order', authenticate, async (req: AuthRequest, r
     });
 
     return res.json({
-      ...quote,
+      totalSum: quote.totalSum,
+      deliverySum: quote.deliverySum,
+      deliveryDaysMin: quote.deliveryDaysMin,
+      deliveryDaysMax: quote.deliveryDaysMax,
+      calendarMin: quote.calendarMin,
+      calendarMax: quote.calendarMax,
+      tariffCode: quote.tariffCode,
       weightGrams: totalWeightGrams,
       lengthCm: packageDx,
       widthCm: packageDy,
       heightCm: packageDz,
       fromCityCode,
-      toCityCode
+      toCityCode,
+      shipmentPoint: sellerPvzCode ?? null,
+      deliveryPoint: buyerPvzCode ?? null
     });
   } catch (error: any) {
     if (error instanceof z.ZodError) {

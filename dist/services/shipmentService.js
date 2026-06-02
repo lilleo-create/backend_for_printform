@@ -336,8 +336,16 @@ const createShipmentCdek = async (orderId, sellerId) => {
                     weightGrams: totalWeight > 0 ? totalWeight : 500,
                     lengthCm: firstProduct?.dxCm ?? undefined,
                     widthCm: firstProduct?.dyCm ?? undefined,
-                    heightCm: firstProduct?.dzCm ?? undefined
+                    heightCm: firstProduct?.dzCm ?? undefined,
+                    shipmentPoint: fromPvzCode || undefined,
+                    deliveryPoint: toPvzCode || undefined
                 });
+                const etaMin = deliveryCalc.calendarMin
+                    ? new Date(deliveryCalc.calendarMin)
+                    : (() => { const d = new Date(); d.setDate(d.getDate() + deliveryCalc.deliveryDaysMin); return d; })();
+                const etaMax = deliveryCalc.calendarMax
+                    ? new Date(deliveryCalc.calendarMax)
+                    : (() => { const d = new Date(); d.setDate(d.getDate() + deliveryCalc.deliveryDaysMax); return d; })();
                 await prisma_1.prisma.order.update({
                     where: { id: order.id },
                     data: {
@@ -345,6 +353,9 @@ const createShipmentCdek = async (orderId, sellerId) => {
                         deliveryTariffCode: deliveryCalc.tariffCode,
                         deliveryDaysMin: deliveryCalc.deliveryDaysMin,
                         deliveryDaysMax: deliveryCalc.deliveryDaysMax,
+                        deliveryEtaText: `${deliveryCalc.deliveryDaysMin}–${deliveryCalc.deliveryDaysMax} дней`,
+                        estimatedDeliveryDateMin: etaMin,
+                        estimatedDeliveryDateMax: etaMax,
                         deliveryCalculatedAt: new Date()
                     }
                 });

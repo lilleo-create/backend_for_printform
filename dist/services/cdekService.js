@@ -219,6 +219,8 @@ class CdekService {
                 tariff_code: 136,
                 from_location: { code: params.fromCityCode },
                 to_location: { code: params.toCityCode },
+                ...(params.shipmentPoint ? { shipment_point: params.shipmentPoint } : {}),
+                ...(params.deliveryPoint ? { delivery_point: params.deliveryPoint } : {}),
                 packages: [
                     {
                         weight: params.weightGrams,
@@ -231,8 +233,11 @@ class CdekService {
         });
         return {
             totalSum: Number(response.total_sum ?? 0),
+            deliverySum: Number(response.delivery_sum ?? 0),
             deliveryDaysMin: Number(response.period_min ?? 0),
             deliveryDaysMax: Number(response.period_max ?? 0),
+            calendarMin: response.calendar_min ?? null,
+            calendarMax: response.calendar_max ?? null,
             tariffCode: 136,
         };
     }

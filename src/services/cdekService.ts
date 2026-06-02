@@ -27,6 +27,8 @@ type CalculateDeliveryParams = {
   lengthCm?: number;
   widthCm?: number;
   heightCm?: number;
+  shipmentPoint?: string;
+  deliveryPoint?: string;
 };
 
 type CreateOrderItem = {
@@ -371,8 +373,11 @@ class CdekService {
 
     const response = await this.request<{
       total_sum: number;
+      delivery_sum: number;
       period_min: number;
       period_max: number;
+      calendar_min: number | null;
+      calendar_max: number | null;
     }>("calculateDelivery", {
       method: "POST",
       url: `${baseUrl}/v2/calculator/tariff`,
@@ -381,6 +386,8 @@ class CdekService {
         tariff_code: 136,
         from_location: { code: params.fromCityCode },
         to_location: { code: params.toCityCode },
+        ...(params.shipmentPoint ? { shipment_point: params.shipmentPoint } : {}),
+        ...(params.deliveryPoint ? { delivery_point: params.deliveryPoint } : {}),
         packages: [
           {
             weight: params.weightGrams,
@@ -394,8 +401,11 @@ class CdekService {
 
     return {
       totalSum: Number(response.total_sum ?? 0),
+      deliverySum: Number(response.delivery_sum ?? 0),
       deliveryDaysMin: Number(response.period_min ?? 0),
       deliveryDaysMax: Number(response.period_max ?? 0),
+      calendarMin: response.calendar_min ?? null,
+      calendarMax: response.calendar_max ?? null,
       tariffCode: 136 as const,
     };
   }
