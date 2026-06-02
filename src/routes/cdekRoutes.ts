@@ -46,12 +46,24 @@ const toErrorResponse = (error: any) => ({
 });
 
 const readCityCode = (meta: unknown): number | null => {
-  if (!meta || typeof meta !== 'object') return null;
-  const raw = (meta as Record<string, unknown>).raw;
-  if (!raw || typeof raw !== 'object') return null;
-  const value = (raw as Record<string, unknown>).city_code;
-  const cityCode = Number(value);
-  return Number.isFinite(cityCode) && cityCode > 0 ? cityCode : null;
+  const rec = (v: unknown): Record<string, unknown> =>
+    v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : 0; };
+  const m = rec(meta);
+  const r = rec(m.raw);
+  const rr = rec(r.raw);
+  const loc = rec(r.location);
+  const rrloc = rec(rr.location);
+  const code =
+    num(m.cityCode) ||
+    num(m.city_code) ||
+    num(r.cityCode) ||
+    num(r.city_code) ||
+    num(loc.city_code) ||
+    num(rr.city_code) ||
+    num(rrloc.city_code) ||
+    0;
+  return code > 0 ? code : null;
 };
 
 const asPositiveInt = (value: unknown, min: number, fallback: number): number => {
@@ -424,8 +436,18 @@ cdekRoutes.post('/calculate-for-order', authenticate, async (req: AuthRequest, r
       return res.status(404).json({ error: { code: 'ORDER_NOT_FOUND', message: 'Order not found', details: { orderId } } });
     }
 
-    const fromCityCode = readCityCode(order.sellerDropoffPvzMeta);
-    const toCityCode = readCityCode(order.buyerPickupPvzMeta);
+    let fromCityCode = readCityCode(order.sellerDropoffPvzMeta);
+    let toCityCode = readCityCode(order.buyerPickupPvzMeta);
+
+    const sellerPvzCodeEarly = String(order.sellerDropoffPvzId ?? '').trim().toUpperCase() || undefined;
+    const buyerPvzCodeEarly = String(order.buyerPickupPvzId ?? '').trim().toUpperCase() || undefined;
+
+    if (!fromCityCode && sellerPvzCodeEarly) {
+      fromCityCode = await cdekService.getCityCodeByPvzCode(sellerPvzCodeEarly);
+    }
+    if (!toCityCode && buyerPvzCodeEarly) {
+      toCityCode = await cdekService.getCityCodeByPvzCode(buyerPvzCodeEarly);
+    }
 
     if (!fromCityCode || !toCityCode) {
       return res.status(400).json({
@@ -441,8 +463,8 @@ cdekRoutes.post('/calculate-for-order', authenticate, async (req: AuthRequest, r
       });
     }
 
-    const sellerPvzCode = String(order.sellerDropoffPvzId ?? '').trim().toUpperCase() || undefined;
-    const buyerPvzCode = String(order.buyerPickupPvzId ?? '').trim().toUpperCase() || undefined;
+    const sellerPvzCode = sellerPvzCodeEarly;
+    const buyerPvzCode = buyerPvzCodeEarly;
 
     let totalWeightGrams = 0;
     let maxDx = 10;
@@ -483,12 +505,10 @@ cdekRoutes.post('/calculate-for-order', authenticate, async (req: AuthRequest, r
     });
 
     const now = new Date();
-    const etaMin = quote.calendarMin
-      ? new Date(quote.calendarMin)
-      : (() => { const d = new Date(now); d.setDate(d.getDate() + quote.deliveryDaysMin); return d; })();
-    const etaMax = quote.calendarMax
-      ? new Date(quote.calendarMax)
-      : (() => { const d = new Date(now); d.setDate(d.getDate() + quote.deliveryDaysMax); return d; })();
+    const daysMin = quote.calendarMin ?? quote.deliveryDaysMin;
+    const daysMax = quote.calendarMax ?? quote.deliveryDaysMax;
+    const etaMin = new Date(now); etaMin.setDate(etaMin.getDate() + daysMin);
+    const etaMax = new Date(now); etaMax.setDate(etaMax.getDate() + daysMax);
 
     await prisma.order.update({
       where: { id: orderId },

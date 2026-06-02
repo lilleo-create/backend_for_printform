@@ -35,8 +35,9 @@ type CreateOrderItem = {
   id: string;
   name: string;
   article?: string;
-  price: number;
+  price: number; // kopecks
   quantity: number;
+  weight?: number; // grams per unit
 };
 
 type CreateOrderParams = {
@@ -577,8 +578,8 @@ class CdekService {
               name: item.name,
               ware_key: item.article ?? item.id,
               payment: { value: 0 },
-              cost: item.price,
-              weight: 50,
+              cost: Math.round(item.price / 100), // price is in kopecks, CDEK expects rubles
+              weight: item.weight ?? 50,
               amount: item.quantity,
             })),
           },

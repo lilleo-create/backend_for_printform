@@ -230,7 +230,8 @@ const loadOrderForCdekShipment = async (orderId: string, sellerId?: string) => {
     name: item.product.title,
     article: item.variant?.sku ?? item.product.sku,
     price: item.priceAtPurchase,
-    quantity: item.quantity
+    quantity: item.quantity,
+    weight: item.product.weightGrossG ?? undefined,
   }));
 
   const totalWeight = order.items.reduce((sum, item) => sum + (item.product.weightGrossG ?? 0) * item.quantity, 0);
@@ -398,12 +399,11 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
           shipmentPoint: fromPvzCode || undefined,
           deliveryPoint: toPvzCode || undefined
         });
-        const etaMin = deliveryCalc.calendarMin
-          ? new Date(deliveryCalc.calendarMin)
-          : (() => { const d = new Date(); d.setDate(d.getDate() + deliveryCalc.deliveryDaysMin); return d; })();
-        const etaMax = deliveryCalc.calendarMax
-          ? new Date(deliveryCalc.calendarMax)
-          : (() => { const d = new Date(); d.setDate(d.getDate() + deliveryCalc.deliveryDaysMax); return d; })();
+        const nowShipment = new Date();
+        const shipDaysMin = deliveryCalc.calendarMin ?? deliveryCalc.deliveryDaysMin;
+        const shipDaysMax = deliveryCalc.calendarMax ?? deliveryCalc.deliveryDaysMax;
+        const etaMin = new Date(nowShipment); etaMin.setDate(etaMin.getDate() + shipDaysMin);
+        const etaMax = new Date(nowShipment); etaMax.setDate(etaMax.getDate() + shipDaysMax);
         await prisma.order.update({
           where: { id: order.id },
           data: {
@@ -668,22 +668,16 @@ export const shipmentService = {
     }
 
     const orderSnapshot = await cdekService.getOrderInfo(cdekOrderId);
-    const shipment = await prisma.orderShipment.findUnique({ where: { id: params.shipmentId } });
-    const statusRaw = safeRecord(shipment?.statusRaw);
-    const printRaw = safeRecord(statusRaw.print);
     const parsedRelatedEntities = orderSnapshot.relatedEntities;
     const barcodeUrl = parsedRelatedEntities?.barcodeUrls?.[0] ?? null;
-    const printWaybillUrl = String(printRaw.waybillUrl ?? '').trim() || null;
-    const waybillUrl = parsedRelatedEntities?.waybillUrl ?? null;
 
     console.info('[CDEK][label][candidateSources]', {
       shipmentId: params.shipmentId,
       barcodeUrl,
-      printWaybillUrl,
-      waybillUrl
     });
 
-    const candidateUrl = barcodeUrl ?? printWaybillUrl ?? waybillUrl ?? null;
+    // Only use barcode URL — waybill URLs are the act/handover document, not the label sticker
+    const candidateUrl = barcodeUrl ?? null;
     if (candidateUrl) {
       try {
         console.info('[CDEK][label][downloadByUrl][start]', { shipmentId: params.shipmentId, url: candidateUrl });

@@ -340,12 +340,13 @@ const createShipmentCdek = async (orderId, sellerId) => {
                     shipmentPoint: fromPvzCode || undefined,
                     deliveryPoint: toPvzCode || undefined
                 });
-                const etaMin = deliveryCalc.calendarMin
-                    ? new Date(deliveryCalc.calendarMin)
-                    : (() => { const d = new Date(); d.setDate(d.getDate() + deliveryCalc.deliveryDaysMin); return d; })();
-                const etaMax = deliveryCalc.calendarMax
-                    ? new Date(deliveryCalc.calendarMax)
-                    : (() => { const d = new Date(); d.setDate(d.getDate() + deliveryCalc.deliveryDaysMax); return d; })();
+                const nowShipment = new Date();
+                const shipDaysMin = deliveryCalc.calendarMin ?? deliveryCalc.deliveryDaysMin;
+                const shipDaysMax = deliveryCalc.calendarMax ?? deliveryCalc.deliveryDaysMax;
+                const etaMin = new Date(nowShipment);
+                etaMin.setDate(etaMin.getDate() + shipDaysMin);
+                const etaMax = new Date(nowShipment);
+                etaMax.setDate(etaMax.getDate() + shipDaysMax);
                 await prisma_1.prisma.order.update({
                     where: { id: order.id },
                     data: {
