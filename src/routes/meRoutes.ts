@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { Prisma } from '@prisma/client';
 import { requireAuth, AuthRequest } from '../middleware/authMiddleware';
 import { userRepository } from '../repositories/userRepository';
 import { orderUseCases } from '../usecases/orderUseCases';
@@ -12,6 +13,16 @@ import { paymentFlowService } from '../services/paymentFlowService';
 import { withOrderPublicId } from '../utils/orderPublicId';
 
 export const meRoutes = Router();
+
+const prismaErrorMeta = (error: unknown) => {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    return { prismaCode: error.code, prismaMessage: error.message };
+  }
+  if (error instanceof Prisma.PrismaClientValidationError) {
+    return { prismaCode: 'PRISMA_VALIDATION', prismaMessage: error.message };
+  }
+  return { prismaCode: null, prismaMessage: null };
+};
 
 const addressSchema = z.object({
   addressText: z.string().min(3),
@@ -334,6 +345,15 @@ meRoutes.get('/reviews', requireAuth, async (req: AuthRequest, res, next) => {
     const reviews = await reviewService.listByUser(req.user!.userId);
     res.json({ data: reviews });
   } catch (error) {
+    const { prismaCode, prismaMessage } = prismaErrorMeta(error);
+    console.error('[meRoutes.GET /reviews] failed', {
+      endpoint: 'GET /me/reviews',
+      userId: req.user?.userId ?? null,
+      prismaCode,
+      prismaMessage,
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined
+    });
     next(error);
   }
 });
