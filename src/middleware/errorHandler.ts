@@ -127,7 +127,9 @@ export const errorHandler = (
   }
 
   const status =
-    message === 'INVALID_CREDENTIALS' || message === 'UNAUTHORIZED'
+    message === 'CDEK_NOT_CONFIGURED' || message === 'OTP_NOT_CONFIGURED' || message === 'PAYMENTS_NOT_CONFIGURED'
+      ? 503
+      : message === 'INVALID_CREDENTIALS' || message === 'UNAUTHORIZED'
       ? 401
       : message === 'OTP_TOKEN_REQUIRED' || message === 'PASSWORD_RESET_TOKEN_REQUIRED'
       ? 401

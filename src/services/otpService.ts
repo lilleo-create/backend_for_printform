@@ -23,11 +23,12 @@ export type OtpPurpose =
   | 'oauth_phone_binding';
 
 type OtpRequestStatus = 'pending' | 'verified' | 'expired' | 'failed' | 'cancelled';
-export type OtpRequestErrorData = { code: 'OTP_PROVIDER_AUTH_FAILED' | 'OTP_PROVIDER_TIMEOUT' | 'OTP_PROVIDER_UNAVAILABLE' | 'OTP_REQUEST_FAILED'; message: string; };
+export type OtpRequestErrorData = { code: 'OTP_NOT_CONFIGURED' | 'OTP_PROVIDER_AUTH_FAILED' | 'OTP_PROVIDER_TIMEOUT' | 'OTP_PROVIDER_UNAVAILABLE' | 'OTP_REQUEST_FAILED'; message: string; };
 const providerUnavailableMessage = 'Не удалось получить номер для подтверждения. Попробуйте ещё раз позже';
 export type OtpRequestResult = { ok: false; error: OtpRequestErrorData } | { ok: true; throttled: true; data?: undefined; devOtp?: undefined; delivery?: undefined } | { ok: true; data: { requestId: string; verificationType: 'call_to_auth'; callToAuthNumber: string | null; phone: string; provider: 'plusofon' }; throttled?: undefined; devOtp?: undefined; delivery?: undefined } | { ok: true; devOtp?: string; delivery: { channel: string; provider: string; deliveryStatus: string; devMode: boolean }; data?: undefined; throttled?: undefined };
 
 const mapPlusofonRequestError = (error: unknown): OtpRequestErrorData => {
+  if (error instanceof Error && error.message === 'PLUSOFON_NOT_CONFIGURED') return { code: 'OTP_NOT_CONFIGURED', message: 'OTP provider is not configured' };
   if (axios.isAxiosError(error)) {
     const status = error.response?.status;
     if (status === 401 || status === 403) return { code: 'OTP_PROVIDER_AUTH_FAILED', message: 'Сервис подтверждения номера временно недоступен' };

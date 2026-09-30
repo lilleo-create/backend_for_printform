@@ -12,6 +12,7 @@ model User {
   email                  String                 @unique
   passwordHash           String?
   googleId               String?                @unique
+  yandexId               String?                @unique
   avatarUrl              String?
   name                   String
   fullName               String?

@@ -5,6 +5,7 @@ export const userRepository = {
   findByPhone: (phone: string) => prisma.user.findUnique({ where: { phone } }),
   findById: (id: string) => prisma.user.findUnique({ where: { id } }),
   findByGoogleId: (googleId: string) => prisma.user.findUnique({ where: { googleId } }),
+  findByYandexId: (yandexId: string) => prisma.user.findUnique({ where: { yandexId } }),
   create: (data: {
     name: string;
     email: string;
@@ -24,6 +25,7 @@ export const userRepository = {
     email: string;
     name: string;
     googleId?: string;
+    yandexId?: string;
     avatarUrl?: string | null;
     phone?: string | null;
     phoneVerifiedAt?: Date | null;
@@ -33,6 +35,7 @@ export const userRepository = {
         email: data.email,
         name: data.name,
         googleId: data.googleId ?? null,
+        yandexId: data.yandexId ?? null,
         avatarUrl: data.avatarUrl ?? null,
         phone: data.phone ?? null,
         phoneVerifiedAt: data.phoneVerifiedAt ?? null,

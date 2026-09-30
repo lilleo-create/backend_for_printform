@@ -52,6 +52,9 @@ type YooKassaRefundResponse = {
 };
 
 const authHeader = () => {
+  if (!env.yookassaShopId || !env.yookassaSecretKey || !env.yookassaReturnUrl) {
+    throw new Error('PAYMENTS_NOT_CONFIGURED');
+  }
   const authToken = Buffer.from(`${env.yookassaShopId}:${env.yookassaSecretKey}`).toString('base64');
   return `Basic ${authToken}`;
 };

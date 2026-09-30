@@ -1,4 +1,5 @@
 import { Request, Response, Router } from "express";
+import crypto from "crypto";
 import { z } from "zod";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
@@ -20,6 +21,7 @@ import {
 import { prisma } from "../lib/prisma";
 import { deviceTrustService } from "../services/deviceTrustService";
 import { googleOAuthService } from "../services/googleOAuthService";
+import { yandexOAuthService } from "../services/yandexOAuthService";
 
 export const authRoutes = Router();
 
@@ -197,6 +199,11 @@ const trustedDeviceCookieClearOptions = {
   ...trustedDeviceCookieOptions,
   maxAge: undefined,
 } as const;
+
+const yandexStateCookieName = "printform_yandex_oauth_state";
+const yandexStateCookieOptions = { httpOnly: true, secure: env.isProduction, sameSite: "lax" as const, maxAge: 10 * 60 * 1000, path: "/api/auth/yandex" };
+const yandexStateCookieClearOptions = { ...yandexStateCookieOptions, maxAge: undefined } as const;
+const isValidYandexState = (expected: string, received: string) => { const a = Buffer.from(expected); const b = Buffer.from(received); return a.length === b.length && crypto.timingSafeEqual(a, b); };
 
 const verifyTurnstile = async (token: string, remoteip?: string) => {
   if (!env.turnstileSecretKey) return true;
@@ -1227,6 +1234,36 @@ authRoutes.post("/otp/plusofon/webhook", async (req, res, next) => {
     return res.json({ ok: true });
   } catch (error) {
     return next(error);
+  }
+});
+
+authRoutes.get("/yandex", (_req, res) => {
+  if (!env.yandexClientId || !env.yandexClientSecret || !env.yandexCallbackUrl) return res.status(503).json({ error: { code: "OAUTH_NOT_CONFIGURED" } });
+  const state = crypto.randomBytes(32).toString("base64url");
+  res.cookie(yandexStateCookieName, state, yandexStateCookieOptions);
+  return res.redirect(302, yandexOAuthService.getAuthUrl(state));
+});
+
+authRoutes.get("/yandex/callback", async (req, res) => {
+  const fail = env.frontendUrl + "/auth?error=yandex_failed";
+  const expected = typeof req.cookies?.[yandexStateCookieName] === "string" ? req.cookies[yandexStateCookieName] : "";
+  const received = typeof req.query.state === "string" ? req.query.state : "";
+  res.clearCookie(yandexStateCookieName, yandexStateCookieClearOptions);
+  if (!expected || !received || !isValidYandexState(expected, received)) return res.redirect(302, fail);
+  const code = typeof req.query.code === "string" ? req.query.code : "";
+  if (!code) return res.redirect(302, fail);
+  try {
+    const profile = await yandexOAuthService.getUserProfile(code);
+    let user = await userRepository.findByYandexId(profile.yandexId);
+    if (!user) {
+      if (await userRepository.findByEmail(profile.email)) return res.redirect(302, env.frontendUrl + "/auth?error=account_link_required");
+      user = await userRepository.createOAuthUser({ yandexId: profile.yandexId, email: profile.email, name: profile.name, avatarUrl: profile.avatarUrl });
+    }
+    const tokens = await authService.issueOAuthTokens(user);
+    res.cookie(env.authRefreshCookieName, tokens.refreshToken, refreshCookieOptions);
+    return res.redirect(302, env.frontendUrl + "/auth/oauth-callback?token=" + encodeURIComponent(tokens.accessToken));
+  } catch {
+    return res.redirect(302, fail);
   }
 });
 

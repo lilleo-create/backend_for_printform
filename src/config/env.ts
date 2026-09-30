@@ -1,6 +1,8 @@
 import dotenv from 'dotenv';
 
-dotenv.config();
+dotenv.config({
+  path: process.env.NODE_ENV === 'production' ? '.env.production' : '.env'
+});
 
 const requireEnv = (key: string) => {
   const value = process.env[key];
@@ -118,6 +120,9 @@ export const env = {
   isProduction,
   port,
   databaseUrl: requireEnv('DATABASE_URL'),
+  yandexClientId: process.env.YANDEX_CLIENT_ID ?? '',
+  yandexClientSecret: process.env.YANDEX_CLIENT_SECRET ?? '',
+  yandexCallbackUrl: process.env.YANDEX_CALLBACK_URL ?? '',
   googleClientId: process.env.GOOGLE_CLIENT_ID ?? '',
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET ?? '',
   googleCallbackUrl: process.env.GOOGLE_CALLBACK_URL ?? `http://localhost:4000/api/auth/google/callback`,

@@ -69,7 +69,7 @@ const requestHeaders = () => ({
 
 export const plusofonService = {
   isEnabled() {
-    return Boolean(env.plusofonFlashAccessToken);
+    return Boolean(env.plusofonClientId && env.plusofonFlashAccessToken && env.plusofonWebhookSecret);
   },
 
   async requestCallToAuth(phone: string): Promise<PlusofonRequestResult> {
@@ -90,17 +90,7 @@ export const plusofonService = {
       });
 
       const raw = response.data as unknown;
-      console.log('[PLUSOFON RAW requestCallToAuth]', JSON.stringify(raw, null, 2));
-
       const candidate = getCandidateRecord(raw);
-      console.log('[PLUSOFON DEBUG requestCallToAuth]', {
-        plusofonBaseUrl: env.plusofonBaseUrl,
-        plusofonFlashCallEndpoint: env.plusofonFlashCallEndpoint,
-        plusofonWebhookPublicUrl: env.plusofonWebhookPublicUrl,
-        tokenConfigured: Boolean(env.plusofonFlashAccessToken),
-        url,
-        hasAuthorizationHeader: Boolean(requestHeaders().Authorization)
-      });
 
       const requestId =
         pickFromRecord(candidate, ['request_id', 'requestId', 'id', 'key']) ??
@@ -131,11 +121,7 @@ export const plusofonService = {
     } catch (error) {
       if (axios.isAxiosError(error)) {
         console.error('[PLUSOFON] requestCallToAuth failed', {
-          url,
-          payload,
-          status: error.response?.status,
-          responseData: error.response?.data,
-          responseHeaders: error.response?.headers
+          status: error.response?.status
         });
       }
       throw error;
@@ -155,8 +141,6 @@ export const plusofonService = {
     });
 
     const raw = response.data as unknown;
-    console.log('[PLUSOFON RAW checkStatus]', JSON.stringify(raw, null, 2));
-
     const candidate = getCandidateRecord(raw);
     const status = pickFromRecord(candidate, ['status', 'state']) ?? 'pending';
 

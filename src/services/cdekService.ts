@@ -1,5 +1,5 @@
 import axios, { type AxiosRequestConfig } from "axios";
-import { getCdekConfig } from "../config/cdek";
+import { assertCdekConfigured, getCdekConfig } from "../config/cdek";
 
 type CdekTokenResponse = {
   access_token: string;
@@ -190,6 +190,7 @@ class CdekService {
   }
 
   async getToken(): Promise<string> {
+    assertCdekConfigured();
     const now = Date.now();
     if (this.tokenCache && now < this.tokenCache.expiresAtMs - 60_000) {
       return this.tokenCache.token;
