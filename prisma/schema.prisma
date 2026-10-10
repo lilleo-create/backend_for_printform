@@ -124,9 +124,9 @@ model Product {
   color                 String
   deliveryDateEstimated DateTime?
   weightGrossG          Int?
-  dxCm                  Int?
-  dyCm                  Int?
-  dzCm                  Int?
+  dxCm                  Float?
+  dyCm                  Float?
+  dzCm                  Float?
   sellerId              String
   moderationStatus      ProductModerationStatus @default(PENDING)
   moderationNotes       String?

@@ -192,9 +192,9 @@ export const sellerProductCreateSchema = z.object({
   variantSize: z.string().min(1).max(64).optional(),
   variantAttributes: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
   weightGrossG: z.number().int().positive().optional(),
-  dxCm: z.number().int().positive().optional(),
-  dyCm: z.number().int().positive().optional(),
-  dzCm: z.number().int().positive().optional(),
+  dxCm: z.number().positive().optional(),
+  dyCm: z.number().positive().optional(),
+  dzCm: z.number().positive().optional(),
   variants: z
     .array(
       z.object({
