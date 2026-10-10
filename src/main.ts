@@ -27,7 +27,7 @@ import { shipmentsRoutes } from "./routes/shipmentsRoutes";
 import { reviewCrudRoutes, reviewReplyCrudRoutes } from "./routes/reviewCrudRoutes";
 
 import { errorHandler } from "./middleware/errorHandler";
-import { authSensitiveLimiter, globalLimiter, orderSensitiveLimiter, reviewSensitiveLimiter } from "./middleware/rateLimiters";
+import { authSensitiveLimiter, globalLimiter, orderSensitiveLimiter, otpStatusLimiter, reviewSensitiveLimiter } from "./middleware/rateLimiters";
 
 const app = express();
 
@@ -175,6 +175,9 @@ app.use((req, res, next) => {
 });
 
 const mountRoutes = (prefix = "") => {
+  // This must run before the auth router. authSensitiveLimiter explicitly skips
+  // the same read-only path, so mutation-sensitive endpoints remain at 15/min.
+  app.use(`${prefix}/auth/otp/status`, otpStatusLimiter);
   app.use(`${prefix}/auth`, authSensitiveLimiter, authRoutes);
   app.use(`${prefix}/products`, productRoutes);
   app.use(`${prefix}/shops`, shopRoutes);

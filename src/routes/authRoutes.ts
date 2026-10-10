@@ -440,11 +440,11 @@ const parsePlusofonWebhookPayload = (body: unknown) => {
     return null;
   };
   return {
-    requestId: pick("request_id", "requestId", "id", "key"),
-    status: pick("status", "state"),
-    phone: pick("phone", "phone_number", "recipient"),
+    key: pick("key"),
   };
 };
+const isPlusofonWebhookIp = (ip: string | undefined) =>
+  ip?.replace(/^::ffff:/, "") === "185.54.48.1";
 const clearSessionCookies = (res: Response, includeTrustedDevice = false) => {
   res.clearCookie(env.authRefreshCookieName, refreshCookieClearOptions);
   if (includeTrustedDevice)
@@ -1212,25 +1212,20 @@ authRoutes.post("/otp/telegram/callback", async (req, res, next) => {
 });
 authRoutes.post("/otp/plusofon/webhook", async (req, res, next) => {
   try {
-    if (env.plusofonWebhookSecret) {
-      const headerSecret =
-        req.get("X-Webhook-Secret") ?? req.get("X-Plusofon-Secret") ?? "";
-      if (!headerSecret || headerSecret !== env.plusofonWebhookSecret)
-        return res.status(401).json({ error: { code: "INVALID_SIGNATURE" } });
-    }
+    if (!isPlusofonWebhookIp(req.ip))
+      return res.status(403).json({ error: { code: "WEBHOOK_SOURCE_NOT_ALLOWED" } });
     const body = req.body as unknown;
     const parsed = parsePlusofonWebhookPayload(body);
-    if (!parsed.requestId)
+    if (!parsed.key)
       return res.status(200).json({ ok: true, ignored: true });
-    const effectiveStatus =
-      parsed.status ?? (parsed.phone ? "verified" : "pending");
-    const mapped = otpService.mapPlusofonStatus(effectiveStatus);
-    if (mapped !== "pending")
-      await otpService.markOtpVerifiedByProviderRequestId({
-        requestId: parsed.requestId,
-        status: mapped,
-        providerPayload: body,
-      });
+    // call-to-auth posts this endpoint only after a successful user call. The
+    // callback key must match a live local challenge; a phone field is never
+    // treated as proof of verification.
+    const verified = await otpService.markOtpVerifiedByProviderRequestId({
+      requestId: parsed.key,
+      status: "verified",
+    });
+    if (!verified) return res.status(200).json({ ok: true, ignored: true });
     return res.json({ ok: true });
   } catch (error) {
     return next(error);

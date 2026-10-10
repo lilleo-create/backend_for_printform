@@ -11,7 +11,7 @@ test("plusofonService.requestCallToAuth always returns the requested phone inste
 
   (axios.post as unknown as typeof axios.post) = (async () => ({
     data: {
-      request_id: "provider-req-1",
+      key: "provider-key-1",
       phone: "79675180038",
       call_to_auth_number: "79675180038",
     },
@@ -21,7 +21,7 @@ test("plusofonService.requestCallToAuth always returns the requested phone inste
   try {
     const result = await plusofonService.requestCallToAuth("+79778117527");
 
-    assert.equal(result.requestId, "provider-req-1");
+    assert.equal(result.requestId, "provider-key-1");
     assert.equal(result.callToAuthNumber, "79675180038");
     assert.equal(result.phone, "+79778117527");
   } finally {

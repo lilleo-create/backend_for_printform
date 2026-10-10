@@ -2,6 +2,8 @@ import axios from 'axios';
 import { env } from '../config/env';
 
 export type PlusofonRequestResult = {
+  // Plusofon's documented correlation identifier for a reverse Flash Call.
+  // It is intentionally exposed as the opaque requestId used by our API.
   requestId: string;
   verificationType: 'call_to_auth';
   callToAuthNumber: string | null;
@@ -69,7 +71,7 @@ const requestHeaders = () => ({
 
 export const plusofonService = {
   isEnabled() {
-    return Boolean(env.plusofonClientId && env.plusofonFlashAccessToken && env.plusofonWebhookSecret);
+    return Boolean(env.plusofonClientId && env.plusofonFlashAccessToken);
   },
 
   async requestCallToAuth(phone: string): Promise<PlusofonRequestResult> {
@@ -92,12 +94,12 @@ export const plusofonService = {
       const raw = response.data as unknown;
       const candidate = getCandidateRecord(raw);
 
-      const requestId =
-        pickFromRecord(candidate, ['request_id', 'requestId', 'id', 'key']) ??
-        pickString(response.headers['x-request-id']);
+      // `key` is returned by call-to-auth and is repeated by the successful
+      // callback. A transport request id cannot safely correlate a webhook.
+      const requestId = pickFromRecord(candidate, ['key']);
 
       if (!requestId) {
-        throw new Error('PLUSOFON_REQUEST_ID_MISSING');
+        throw new Error('PLUSOFON_KEY_MISSING');
       }
 
       const callToAuthNumber =
@@ -126,29 +128,5 @@ export const plusofonService = {
       }
       throw error;
     }
-  },
-
-  async checkStatus(requestId: string): Promise<PlusofonStatusResult> {
-    if (!this.isEnabled()) {
-      throw new Error('PLUSOFON_NOT_CONFIGURED');
-    }
-
-    const endpoint = env.plusofonFlashCallEndpoint.replace(/\/$/, '');
-    const statusUrl = buildUrl(`${endpoint}/${encodeURIComponent(requestId)}`);
-    const response = await axios.get(statusUrl, {
-      headers: requestHeaders(),
-      timeout: env.plusofonRequestTimeoutMs
-    });
-
-    const raw = response.data as unknown;
-    const candidate = getCandidateRecord(raw);
-    const status = pickFromRecord(candidate, ['status', 'state']) ?? 'pending';
-
-    return {
-      requestId:
-        pickFromRecord(candidate, ['request_id', 'requestId', 'id', 'key']) ?? requestId,
-      status,
-      raw
-    };
   }
 };

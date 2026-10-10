@@ -54,7 +54,21 @@ export const otpVerifyLimiter = createLimiter({
   max: 10,
 });
 export const writeLimiter = createLimiter({ windowMs: 5 * 60 * 1000, max: 60 });
-export const authSensitiveLimiter = createLimiter({ windowMs: 60 * 1000, max: 15 });
+const isOtpStatusPolling = (req: Request) =>
+  req.method === "GET" && /^\/otp\/status\/[^/]+$/.test(req.path);
+
+export const authSensitiveLimiter = createLimiter({
+  windowMs: 60 * 1000,
+  max: 15,
+  skip: isOtpStatusPolling,
+});
+// Flash Call status polling is read-only and has a dedicated cap. The global
+// limiter remains in force for this route.
+export const otpStatusLimiter = createLimiter({
+  windowMs: 60 * 1000,
+  max: 60,
+  errorCode: "OTP_STATUS_RATE_LIMITED",
+});
 export const reviewSensitiveLimiter = createLimiter({ windowMs: 60 * 1000, max: 15 });
 export const orderSensitiveLimiter = createLimiter({ windowMs: 60 * 1000, max: 15 });
 export const publicReadLimiter = createLimiter({
