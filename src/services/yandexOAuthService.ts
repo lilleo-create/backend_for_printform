@@ -57,6 +57,7 @@ export const yandexOAuthService = {
     yandexId: string;
     email: string;
     name: string;
+    fullName: string | null;
     avatarUrl: string | null;
   }> {
     requireYandexConfig();
@@ -92,6 +93,7 @@ export const yandexOAuthService = {
       yandexId,
       email,
       name: realName || login || email.split('@')[0],
+      fullName: realName || null,
       avatarUrl: avatarId ? `https://avatars.yandex.net/get-yapic/${avatarId}/islands-200` : null
     };
   }

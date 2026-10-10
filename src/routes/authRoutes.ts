@@ -59,7 +59,6 @@ const registerSchema = loginFieldsSchema
   .omit({ phone: true, email: true })
   .extend({
     email: z.string().email(),
-    name: z.string().trim().min(2),
     fullName: fullNameSchema,
     phone: z.string().min(5),
     address: z.string().min(3).optional(),
@@ -102,6 +101,7 @@ const otpVerifySchema = z
     requestId: z.string().min(2).optional(),
     purpose: otpPurposeSchema.optional(),
     tempToken: z.string().min(10).optional(),
+    fullName: fullNameSchema.optional(),
   })
   .refine((value) => Boolean(value.code || value.requestId), {
     message: "code or requestId is required",
@@ -666,7 +666,6 @@ authRoutes.post("/register", authLimiter, async (req, res, next) => {
     const payload = registerSchema.parse(req.body);
     const phone = normalizePhone(payload.phone);
     const result = await authService.startRegistration(
-      payload.name,
       payload.fullName,
       payload.email,
       payload.password,
@@ -1140,11 +1139,16 @@ authRoutes.post("/otp/verify", otpVerifyLimiter, async (req, res, next) => {
         if (existingPhone && existingPhone.id !== user.id)
           return res.status(409).json({ error: { code: "PHONE_EXISTS" } });
       }
-      if (!user.phoneVerifiedAt || user.phone !== phone)
+      if (purpose === "oauth_phone_binding" && !user.fullName && !payload.fullName)
+        return res.status(400).json({ error: { code: "FULL_NAME_REQUIRED" } });
+      if (!user.phoneVerifiedAt || user.phone !== phone || (purpose === "oauth_phone_binding" && payload.fullName)) {
+        const normalizedFullName = payload.fullName?.trim().replace(/\s+/g, " ");
         user = await userRepository.updateProfile(user.id, {
           phone,
           phoneVerifiedAt: new Date(),
+          ...(normalizedFullName ? { name: normalizedFullName, fullName: normalizedFullName } : {}),
         });
+      }
     }
     if (purpose === "login_device") {
       const trusted = await deviceTrustService.trustCurrentDevice(user.id, req);
@@ -1252,7 +1256,16 @@ authRoutes.get("/yandex/callback", async (req, res) => {
     let user = await userRepository.findByYandexId(profile.yandexId);
     if (!user) {
       if (await userRepository.findByEmail(profile.email)) return res.redirect(302, env.frontendUrl + "/auth?error=account_link_required");
-      user = await userRepository.createOAuthUser({ yandexId: profile.yandexId, email: profile.email, name: profile.name, avatarUrl: profile.avatarUrl });
+      user = await userRepository.createOAuthUser({ yandexId: profile.yandexId, email: profile.email, name: profile.name, fullName: profile.fullName, avatarUrl: profile.avatarUrl });
+    }
+    if (profile.fullName && !user.fullName) {
+      user = await userRepository.updateProfile(user.id, { name: profile.fullName, fullName: profile.fullName });
+    }
+    if (!user.phone || !user.phoneVerifiedAt) {
+      const onboardingToken = authService.issueOAuthPhoneBindingToken(user);
+      const query = new URLSearchParams({ onboarding: "1", token: onboardingToken });
+      if (!user.fullName) query.set("fullNameRequired", "1");
+      return res.redirect(302, `${env.frontendUrl}/auth/oauth-callback?${query.toString()}`);
     }
     const tokens = await authService.issueOAuthTokens(user);
     res.cookie(env.authRefreshCookieName, tokens.refreshToken, refreshCookieOptions);

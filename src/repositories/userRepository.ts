@@ -24,6 +24,7 @@ export const userRepository = {
   createOAuthUser: (data: {
     email: string;
     name: string;
+    fullName?: string | null;
     googleId?: string;
     yandexId?: string;
     avatarUrl?: string | null;
@@ -34,6 +35,7 @@ export const userRepository = {
       data: {
         email: data.email,
         name: data.name,
+        fullName: data.fullName ?? null,
         googleId: data.googleId ?? null,
         yandexId: data.yandexId ?? null,
         avatarUrl: data.avatarUrl ?? null,

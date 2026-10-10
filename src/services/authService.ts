@@ -73,7 +73,6 @@ export const authService = {
     return createOtpToken({ userId: user.id, scope: 'otp_oauth_phone_binding' }, '15m');
   },
   async startRegistration(
-    nickname: string,
     fullName: string,
     email: string,
     password: string,
@@ -81,6 +80,7 @@ export const authService = {
     phone?: string,
     address?: string
   ) {
+    const normalizedFullName = fullName.trim().replace(/\s+/g, ' ');
     const existingEmail = await userRepository.findByEmail(email);
     if (existingEmail?.phoneVerifiedAt) throw new Error('USER_EXISTS');
     if (phone) {
@@ -92,8 +92,8 @@ export const authService = {
     const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
     const pending = await prisma.pendingRegistration.upsert({
       where: { phone: phone ?? '' },
-      create: { name: nickname, fullName, email, passwordHash: hashed, role: role ?? 'BUYER', phone: phone ?? '', address: address ?? null, expiresAt },
-      update: { name: nickname, fullName, email, passwordHash: hashed, role: role ?? 'BUYER', address: address ?? null, usedAt: null, expiresAt }
+      create: { name: normalizedFullName, fullName: normalizedFullName, email, passwordHash: hashed, role: role ?? 'BUYER', phone: phone ?? '', address: address ?? null, expiresAt },
+      update: { name: normalizedFullName, fullName: normalizedFullName, email, passwordHash: hashed, role: role ?? 'BUYER', address: address ?? null, usedAt: null, expiresAt }
     });
 
     return { pending };
