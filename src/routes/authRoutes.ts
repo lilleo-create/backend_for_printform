@@ -67,13 +67,7 @@ const registerSchema = loginFieldsSchema
   });
 const updateProfileSchema = z.object({
   name: z.string().trim().min(2).optional(),
-  fullName: z
-    .string()
-    .trim()
-    .min(2)
-    .max(120)
-    .transform((value) => value.replace(/\s+/g, " "))
-    .optional(),
+  fullName: fullNameSchema.optional(),
   email: z.string().email().optional(),
   phone: z.string().min(5).optional(),
   address: z.string().min(3).optional(),
@@ -1261,7 +1255,7 @@ authRoutes.get("/yandex/callback", async (req, res) => {
     if (profile.fullName && !user.fullName) {
       user = await userRepository.updateProfile(user.id, { name: profile.fullName, fullName: profile.fullName });
     }
-    if (!user.phone || !user.phoneVerifiedAt) {
+    if (!user.fullName || !user.phone || !user.phoneVerifiedAt) {
       const onboardingToken = authService.issueOAuthPhoneBindingToken(user);
       const query = new URLSearchParams({ onboarding: "1", token: onboardingToken });
       if (!user.fullName) query.set("fullNameRequired", "1");
@@ -1325,6 +1319,7 @@ authRoutes.get("/me", authenticate, async (req: AuthRequest, res, next) => {
         id: user.id,
         email: user.email,
         name: user.name,
+        fullName: user.fullName ?? null,
         phone: user.phone ?? null,
         role: user.role.toLowerCase(),
         avatar_url: user.avatarUrl ?? null,
@@ -1355,15 +1350,15 @@ authRoutes.patch("/me", authenticate, async (req: AuthRequest, res, next) => {
         return res.status(400).json({ error: { code: "PHONE_EXISTS" } });
       if (existingUser.phone !== phone) phoneVerifiedAt = null;
     }
+    const normalizedFullName = payload.fullName?.trim().replace(/\s+/g, " ");
     const updated = await userRepository.updateProfile(req.user!.userId, {
-      name: payload.name,
+      ...(normalizedFullName ? { name: normalizedFullName, fullName: normalizedFullName } : {}),
       email: payload.email,
       phone: payload.phone ? (phone ?? null) : existingUser.phone,
       phoneVerifiedAt: payload.phone
         ? (phoneVerifiedAt ?? null)
         : existingUser.phoneVerifiedAt,
       address: payload.address ?? null,
-      fullName: payload.fullName ?? existingUser.fullName,
     });
     return res.json({ data: authService.getPublicUser(updated) });
   } catch (error) {
