@@ -4,6 +4,7 @@ import { nextPaymentExpiryDate } from '../utils/orderPayment';
 import { calculateOrderEconomics } from '../utils/orderEconomics';
 import { formatOrderPublicNumber } from '../utils/orderPublicId';
 import { BUYER_PUBLIC_SELECT } from '../utils/serializers';
+import type { ShippingSnapshot } from '../services/shippingPackageService';
 
 export const orderRepository = {
   create: (data: {
@@ -15,6 +16,7 @@ export const orderRepository = {
     sellerDropoffPvz?: { provider?: 'CDEK'; pvzId: string; raw: unknown; addressFull?: string };
     recipient?: { name: string; phone: string; email?: string | null };
     packagesCount?: number;
+    shippingSnapshot?: ShippingSnapshot;
     orderLabels?: { packageNo: number; code: string }[];
     deliveryAmountKopecks?: number;
     deliveryDaysMin?: number;
@@ -98,10 +100,12 @@ export const orderRepository = {
           recipientPhone: data.recipient?.phone,
           recipientEmail: data.recipient?.email ?? null,
           packagesCount: data.packagesCount ?? 1,
+          shippingSnapshot: data.shippingSnapshot as any,
           orderLabels: (data.orderLabels as unknown as object | undefined) ?? undefined,
           total,
           // Only include when non-zero so old Prisma clients use DB default(0) safely
           ...(deliveryAmountKopecks > 0 ? { deliveryAmountKopecks } : {}),
+          ...(data.shippingSnapshot ? { deliveryCalculatedAt: new Date() } : {}),
           ...(data.deliveryDaysMin != null && data.deliveryDaysMin > 0 ? { deliveryDaysMin: data.deliveryDaysMin } : {}),
           ...(data.deliveryDaysMax != null && data.deliveryDaysMax > 0 ? { deliveryDaysMax: data.deliveryDaysMax } : {}),
           ...(data.deliveryDaysMin != null && data.deliveryDaysMax != null && data.deliveryDaysMin > 0

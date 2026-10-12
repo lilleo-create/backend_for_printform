@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { getCdekConfig } from '../config/cdek';
 import { cdekService } from '../services/cdekService';
 import { cdekWebhookService } from '../services/cdekWebhookService';
+import { buildShippingSnapshot, toCdekPackage, ShippingQuoteError } from '../services/shippingPackageService';
 import { authenticate, type AuthRequest } from '../middleware/authMiddleware';
 import { prisma } from '../lib/prisma';
 import type { Prisma } from '@prisma/client';
@@ -64,12 +65,6 @@ const readCityCode = (meta: unknown): number | null => {
     num(rrloc.city_code) ||
     0;
   return code > 0 ? code : null;
-};
-
-const asPositiveInt = (value: unknown, min: number, fallback: number): number => {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return Math.max(min, Math.round(parsed));
 };
 
 const safeRecord = (value: unknown): Record<string, unknown> =>
@@ -163,9 +158,9 @@ cdekRoutes.post('/calculate', async (req, res) => {
       fromCityCode: Number(fromCityCode),
       toCityCode: Number(toCityCode),
       weightGrams: Number(weightGrams),
-      lengthCm: lengthCm !== undefined ? Number(lengthCm) : undefined,
-      widthCm: widthCm !== undefined ? Number(widthCm) : undefined,
-      heightCm: heightCm !== undefined ? Number(heightCm) : undefined
+      lengthCm: Number(lengthCm),
+      widthCm: Number(widthCm),
+      heightCm: Number(heightCm)
     });
 
     res.json(result);
@@ -183,9 +178,9 @@ const calculateTariffListSchema = z.object({
   fromCityCode: z.number().int().positive(),
   toCityCode: z.number().int().positive(),
   weightGrams: z.number().int().positive(),
-  lengthCm: z.number().int().positive().optional(),
-  widthCm: z.number().int().positive().optional(),
-  heightCm: z.number().int().positive().optional(),
+  lengthCm: z.number().int().positive(),
+  widthCm: z.number().int().positive(),
+  heightCm: z.number().int().positive(),
   shipmentPoint: z.string().optional(),
   deliveryPoint: z.string().optional()
 });
@@ -435,6 +430,12 @@ cdekRoutes.post('/calculate-for-order', authenticate, async (req: AuthRequest, r
     if (!order) {
       return res.status(404).json({ error: { code: 'ORDER_NOT_FOUND', message: 'Order not found', details: { orderId } } });
     }
+    if (order.paymentStatus === 'PAID') {
+      return res.status(409).json({ error: { code: 'PAID_ORDER_SHIPPING_LOCKED' } });
+    }
+    if (order.shippingSnapshot) {
+      return res.status(409).json({ error: { code: 'SHIPPING_SNAPSHOT_LOCKED' } });
+    }
 
     let fromCityCode = readCityCode(order.sellerDropoffPvzMeta);
     let toCityCode = readCityCode(order.buyerPickupPvzMeta);
@@ -466,40 +467,20 @@ cdekRoutes.post('/calculate-for-order', authenticate, async (req: AuthRequest, r
     const sellerPvzCode = sellerPvzCodeEarly;
     const buyerPvzCode = buyerPvzCodeEarly;
 
-    let totalWeightGrams = 0;
-    let maxDx = 10;
-    let maxDy = 10;
-    let maxDz = 2;
-    let totalItems = 0;
-
-    for (const item of order.items) {
-      const weightPerItem = asPositiveInt(item.product.weightGrossG, 1, 200);
-      if (!item.product.weightGrossG || Number(item.product.weightGrossG) <= 0) {
-        console.warn('[CDEK][calculate-for-order] missing weightGrossG, using fallback 200g', {
-          orderId,
-          orderItemId: item.id,
-          productId: item.productId,
-          variantId: item.variantId
-        });
-      }
-      totalWeightGrams += weightPerItem * item.quantity;
-      totalItems += item.quantity;
-      maxDx = Math.max(maxDx, asPositiveInt(item.product.dxCm, 10, 10));
-      maxDy = Math.max(maxDy, asPositiveInt(item.product.dyCm, 10, 10));
-      maxDz = Math.max(maxDz, asPositiveInt(item.product.dzCm, 2, 2));
-    }
-
-    const packageDx = Math.max(10, maxDx);
-    const packageDy = Math.max(10, maxDy);
-    const packageDz = Math.max(2, maxDz + Math.floor((Math.max(1, totalItems) - 1) / 2));
+    const snapshot = buildShippingSnapshot(order.items.map(item => ({
+      productId: item.productId,
+      quantity: item.quantity,
+      weightGrossG: item.product.weightGrossG,
+      dxCm: item.product.dxCm,
+      dyCm: item.product.dyCm,
+      dzCm: item.product.dzCm
+    })));
+    const parcel = toCdekPackage(snapshot);
 
     const quote = await cdekService.calculateDelivery({
       fromCityCode,
       toCityCode,
-      weightGrams: totalWeightGrams,
-      lengthCm: packageDx,
-      widthCm: packageDy,
-      heightCm: packageDz,
+      ...parcel,
       shipmentPoint: sellerPvzCode,
       deliveryPoint: buyerPvzCode
     });
@@ -532,10 +513,7 @@ cdekRoutes.post('/calculate-for-order', authenticate, async (req: AuthRequest, r
       calendarMin: quote.calendarMin,
       calendarMax: quote.calendarMax,
       tariffCode: quote.tariffCode,
-      weightGrams: totalWeightGrams,
-      lengthCm: packageDx,
-      widthCm: packageDy,
-      heightCm: packageDz,
+      ...parcel,
       fromCityCode,
       toCityCode,
       shipmentPoint: sellerPvzCode ?? null,
@@ -544,6 +522,9 @@ cdekRoutes.post('/calculate-for-order', authenticate, async (req: AuthRequest, r
   } catch (error: any) {
     if (error instanceof z.ZodError) {
       return res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Invalid payload', details: error.flatten() } });
+    }
+    if (error instanceof ShippingQuoteError) {
+      return res.status(400).json({ error: { code: error.code, message: error.message } });
     }
     return res.status(error?.response?.status ?? 502).json(toErrorResponse(error));
   }

@@ -5,6 +5,8 @@ import { authenticate, AuthRequest } from '../middleware/authMiddleware';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { prisma } from '../lib/prisma';
 import { paymentFlowService } from '../services/paymentFlowService';
+import { quoteCheckoutShipping } from '../services/checkoutShippingService';
+import { ShippingQuoteError } from '../services/shippingPackageService';
 
 export const paymentRoutes = Router();
 
@@ -16,6 +18,8 @@ const startSchema = z.object({
     email: z.string().email().optional().nullable()
   }),
   packagesCount: z.number().int().min(1).default(1),
+  expectedDeliveryAmountKopecks: z.number().int().positive().optional(),
+  expectedShippingSnapshot: z.unknown().optional(),
   buyerPickupPvz: z.object({
     provider: z.string().optional(),
     pvzId: z.string().min(1),
@@ -33,6 +37,26 @@ const startSchema = z.object({
       })
     )
     .min(1)
+});
+
+const quoteSchema = startSchema.pick({ buyerPickupPvz: true, items: true });
+
+paymentRoutes.post('/quote', authenticate, writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const payload = quoteSchema.parse(req.body);
+    const result = await quoteCheckoutShipping(payload.items, payload.buyerPickupPvz);
+    return res.json({ data: {
+      deliveryAmountKopecks: result.deliveryAmountKopecks,
+      shippingSnapshot: result.snapshot
+    } });
+  } catch (error) {
+    if (error instanceof ShippingQuoteError ||
+        ['SELLER_DROPOFF_PVZ_REQUIRED', 'PRODUCT_NOT_FOUND', 'MULTI_SELLER_CHECKOUT_NOT_SUPPORTED'].includes((error as Error).message)) {
+      const code = error instanceof ShippingQuoteError ? error.code : (error as Error).message;
+      return res.status(400).json({ error: { code, message: code } });
+    }
+    next(error);
+  }
 });
 
 const yookassaWebhookSchema = z.object({
@@ -62,6 +86,8 @@ paymentRoutes.post('/start', authenticate, writeLimiter, async (req: AuthRequest
       paymentAttemptKey: payload.paymentAttemptKey,
       recipient: payload.recipient,
       packagesCount: payload.packagesCount,
+      expectedDeliveryAmountKopecks: payload.expectedDeliveryAmountKopecks,
+      expectedShippingSnapshot: payload.expectedShippingSnapshot,
       items: payload.items,
       buyerPickupPvz: {
         ...payload.buyerPickupPvz,
@@ -76,6 +102,8 @@ paymentRoutes.post('/start', authenticate, writeLimiter, async (req: AuthRequest
       message === 'PRODUCT_NOT_FOUND' ||
       message === 'MULTI_SELLER_CHECKOUT_NOT_SUPPORTED' ||
       message === 'SELLER_DROPOFF_PVZ_REQUIRED'
+      || message === 'SHIPPING_QUOTE_CHANGED'
+      || error instanceof ShippingQuoteError
         ? 400
         : message === 'ORDER_CREATE_FAILED' || message === 'YOOKASSA_CONFIG_MISSING'
         ? 500

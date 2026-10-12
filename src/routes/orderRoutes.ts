@@ -8,7 +8,7 @@ import { canRetryPayment, computePaymentTiming, expirePendingPayments } from '..
 import { paymentFlowService } from '../services/paymentFlowService';
 import { withOrderPublicId } from '../utils/orderPublicId';
 import { formatOrderFinancials } from '../utils/orderFinancials';
-import { cdekService } from '../services/cdekService';
+import { quoteCheckoutShipping } from '../services/checkoutShippingService';
 import { resolveDeliveryStatusLabel } from '../utils/deliveryLabels';
 
 // Extracts city_code from CDEK PVZ metadata regardless of nesting depth
@@ -142,28 +142,13 @@ orderRoutes.post('/', authenticate, writeLimiter, async (req: AuthRequest, res, 
       ? String(sellerDropoffMeta.addressFull ?? '')
       : undefined;
 
-    // Calculate delivery cost before creating the order so seller sees it immediately
-    let deliveryAmountKopecks = 0;
-    let deliveryDaysMin: number | undefined;
-    let deliveryDaysMax: number | undefined;
-    const sellerCityCode = extractCityCode(sellerDropoffMeta);
     const buyerCityCode = resolvedBuyerCityCode > 0
       ? resolvedBuyerCityCode
       : extractCityCode(payload.buyerPickupPvz);
-    if (sellerCityCode > 0 && buyerCityCode > 0) {
-      try {
-        const quote = await cdekService.calculateDelivery({
-          fromCityCode: sellerCityCode,
-          toCityCode: buyerCityCode,
-          weightGrams: 500
-        });
-        deliveryAmountKopecks = Math.round(quote.totalSum * 100);
-        deliveryDaysMin = quote.deliveryDaysMin || undefined;
-        deliveryDaysMax = quote.deliveryDaysMax || undefined;
-      } catch (calcErr) {
-        console.warn('[ORDER][delivery-cost-calc-failed]', { sellerCityCode, buyerCityCode: resolvedBuyerCityCode, calcErr });
-      }
-    }
+    const shipping = await quoteCheckoutShipping(payload.items, { pvzId: cdekPvzCode, raw: { city_code: buyerCityCode } });
+    const { deliveryAmountKopecks } = shipping;
+    const deliveryDaysMin = shipping.quote.deliveryDaysMin;
+    const deliveryDaysMax = shipping.quote.deliveryDaysMax;
 
     const order = await orderUseCases.create({
       buyerId: req.user!.userId,
@@ -204,7 +189,8 @@ orderRoutes.post('/', authenticate, writeLimiter, async (req: AuthRequest, res, 
         : undefined,
       deliveryAmountKopecks,
       deliveryDaysMin,
-      deliveryDaysMax
+      deliveryDaysMax,
+      shippingSnapshot: shipping.snapshot
     });
 
     return res.status(201).json({ data: withOrderPublicId(order), orderId: order.id });

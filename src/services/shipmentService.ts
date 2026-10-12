@@ -3,6 +3,7 @@ import type { Order, OrderShipment, Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { cdekService, type CdekOrderSnapshot } from './cdekService';
 import { BUYER_SHIPMENT_SELECT } from '../utils/serializers';
+import { toCdekPackage, type ShippingSnapshot } from './shippingPackageService';
 
 export type ShipmentInternalStatus =
   | 'CREATED'
@@ -225,17 +226,18 @@ const loadOrderForCdekShipment = async (orderId: string, sellerId?: string) => {
   const recipientPhone = String(order.recipientPhone ?? '').trim() || String(order.contact?.phone ?? '').trim() || String(order.buyer?.phone ?? '').trim();
   if (!recipientPhone) throw makeError('RECIPIENT_PHONE_REQUIRED');
 
+  if (!order.shippingSnapshot) throw makeError('SHIPPING_SNAPSHOT_MISSING');
+  const snapshot = order.shippingSnapshot as ShippingSnapshot;
+  const shippingPackage = toCdekPackage(snapshot);
   const items = order.items.map((item) => ({
     id: item.id,
     name: item.product.title,
     article: item.variant?.sku ?? item.product.sku,
     price: item.priceAtPurchase,
     quantity: item.quantity,
-    weight: item.product.weightGrossG ?? undefined,
+    weight: snapshot.items.find(entry => entry.productId === item.productId)?.weightGrossG ?? 0,
   }));
-
-  const totalWeight = order.items.reduce((sum, item) => sum + (item.product.weightGrossG ?? 0) * item.quantity, 0);
-  const firstProduct = order.items[0]?.product;
+  if (items.some(item => !item.weight)) throw makeError('SHIPPING_SNAPSHOT_INVALID');
 
   return {
     order,
@@ -246,15 +248,8 @@ const loadOrderForCdekShipment = async (orderId: string, sellerId?: string) => {
     recipientName,
     recipientPhone,
     items,
-    totalWeight,
-    firstProduct
+    shippingPackage
   };
-};
-
-const extractCityCode = (pvzMeta: unknown): number => {
-  const meta = safeRecord(pvzMeta);
-  const raw = safeRecord(meta.raw);
-  return Number(raw.city_code ?? meta.city_code ?? 0);
 };
 
 export const createShipmentCdek = async (orderId: string, sellerId?: string) => {
@@ -267,8 +262,7 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
     recipientName,
     recipientPhone,
     items,
-    totalWeight,
-    firstProduct
+    shippingPackage
   } = await loadOrderForCdekShipment(orderId, sellerId);
 
   const existingShipment = await prisma.orderShipment.findUnique({ where: { orderId: order.id } });
@@ -315,10 +309,10 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
       recipientPhone,
       items,
       comment: `Order ${order.id}`,
-      weightGrams: totalWeight > 0 ? totalWeight : undefined,
-      lengthCm: firstProduct?.dxCm ?? undefined,
-      widthCm: firstProduct?.dyCm ?? undefined,
-      heightCm: firstProduct?.dzCm ?? undefined
+      weightGrams: shippingPackage.weightGrams,
+      lengthCm: shippingPackage.lengthCm,
+      widthCm: shippingPackage.widthCm,
+      heightCm: shippingPackage.heightCm
     });
 
     if (!created.cdekOrderId) throw makeError('CDEK_CREATE_ORDER_NO_UUID');
@@ -383,43 +377,6 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
       synced = await syncShipmentByOrder(order.id);
     } catch (syncError) {
       console.warn('[CDEK][createShipmentCdek] immediate sync failed', { orderId: order.id, syncError });
-    }
-
-    try {
-      const fromCityCode = extractCityCode(order.sellerDropoffPvzMeta);
-      const toCityCode = extractCityCode(order.buyerPickupPvzMeta);
-      if (fromCityCode > 0 && toCityCode > 0) {
-        const deliveryCalc = await cdekService.calculateDelivery({
-          fromCityCode,
-          toCityCode,
-          weightGrams: totalWeight > 0 ? totalWeight : 500,
-          lengthCm: firstProduct?.dxCm ?? undefined,
-          widthCm: firstProduct?.dyCm ?? undefined,
-          heightCm: firstProduct?.dzCm ?? undefined,
-          shipmentPoint: fromPvzCode || undefined,
-          deliveryPoint: toPvzCode || undefined
-        });
-        const nowShipment = new Date();
-        const shipDaysMin = deliveryCalc.calendarMin ?? deliveryCalc.deliveryDaysMin;
-        const shipDaysMax = deliveryCalc.calendarMax ?? deliveryCalc.deliveryDaysMax;
-        const etaMin = new Date(nowShipment); etaMin.setDate(etaMin.getDate() + shipDaysMin);
-        const etaMax = new Date(nowShipment); etaMax.setDate(etaMax.getDate() + shipDaysMax);
-        await prisma.order.update({
-          where: { id: order.id },
-          data: {
-            deliveryAmountKopecks: Math.round(deliveryCalc.totalSum * 100),
-            deliveryTariffCode: deliveryCalc.tariffCode,
-            deliveryDaysMin: deliveryCalc.deliveryDaysMin,
-            deliveryDaysMax: deliveryCalc.deliveryDaysMax,
-            deliveryEtaText: `${deliveryCalc.deliveryDaysMin}–${deliveryCalc.deliveryDaysMax} дней`,
-            estimatedDeliveryDateMin: etaMin,
-            estimatedDeliveryDateMax: etaMax,
-            deliveryCalculatedAt: new Date()
-          }
-        });
-      }
-    } catch (calcError) {
-      console.warn('[CDEK][createShipmentCdek] delivery cost calculation failed', { orderId: order.id, calcError });
     }
 
     return {

@@ -2,6 +2,7 @@ import { OrderStatus, Prisma } from '@prisma/client';
 import { orderRepository } from '../repositories/orderRepository';
 import { userRepository } from '../repositories/userRepository';
 import { sheetsService } from '../services/sheetsService';
+import type { ShippingSnapshot } from '../services/shippingPackageService';
 
 export const orderUseCases = {
   create: async (data: {
@@ -13,6 +14,7 @@ export const orderUseCases = {
     sellerDropoffPvz?: { provider?: 'CDEK'; pvzId: string; raw: unknown; addressFull?: string };
     recipient?: { name: string; phone: string; email?: string | null };
     packagesCount?: number;
+    shippingSnapshot?: ShippingSnapshot;
     orderLabels?: { packageNo: number; code: string }[];
     deliveryAmountKopecks?: number;
     deliveryDaysMin?: number;

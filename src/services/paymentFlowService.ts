@@ -5,7 +5,7 @@ import { expirePendingPayments, nextPaymentExpiryDate } from '../utils/orderPaym
 import { money, rublesToKopecks } from '../utils/money';
 import { env } from '../config/env';
 import { yookassaService } from './yookassaService';
-import { cdekService } from './cdekService';
+import { quoteCheckoutShipping } from './checkoutShippingService';
 
 type StartPaymentInput = {
   buyerId: string;
@@ -16,6 +16,8 @@ type StartPaymentInput = {
     email?: string | null;
   };
   packagesCount?: number;
+  expectedDeliveryAmountKopecks?: number;
+  expectedShippingSnapshot?: unknown;
   items: { productId: string; variantId?: string; quantity: number }[];
   buyerPickupPvz: {
     provider?: 'CDEK';
@@ -30,23 +32,6 @@ type StartPaymentInput = {
 const asRecord = (value: unknown): Record<string, unknown> | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
-};
-
-const extractCityCodeFromMeta = (meta: unknown): number => {
-  const rec = (v: unknown) => asRecord(v) ?? {};
-  const num = (v: unknown) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : 0; };
-  const m = rec(meta);
-  const r = rec(m.raw);
-  const rr = rec(r.raw);
-  const loc = rec(r.location);
-  const rrloc = rec(rr.location);
-  return (
-    num(m.cityCode) || num(m.city_code) ||
-    num(r.cityCode) || num(r.city_code) ||
-    num(loc.city_code) ||
-    num(rr.city_code) || num(rrloc.city_code) ||
-    0
-  );
 };
 
 const normalizeUuid = (value: unknown): string | null => {
@@ -165,88 +150,34 @@ export const paymentFlowService = {
       const blockingReason: null = null;
 
       if (!order) {
-        const productIds = input.items.map((item) => item.productId);
-        const uniqueProductIds = Array.from(new Set(productIds));
-        console.info('[PAYMENT][PRODUCT_IDS]', {
-          buyerId: input.buyerId,
-          paymentAttemptKey: input.paymentAttemptKey,
-          productIds,
-          uniqueProductIds
-        });
-
-        const products = await prisma.product.findMany({
-          where: { id: { in: uniqueProductIds }, deletedAt: null, moderationStatus: 'APPROVED' },
-          select: { id: true, sellerId: true }
-        });
-
-        console.info('[PAYMENT][PRODUCTS_FOUND]', {
-          buyerId: input.buyerId,
-          paymentAttemptKey: input.paymentAttemptKey,
-          products
-        });
-
-        if (products.length !== uniqueProductIds.length) {
-          console.error('[PAYMENT][PRODUCTS_FOUND][MISMATCH]', {
-            buyerId: input.buyerId,
-            paymentAttemptKey: input.paymentAttemptKey,
-            requestedProductIds: uniqueProductIds,
-            foundProductIds: products.map((product) => product.id)
-          });
-          throw new Error('PRODUCT_NOT_FOUND');
-        }
-
-        const sellerIds = Array.from(new Set(products.map((product) => product.sellerId)));
-        if (sellerIds.length !== 1) {
-          throw new Error('MULTI_SELLER_CHECKOUT_NOT_SUPPORTED');
-        }
-
-        const sellerSettings = await prisma.sellerSettings.findUnique({ where: { sellerId: sellerIds[0] } });
-        console.info('[PAYMENT][SELLER_SETTINGS]', {
-          buyerId: input.buyerId,
-          paymentAttemptKey: input.paymentAttemptKey,
-          sellerIds,
-          sellerSettingsPresent: Boolean(sellerSettings),
-          defaultDropoffPvzIdPresent: Boolean(sellerSettings?.defaultDropoffPvzId),
-          defaultDropoffPvzMetaPresent: Boolean(sellerSettings?.defaultDropoffPvzMeta)
-        });
-
         try {
           const normalizedBuyerPickupPvz = normalizeBuyerPickupPvz(input.buyerPickupPvz);
 
-          // Calculate delivery cost before creating order
-          let deliveryAmountKopecks = 0;
-          let deliveryDaysMin: number | undefined;
-          let deliveryDaysMax: number | undefined;
-          const buyerCityCode = extractCityCodeFromMeta(input.buyerPickupPvz.raw) ||
-            extractCityCodeFromMeta(normalizedBuyerPickupPvz.raw);
-          const sellerCityCode = extractCityCodeFromMeta(sellerSettings?.defaultDropoffPvzMeta);
-          if (buyerCityCode > 0 && sellerCityCode > 0) {
-            try {
-              const quote = await cdekService.calculateDelivery({
-                fromCityCode: sellerCityCode,
-                toCityCode: buyerCityCode,
-                weightGrams: 500
-              });
-              deliveryAmountKopecks = Math.round(quote.totalSum * 100);
-              deliveryDaysMin = quote.deliveryDaysMin || undefined;
-              deliveryDaysMax = quote.deliveryDaysMax || undefined;
-            } catch (calcErr) {
-              console.warn('[PAYMENT][delivery-cost-calc-failed]', { sellerCityCode, buyerCityCode, calcErr });
-            }
+          const shipping = await quoteCheckoutShipping(input.items, normalizedBuyerPickupPvz);
+          const { snapshot, deliveryAmountKopecks } = shipping;
+          if (input.expectedDeliveryAmountKopecks != null &&
+              input.expectedDeliveryAmountKopecks !== deliveryAmountKopecks) {
+            throw new Error('SHIPPING_QUOTE_CHANGED');
           }
+          if (input.expectedShippingSnapshot != null &&
+              JSON.stringify(input.expectedShippingSnapshot) !== JSON.stringify(snapshot)) {
+            throw new Error('SHIPPING_QUOTE_CHANGED');
+          }
+          const deliveryDaysMin = shipping.quote.deliveryDaysMin;
+          const deliveryDaysMax = shipping.quote.deliveryDaysMax;
 
           const orderCreateInput = {
             buyerId: input.buyerId,
             paymentAttemptKey: input.paymentAttemptKey,
             buyerPickupPvz: normalizedBuyerPickupPvz,
-            sellerDropoffPvz: sellerSettings?.defaultDropoffPvzId
+            sellerDropoffPvz: shipping.sellerSettings.defaultDropoffPvzId
               ? {
                   provider: 'CDEK' as const,
-                  pvzId: sellerSettings.defaultDropoffPvzId,
-                  raw: sellerSettings.defaultDropoffPvzMeta ?? {},
+                  pvzId: shipping.sellerSettings.defaultDropoffPvzId,
+                  raw: shipping.sellerSettings.defaultDropoffPvzMeta ?? {},
                   addressFull:
-                    typeof sellerSettings.defaultDropoffPvzMeta === 'object' && sellerSettings.defaultDropoffPvzMeta
-                      ? String((sellerSettings.defaultDropoffPvzMeta as Record<string, unknown>).addressFull ?? '')
+                    typeof shipping.sellerSettings.defaultDropoffPvzMeta === 'object' && shipping.sellerSettings.defaultDropoffPvzMeta
+                      ? String((shipping.sellerSettings.defaultDropoffPvzMeta as Record<string, unknown>).addressFull ?? '')
                       : undefined
                 }
               : undefined,
@@ -255,7 +186,8 @@ export const paymentFlowService = {
               phone: input.recipient.phone,
               email: input.recipient.email ?? null
             },
-            packagesCount: input.packagesCount ?? 1,
+            packagesCount: snapshot.packages.length,
+            shippingSnapshot: snapshot,
             orderLabels: [],
             items: input.items,
             deliveryAmountKopecks,
@@ -308,6 +240,13 @@ export const paymentFlowService = {
       }
 
       if (!order) throw new Error('ORDER_CREATE_FAILED');
+      if (!order.shippingSnapshot || !order.deliveryAmountKopecks ||
+          (input.expectedDeliveryAmountKopecks != null &&
+            input.expectedDeliveryAmountKopecks !== order.deliveryAmountKopecks) ||
+          (input.expectedShippingSnapshot != null &&
+            JSON.stringify(input.expectedShippingSnapshot) !== JSON.stringify(order.shippingSnapshot))) {
+        throw new Error('SHIPPING_QUOTE_CHANGED');
+      }
 
       const normalizedBuyerPickupPvz = normalizeBuyerPickupPvz(input.buyerPickupPvz);
       console.info('[PAYMENT][START]', {
@@ -493,6 +432,9 @@ export const paymentFlowService = {
       if (!order) throw new Error('ORDER_NOT_FOUND');
       if (order.paidAt || order.paymentStatus === 'PAID') throw new Error('ORDER_ALREADY_PAID');
       if (order.paymentStatus !== 'PAYMENT_EXPIRED') throw new Error('PAYMENT_RETRY_FORBIDDEN');
+      if (!order.shippingSnapshot || !order.deliveryAmountKopecks) {
+        throw new Error('SHIPPING_REQUOTE_REQUIRED');
+      }
 
       const payment = await tx.payment.create({
         // TODO: migrate to YooKassa Safe Deal (escrow)

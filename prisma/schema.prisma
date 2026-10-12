@@ -335,6 +335,7 @@ model Order {
   recipientPhone             String?
   recipientEmail             String?
   packagesCount              Int                  @default(1)
+  shippingSnapshot           Json?
   orderLabels                Json?
   buyer                      User                 @relation(fields: [buyerId], references: [id])
   contact                    Contact?             @relation("OrderContact", fields: [contactId], references: [id])

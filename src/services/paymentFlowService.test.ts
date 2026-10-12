@@ -5,11 +5,17 @@ import { paymentFlowService } from './paymentFlowService';
 import { prisma } from '../lib/prisma';
 import { orderUseCases } from '../usecases/orderUseCases';
 import { yookassaService } from './yookassaService';
+import { cdekService } from './cdekService';
+
+(prisma.order.updateMany as any) = async () => ({ count: 0 });
+(cdekService.calculateDelivery as any) = async () => ({
+  totalSum: 2, deliverySum: 2, deliveryDaysMin: 1, deliveryDaysMax: 2
+});
 
 const inputBase = {
   buyerId: 'buyer-1',
   recipient: { name: 'Иван Иванов', phone: '+79990000000', email: 'ivan@test.dev' },
-  buyerPickupPvz: { provider: 'CDEK' as const, pvzId: 'pvz-1' },
+  buyerPickupPvz: { provider: 'CDEK' as const, pvzId: 'pvz-1', raw: { city_code: 137 } },
   items: [{ productId: 'product-1', quantity: 1 }]
 };
 
@@ -32,18 +38,20 @@ test('startPayment double-click with same paymentAttemptKey -> 1 order, 1 paymen
         packagesCount: 1,
         orderLabels: [{ packageNo: 1, code: 'PF-1' }],
         recipientName: 'Иван Иванов',
-        recipientPhone: '+79990000000'
+        recipientPhone: '+79990000000',
+        deliveryAmountKopecks: 200, shippingSnapshot: { packages: [{}] }
       };
     }
     return null;
   };
-  (prisma.product.findMany as any) = async () => ([{ id: 'product-1', sellerId: 'seller-1' }]);
-  (prisma.sellerSettings.findUnique as any) = async () => ({ defaultDropoffPvzId: 'dropoff-1', defaultDropoffPvzMeta: {} });
+  (prisma.product.findMany as any) = async () => ([{ id: 'product-1', sellerId: 'seller-1', weightGrossG: 350, dxCm: 19, dyCm: 12, dzCm: 9.5 }]);
+  (prisma.sellerSettings.findUnique as any) = async () => ({ defaultDropoffPvzId: 'dropoff-1', defaultDropoffPvzMeta: { raw: { city_code: 44 } } });
   (prisma.sellerDeliveryProfile.findUnique as any) = async () => ({ dropoffStationId: '10022023854' });
   (orderUseCases.create as any) = async () => {
     orderCreateCalls += 1;
     if (orderCreateCalls === 1) {
-      return { id: 'order-1', total: 100, currency: 'RUB', packagesCount: 1, orderLabels: [] };
+      return { id: 'order-1', total: 100, currency: 'RUB', packagesCount: 1, orderLabels: [],
+        deliveryAmountKopecks: 200, shippingSnapshot: { packages: [{}] } };
     }
     throw new Prisma.PrismaClientKnownRequestError('Unique', {
       code: 'P2002',
@@ -51,7 +59,8 @@ test('startPayment double-click with same paymentAttemptKey -> 1 order, 1 paymen
       meta: { target: ['buyerId', 'paymentAttemptKey'] }
     });
   };
-  (prisma.order.update as any) = async ({ data }: any) => ({ id: 'order-1', total: 100, currency: 'RUB', packagesCount: 1, ...data });
+  (prisma.order.update as any) = async ({ data }: any) => ({ id: 'order-1', total: 100, currency: 'RUB', packagesCount: 1,
+    deliveryAmountKopecks: 200, shippingSnapshot: { packages: [{}] }, ...data });
 
   let paymentFindCalls = 0;
   (prisma.payment.findFirst as any) = async () => {
@@ -87,20 +96,22 @@ test('startPayment double-click with same paymentAttemptKey -> 1 order, 1 paymen
 test('startPayment with different paymentAttemptKey creates new order', async () => {
   let createdOrders = 0;
   (prisma.order.findFirst as any) = async () => null;
-  (prisma.product.findMany as any) = async () => ([{ id: 'product-1', sellerId: 'seller-1' }]);
+  (prisma.product.findMany as any) = async () => ([{ id: 'product-1', sellerId: 'seller-1', weightGrossG: 350, dxCm: 19, dyCm: 12, dzCm: 9.5 }]);
   (yookassaService.createPayment as any) = async ({ orderId }: any) => ({
     id: `ext-${orderId}`,
     confirmationUrl: `https://yookassa.test/${orderId}`,
     status: 'pending',
     payload: { paymentUrl: `https://yookassa.test/${orderId}` }
   });
-  (prisma.sellerSettings.findUnique as any) = async () => ({ defaultDropoffPvzId: 'dropoff-1', defaultDropoffPvzMeta: {} });
+  (prisma.sellerSettings.findUnique as any) = async () => ({ defaultDropoffPvzId: 'dropoff-1', defaultDropoffPvzMeta: { raw: { city_code: 44 } } });
   (prisma.sellerDeliveryProfile.findUnique as any) = async () => ({ dropoffStationId: '10022023854' });
   (orderUseCases.create as any) = async ({ paymentAttemptKey }: any) => {
     createdOrders += 1;
-    return { id: `order-${paymentAttemptKey}`, total: 100, currency: 'RUB', packagesCount: 1, orderLabels: [] };
+    return { id: `order-${paymentAttemptKey}`, total: 100, currency: 'RUB', packagesCount: 1, orderLabels: [],
+      deliveryAmountKopecks: 200, shippingSnapshot: { packages: [{}] } };
   };
-  (prisma.order.update as any) = async ({ where, data }: any) => ({ id: where.id, total: 100, currency: 'RUB', packagesCount: 1, ...data });
+  (prisma.order.update as any) = async ({ where, data }: any) => ({ id: where.id, total: 100, currency: 'RUB', packagesCount: 1,
+    deliveryAmountKopecks: 200, shippingSnapshot: { packages: [{}] }, ...data });
   (prisma.payment.findFirst as any) = async () => null;
   (prisma.$transaction as any) = async (cb: any) =>
     cb({
@@ -127,6 +138,7 @@ test('webhook success makes order PAID and sets paidAt', async () => {
   (prisma.order.findUnique as any) = async () => ({ id: 'order-1', total: 100, status: 'CREATED' });
   (prisma.payment.findFirst as any) = async () => ({ id: 'pay-1', provider: 'yookassa', orderId: 'order-1', order: { id: 'order-1' }, status: 'PENDING' });
   (prisma.payment.updateMany as any) = async () => ({ count: 1 });
+  (prisma.payment.update as any) = async () => ({});
 
   let updatedOrderData: any = null;
   (prisma.order.update as any) = async ({ data }: any) => {
@@ -145,7 +157,7 @@ test('webhook success makes order PAID and sets paidAt', async () => {
 });
 
 
-test('startPayment allows checkout when seller dropoff config is missing without blocking flags', async () => {
+test('startPayment blocks checkout when seller dropoff config is missing', async () => {
   (prisma.order.findFirst as any) = async () => null;
   (prisma.product.findMany as any) = async () => ([{ id: 'product-1', sellerId: 'seller-1' }]);
   (yookassaService.createPayment as any) = async ({ orderId }: any) => ({
@@ -193,11 +205,11 @@ test('startPayment allows checkout when seller dropoff config is missing without
       }
     });
 
-  const result = await paymentFlowService.startPayment({ ...inputBase, paymentAttemptKey: 'attempt-missing-dropoff' });
-
-  assert.equal(createdPayload.sellerDropoffPvz, undefined);
-  assert.equal(result.deliveryConfigMissing, false);
-  assert.equal(result.blockingReason, null);
+  await assert.rejects(
+    paymentFlowService.startPayment({ ...inputBase, paymentAttemptKey: 'attempt-missing-dropoff' }),
+    /SELLER_DROPOFF_PVZ_REQUIRED/
+  );
+  assert.equal(createdPayload, null);
 });
 
 

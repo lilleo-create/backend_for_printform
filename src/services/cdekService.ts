@@ -24,9 +24,9 @@ type CalculateDeliveryParams = {
   fromCityCode: number;
   toCityCode: number;
   weightGrams: number;
-  lengthCm?: number;
-  widthCm?: number;
-  heightCm?: number;
+  lengthCm: number;
+  widthCm: number;
+  heightCm: number;
   shipmentPoint?: string;
   deliveryPoint?: string;
 };
@@ -37,7 +37,7 @@ type CreateOrderItem = {
   article?: string;
   price: number; // kopecks
   quantity: number;
-  weight?: number; // grams per unit
+  weight: number; // grams per unit
 };
 
 type CreateOrderParams = {
@@ -49,10 +49,10 @@ type CreateOrderParams = {
   recipientPhone: string;
   senderName?: string;
   senderPhone?: string;
-  weightGrams?: number;
-  lengthCm?: number;
-  widthCm?: number;
-  heightCm?: number;
+  weightGrams: number;
+  lengthCm: number;
+  widthCm: number;
+  heightCm: number;
   items: CreateOrderItem[];
 };
 
@@ -370,6 +370,10 @@ class CdekService {
   }
 
   async calculateDelivery(params: CalculateDeliveryParams) {
+    if ([params.fromCityCode, params.toCityCode, params.weightGrams,
+      params.lengthCm, params.widthCm, params.heightCm].some(
+      value => !Number.isInteger(value) || value <= 0
+    )) throw new Error('CDEK_PACKAGE_INVALID');
     const token = await this.getToken();
     const { baseUrl } = getCdekConfig();
 
@@ -393,9 +397,9 @@ class CdekService {
         packages: [
           {
             weight: params.weightGrams,
-            length: params.lengthCm ?? 10,
-            width: params.widthCm ?? 10,
-            height: params.heightCm ?? 10,
+            length: params.lengthCm,
+            width: params.widthCm,
+            height: params.heightCm,
           },
         ],
       },
@@ -413,6 +417,10 @@ class CdekService {
   }
 
   async calculateTariffList(params: CalculateDeliveryParams & { shipmentPoint?: string; deliveryPoint?: string }) {
+    if ([params.fromCityCode, params.toCityCode, params.weightGrams,
+      params.lengthCm, params.widthCm, params.heightCm].some(
+      value => !Number.isInteger(value) || value <= 0
+    )) throw new Error('CDEK_PACKAGE_INVALID');
     const token = await this.getToken();
     const { baseUrl } = getCdekConfig();
 
@@ -442,9 +450,9 @@ class CdekService {
         packages: [
           {
             weight: params.weightGrams,
-            length: params.lengthCm ?? 10,
-            width: params.widthCm ?? 10,
-            height: params.heightCm ?? 10,
+            length: params.lengthCm,
+            width: params.widthCm,
+            height: params.heightCm,
           },
         ],
       },
@@ -534,6 +542,11 @@ class CdekService {
     if (!params.orderId) throw new Error("CDEK_ORDER_ID_MISSING");
     if (!Array.isArray(params.items) || params.items.length === 0)
       throw new Error("CDEK_ITEMS_MISSING");
+    if ([params.weightGrams, params.lengthCm, params.widthCm, params.heightCm].some(
+      value => !Number.isInteger(value) || value <= 0
+    ) || params.items.some(item => !Number.isInteger(item.weight) || item.weight <= 0)) {
+      throw new Error("CDEK_PACKAGE_INVALID");
+    }
 
     const token = await this.getToken();
     const { baseUrl } = getCdekConfig();
@@ -570,17 +583,17 @@ class CdekService {
         packages: [
           {
             number: params.orderId,
-            weight: params.weightGrams ?? 500,
-            length: params.lengthCm ?? 10,
-            width: params.widthCm ?? 10,
-            height: params.heightCm ?? 10,
+            weight: params.weightGrams,
+            length: params.lengthCm,
+            width: params.widthCm,
+            height: params.heightCm,
             comment: params.comment ?? "",
             items: params.items.map((item) => ({
               name: item.name,
               ware_key: item.article ?? item.id,
               payment: { value: 0 },
               cost: Math.round(item.price / 100), // price is in kopecks, CDEK expects rubles
-              weight: item.weight ?? 50,
+              weight: item.weight,
               amount: item.quantity,
             })),
           },
@@ -714,10 +727,10 @@ class CdekService {
     comment?: string;
     senderName?: string;
     senderPhone?: string;
-    weightGrams?: number;
-    lengthCm?: number;
-    widthCm?: number;
-    heightCm?: number;
+    weightGrams: number;
+    lengthCm: number;
+    widthCm: number;
+    heightCm: number;
   }) {
     return this.createOrder({
       orderId: payload.orderId,
