@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { cdekService } from './cdekService';
 import { buildShippingSnapshot, calculateShippingQuote, ShippingQuoteError } from './shippingPackageService';
 
 const record = (value: unknown): Record<string, any> =>
@@ -38,9 +39,25 @@ export const quoteCheckoutShipping = async (
     return { productId: item.productId, quantity: item.quantity, weightGrossG: product.weightGrossG,
       dxCm: product.dxCm, dyCm: product.dyCm, dzCm: product.dzCm };
   }));
-  const fromCityCode = cityCodeFromPvz(sellerSettings.defaultDropoffPvzMeta);
-  const toCityCode = cityCodeFromPvz(buyerPickupPvz.raw);
+  let fromCityCode = cityCodeFromPvz(sellerSettings.defaultDropoffPvzMeta);
+  if (!fromCityCode) {
+    try {
+      fromCityCode = await cdekService.getCityCodeByPvzCode(sellerSettings.defaultDropoffPvzId) ?? 0;
+    } catch {
+      throw new ShippingQuoteError('SELLER_CITY_CODE_REQUIRED');
+    }
+  }
+  if (!fromCityCode) throw new ShippingQuoteError('SELLER_CITY_CODE_REQUIRED');
+  let toCityCode = cityCodeFromPvz(buyerPickupPvz.raw);
   const deliveryPoint = String(buyerPickupPvz.pvzId ?? record(buyerPickupPvz.raw).pvzId ?? record(buyerPickupPvz.raw).id ?? '').trim();
+  if (!toCityCode && deliveryPoint) {
+    try {
+      toCityCode = await cdekService.getCityCodeByPvzCode(deliveryPoint) ?? 0;
+    } catch {
+      throw new ShippingQuoteError('BUYER_CITY_CODE_REQUIRED');
+    }
+  }
+  if (!toCityCode) throw new ShippingQuoteError('BUYER_CITY_CODE_REQUIRED');
   if (fromCityCode > 0 && toCityCode > 0 && !deliveryPoint) {
     throw new ShippingQuoteError('BUYER_PICKUP_PVZ_REQUIRED');
   }

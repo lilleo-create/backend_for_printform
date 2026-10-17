@@ -18,6 +18,7 @@ import { shipmentService } from "../services/shipmentService";
 import { sellerOrderDocumentsService } from "../services/sellerOrderDocumentsService";
 import { resolveRoleAfterSellerEnablement } from '../utils/accessControl';
 import { cdekService } from "../services/cdekService";
+import { normalizeSellerDropoffPvzMeta } from "../services/sellerDropoffPvzMetaService";
 import { normalizeProductDto } from "../utils/productDto";
 import { computePaymentTiming, expirePendingPayments } from "../utils/orderPayment";
 import { getKycStatusLabelRu } from "../utils/statusLabels";
@@ -480,6 +481,10 @@ const sellerDropoffPvzSaveSchema = z.object({
     provider: z.literal('CDEK').optional().default('CDEK'),
     pvzId: z.string().trim().min(1),
     addressFull: z.string().optional(),
+    cityCode: z.number().int().positive().optional(),
+    cityName: z.string().optional(),
+    latitude: z.number().optional(),
+    longitude: z.number().optional(),
     raw: z.record(z.unknown()).optional()
   })
 });
@@ -733,11 +738,9 @@ sellerRoutes.post('/kyc/submit', writeLimiter, async (req: AuthRequest, res, nex
       include: { documents: true }
     });
 
-    const dropoffPvzMeta = {
-      provider: 'CDEK' as const,
-      pvzId: submitPayload.dropoffPvzId,
-      ...(submitPayload.dropoffPvzMeta ?? {})
-    };
+    const dropoffPvzMeta = await normalizeSellerDropoffPvzMeta(
+      submitPayload.dropoffPvzId, submitPayload.dropoffPvzMeta ?? {}
+    );
 
     const submitted = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const now = new Date();
@@ -1263,27 +1266,7 @@ sellerRoutes.put('/settings/dropoff-pvz', writeLimiter, async (req: AuthRequest,
     const payload = sellerDropoffPvzSaveSchema.parse(req.body ?? {});
     const pvzId = payload.dropoffPvz.pvzId;
 
-    let raw: Record<string, unknown> | undefined =
-      payload.dropoffPvz.raw && typeof payload.dropoffPvz.raw === 'object'
-        ? (payload.dropoffPvz.raw as Record<string, unknown>)
-        : undefined;
-
-    if (!raw) {
-      const point = await cdekService.getPickupPointByCode(pvzId);
-      raw = point as unknown as Record<string, unknown>;
-    }
-    const rawRec = raw as any;
-
-    const addressFull =
-      payload.dropoffPvz.addressFull ??
-      String(rawRec?.address_full ?? rawRec?.location?.address_full ?? '');
-
-    const dropoffPvzMeta = {
-      provider: 'CDEK' as const,
-      pvzId,
-      addressFull,
-      raw
-    };
+    const dropoffPvzMeta = await normalizeSellerDropoffPvzMeta(pvzId, payload.dropoffPvz);
 
     const settings = await prisma.sellerSettings.upsert({
       where: { sellerId: req.user!.userId },

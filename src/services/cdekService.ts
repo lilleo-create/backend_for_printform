@@ -219,8 +219,7 @@ class CdekService {
     return response.access_token;
   }
 
-  // Resolves city_code for a buyer PVZ when the CDEK widget doesn't return it
-  async getCityCodeByPvzCode(pvzCode: string): Promise<number | null> {
+  private async getPickupPointByCodeRaw(pvzCode: string): Promise<CdekPickupPoint | null> {
     const code = String(pvzCode ?? '').trim().toUpperCase();
     if (!code) return null;
 
@@ -234,8 +233,16 @@ class CdekService {
       headers: { Authorization: `Bearer ${token}` }
     });
 
-    const cityCode = Number(Array.isArray(response) ? response[0]?.location?.city_code : null);
-    return Number.isFinite(cityCode) && cityCode > 0 ? cityCode : null;
+    return Array.isArray(response)
+      ? response.find(point => String(point.code ?? '').trim().toUpperCase() === code) ?? null
+      : null;
+  }
+
+  // CDEK filters the deliverypoints response by this exact PVZ code.
+  async getCityCodeByPvzCode(pvzCode: string): Promise<number | null> {
+    const point = await this.getPickupPointByCodeRaw(pvzCode);
+    const cityCode = Number(point?.location?.city_code);
+    return Number.isInteger(cityCode) && cityCode > 0 ? cityCode : null;
   }
 
   async getPickupPoints(cityCode?: number, city?: string) {
@@ -335,18 +342,11 @@ class CdekService {
     };
   }
 
-  /**
-   * ⚠️ Не идеально: без cityCode это может быть очень много точек.
-   * Но оставляю как было, чтобы не ломать проект.
-   */
   async getPickupPointByCode(pvzCode: string) {
     const code = String(pvzCode ?? "").trim();
     if (!code) throw new Error("CDEK_PVZ_CODE_REQUIRED");
 
-    const points = await this.getPickupPoints(); // может быть тяжело
-    const found = points.find(
-      (p) => String(p.code).toUpperCase() === code.toUpperCase(),
-    );
+    const found = await this.getPickupPointByCodeRaw(code);
 
     if (!found) {
       const err: any = new Error(`CDEK_PVZ_NOT_FOUND: ${code}`);
@@ -359,13 +359,13 @@ class CdekService {
       name: found.name,
       type: found.type ?? "PVZ",
       location: {
-        city_code: found.cityCode,
-        city: found.cityName,
-        latitude: found.latitude,
-        longitude: found.longitude,
-        address_full: found.address,
+        city_code: found.location?.city_code,
+        city: found.location?.city,
+        latitude: found.location?.latitude,
+        longitude: found.location?.longitude,
+        address_full: found.location?.address_full,
       },
-      work_time: found.workTime,
+      work_time: found.work_time,
     };
   }
 

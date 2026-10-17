@@ -7,13 +7,16 @@ import { quoteCheckoutShipping } from './checkoutShippingService';
 const originalProducts = prisma.product.findMany;
 const originalSettings = prisma.sellerSettings.findUnique;
 const originalCalculate = cdekService.calculateDelivery;
+const originalCityLookup = cdekService.getCityCodeByPvzCode;
 test.afterEach(() => {
   (prisma.product.findMany as any) = originalProducts;
   (prisma.sellerSettings.findUnique as any) = originalSettings;
   (cdekService.calculateDelivery as any) = originalCalculate;
+  (cdekService.getCityCodeByPvzCode as any) = originalCityLookup;
 });
 
 test('checkout quote reads product measurements, quantity and seller/buyer cities', async () => {
+  (cdekService.getCityCodeByPvzCode as any) = async () => { throw new Error('lookup must not run'); };
   (prisma.product.findMany as any) = async () => [
     { id: 'a', sellerId: 's', weightGrossG: 350, dxCm: 19, dyCm: 12.5, dzCm: 9.5 },
     { id: 'b', sellerId: 's', weightGrossG: 100, dxCm: 3, dyCm: 22, dzCm: 2 }
@@ -37,6 +40,47 @@ test('checkout quote reads product measurements, quantity and seller/buyer citie
   });
   assert.equal(result.deliveryAmountKopecks, 42125);
   assert.equal(result.snapshot.packages[0].heightCm, 30.5);
+});
+
+test('checkout quote resolves legacy seller and buyer PVZ city codes by their exact codes', async () => {
+  (prisma.product.findMany as any) = async () => [
+    { id: 'a', sellerId: 's', weightGrossG: 350, dxCm: 19, dyCm: 12.5, dzCm: 9.5 }
+  ];
+  (prisma.sellerSettings.findUnique as any) = async () => ({
+    defaultDropoffPvzId: 'MSK1', defaultDropoffPvzMeta: { provider: 'CDEK', addressFull: 'legacy' }
+  });
+  const lookups: string[] = [];
+  (cdekService.getCityCodeByPvzCode as any) = async (code: string) => {
+    lookups.push(code);
+    return code === 'MSK1' ? 44 : code === 'SPB1' ? 137 : null;
+  };
+  let sent: any;
+  (cdekService.calculateDelivery as any) = async (params: any) => {
+    sent = params;
+    return { totalSum: 421.25, deliverySum: 421.25, deliveryDaysMin: 2, deliveryDaysMax: 4 };
+  };
+  const result = await quoteCheckoutShipping([{ productId: 'a', quantity: 2 }],
+    { pvzId: 'SPB1', raw: { addressFull: 'legacy' } });
+  assert.deepEqual(lookups, ['MSK1', 'SPB1']);
+  assert.deepEqual(sent, { fromCityCode: 44, toCityCode: 137, weightGrams: 700,
+    lengthCm: 19, widthCm: 13, heightCm: 19, shipmentPoint: 'MSK1', deliveryPoint: 'SPB1' });
+  assert.equal(result.deliveryAmountKopecks, 42125);
+  assert.equal(result.snapshot.totalWeightGrams, 700);
+});
+
+test('missing CDEK PVZ city codes fail with the correct controlled error', async () => {
+  (prisma.product.findMany as any) = async () => [
+    { id: 'a', sellerId: 's', weightGrossG: 350, dxCm: 19, dyCm: 12, dzCm: 9.5 }
+  ];
+  (prisma.sellerSettings.findUnique as any) = async () => ({
+    defaultDropoffPvzId: 'MSK1', defaultDropoffPvzMeta: {}
+  });
+  (cdekService.getCityCodeByPvzCode as any) = async () => null;
+  await assert.rejects(quoteCheckoutShipping([{ productId: 'a', quantity: 1 }],
+    { pvzId: 'SPB1', raw: {} }), { code: 'SELLER_CITY_CODE_REQUIRED' });
+  (cdekService.getCityCodeByPvzCode as any) = async (code: string) => code === 'MSK1' ? 44 : null;
+  await assert.rejects(quoteCheckoutShipping([{ productId: 'a', quantity: 1 }],
+    { pvzId: 'SPB1', raw: {} }), { code: 'BUYER_CITY_CODE_REQUIRED' });
 });
 
 test('checkout quote rejects missing city code and CDEK failure', async () => {
