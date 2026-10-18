@@ -32,14 +32,17 @@ export const orderCompletionService = {
       return { completed: false, reason: 'ALREADY_COMPLETED' as const };
     }
 
-    await (db.order.update as any)({
-      where: { id: orderId },
+    const updated = await db.order.updateMany({
+      where: { id: orderId, completedAt: null },
       data: {
         status: 'DELIVERED',
         statusUpdatedAt: new Date(),
         completedAt: new Date()
       }
     });
+    if (updated.count === 0) {
+      return { completed: false, reason: 'ALREADY_COMPLETED' as const };
+    }
 
     await db.orderDeliveryEvent.create({
       data: {

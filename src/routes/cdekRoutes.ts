@@ -395,13 +395,24 @@ cdekRoutes.patch('/orders/:orderId', authenticate, async (req: AuthRequest, res)
 });
 
 cdekRoutes.post('/webhooks/order-status', async (req, res) => {
-  try {
-    const result = await cdekWebhookService.applyIncomingStatus(req.body ?? {});
-    return res.status(200).json({ received: true, data: result });
-  } catch (error: any) {
-    console.error('[CDEK][webhook][order-status][failed]', { error });
-    return res.status(200).json({ received: true });
+  const payload = req.body;
+  const attributes = payload?.attributes;
+  const hasIdentifier = [attributes?.uuid, attributes?.cdek_number, attributes?.number, attributes?.im_number]
+    .some((value) => typeof value === 'string' && value.trim().length > 0);
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload) || payload.type !== 'ORDER_STATUS' ||
+    !attributes || typeof attributes !== 'object' || Array.isArray(attributes) ||
+    !hasIdentifier || typeof attributes.status_code !== 'string' || !attributes.status_code.trim()) {
+    return res.status(400).json({ error: { code: 'INVALID_ORDER_STATUS_WEBHOOK' } });
   }
+  res.status(200).json({ received: true });
+  void cdekWebhookService.handleWebhookSignal(payload)
+    .then((result) => console.info('[CDEK][webhook][order-status]', {
+      accepted: result.accepted,
+      skipped: 'skipped' in result ? result.skipped : null
+    }))
+    .catch((error) => console.error('[CDEK][webhook][order-status][failed]', {
+      code: error instanceof Error ? error.message : 'UNKNOWN_ERROR'
+    }));
 });
 
 cdekRoutes.post('/calculate-for-order', authenticate, async (req: AuthRequest, res) => {

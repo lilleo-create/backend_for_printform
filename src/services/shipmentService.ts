@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { Order, OrderShipment, Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { cdekService, type CdekOrderSnapshot } from './cdekService';
+import { cdekWebhookService } from './cdekWebhookService';
+import { mapCdekStatusToShipmentStatus } from './cdekStatusMapper';
 import { BUYER_SHIPMENT_SELECT } from '../utils/serializers';
 import { toCdekPackage, type ShippingSnapshot } from './shippingPackageService';
 
@@ -27,15 +29,7 @@ export const normalizeCdekPvzCode = (value: unknown) => String(value ?? '').trim
 export const isValidCdekPvzCode = (value: unknown) => CDEK_PVZ_CODE_REGEX.test(normalizeCdekPvzCode(value));
 
 export const mapExternalStatusToInternal = (status?: string | null): ShipmentInternalStatus => {
-  const normalized = (status ?? '').toUpperCase();
-  if (['DELIVERY_DELIVERED', 'DELIVERED'].includes(normalized)) return 'DELIVERED';
-  if (['CANCELLED', 'DELIVERY_CANCELLED', 'INVALID', 'REFUSED'].includes(normalized)) return 'CANCELLED';
-  if (['DRAFT', 'VALIDATING'].includes(normalized)) return 'VALIDATING';
-  if (['CREATED', 'ACCEPTED', 'READY_TO_SHIP'].includes(normalized)) return 'READY_TO_SHIP';
-  if (['READY_FOR_PICKUP', 'DELIVERY_ARRIVED_PICKUP_POINT', 'DELIVERY_TRANSPORTATION', 'IN_TRANSIT', 'DELIVERY_TRANSMITTED_TO_RECIPIENT'].includes(normalized)) {
-    return 'IN_TRANSIT';
-  }
-  return 'CREATED';
+  return mapCdekStatusToShipmentStatus(status ?? '') as ShipmentInternalStatus;
 };
 
 const ensureShipmentTables = async () => undefined;
@@ -121,64 +115,10 @@ const syncShipmentByOrder = async (orderId: string) => {
   if (!cdekOrderUuid) throw makeError('CDEK_ORDER_UUID_MISSING');
 
   const snapshot = await cdekService.getOrderByUuid(cdekOrderUuid);
-  const normalizedTrackingNumber = String(snapshot.trackingNumber ?? '').trim();
-  const nextStatus = mapExternalStatusToInternal(snapshot.status);
-  const statusRaw = buildStatusRaw(snapshot, cdekOrderUuid, order.id);
-  console.debug('[shipmentService.syncShipment] snapshot', {
-    orderId,
-    shipmentStatusRaw: snapshot.status,
-    waybillUrl: snapshot.relatedEntities.waybillUrl,
-    relatedEntities: snapshot.relatedEntities,
-    rawRelatedEntities: snapshot.raw.related_entities ?? []
-  });
-
-  const updated = await prisma.$transaction(async (tx) => {
-    const shipment = await tx.orderShipment.upsert({
-      where: { orderId },
-      create: {
-        orderId,
-        provider: 'CDEK',
-        deliveryMethod: 'PICKUP_POINT',
-        sourceStationId: String(order.sellerDropoffPvzId ?? ''),
-        destinationStationId: String(order.buyerPickupPvzId ?? ''),
-        requestId: snapshot.requestUuid || null,
-        status: nextStatus,
-        statusRaw,
-        lastSyncAt: new Date()
-      },
-      update: {
-        requestId: snapshot.requestUuid || undefined,
-        status: nextStatus,
-        statusRaw,
-        lastSyncAt: new Date()
-      }
-    });
-
-    await tx.order.update({
-      where: { id: orderId },
-      data: {
-        cdekStatus: snapshot.status || undefined,
-        cdekOrderId: snapshot.cdekOrderId || cdekOrderUuid,
-        cdekOrderUuid: snapshot.cdekOrderId || cdekOrderUuid,
-        cdekNumber: normalizedTrackingNumber || null,
-        deliveryProvider: 'CDEK',
-        deliveryStatusCode: snapshot.status || undefined,
-        trackingNumber: normalizedTrackingNumber || null
-      }
-    });
-
-    await tx.orderShipmentStatusHistory.create({
-      data: {
-        shipmentId: shipment.id,
-        status: nextStatus,
-        payloadRaw: statusRaw
-      }
-    });
-
-    return shipment;
-  });
-
-  return { shipment: updated, snapshot };
+  await cdekWebhookService.applyVerifiedCdekStatus(orderId, snapshot);
+  const shipment = await prisma.orderShipment.findUnique({ where: { orderId } });
+  if (!shipment) throw makeError('SHIPMENT_NOT_FOUND');
+  return { shipment, snapshot };
 };
 
 const loadOrderForCdekShipment = async (orderId: string, sellerId?: string) => {

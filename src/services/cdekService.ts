@@ -75,7 +75,7 @@ type CdekOrderEntity = {
   uuids?: string[]; // ✅ важное поле: после POST /v2/orders часто приходит именно массив uuids
   order_uuid?: string;
   cdek_number?: string;
-  statuses?: Array<{ code?: string }>;
+  statuses?: Array<{ code?: string; date_time?: string }>;
 };
 
 type CdekOrderResponse = {
@@ -83,7 +83,7 @@ type CdekOrderResponse = {
   requests?: CdekApiRequestInfo[];
   related_entities?: Array<{ type?: string; url?: string }>;
   cdek_number?: string;
-  statuses?: Array<{ code?: string }>;
+  statuses?: Array<{ code?: string; date_time?: string }>;
 };
 
 type CdekOrdersListResponse = {
@@ -97,9 +97,8 @@ type CdekWebhookEntity = {
   type?: CdekWebhookType | string;
   url?: string;
 };
-type CdekWebhookListResponse = {
-  entity?: CdekWebhookEntity[];
-};
+type CdekWebhookListResponse = CdekWebhookEntity[] | { entity?: CdekWebhookEntity[] };
+type CdekWebhookCreateResponse = { entity?: CdekWebhookEntity; requests?: CdekApiRequestInfo[] };
 
 export type CdekOrderSnapshot = {
   cdekOrderId: string;
@@ -176,9 +175,14 @@ class CdekService {
   private extractLastStatusCode(resp: CdekOrderResponse): string {
     const statuses = (resp?.entity?.statuses ?? resp?.statuses ?? []) as Array<{
       code?: string;
+      date_time?: string;
     }>;
-    const last =
-      statuses.length > 0 ? (statuses[statuses.length - 1]?.code ?? "") : "";
+    const dated = statuses
+      .filter((status) => status.date_time && !Number.isNaN(Date.parse(status.date_time)))
+      .sort((a, b) => Date.parse(a.date_time!) - Date.parse(b.date_time!));
+    const last = dated.length > 0
+      ? dated[dated.length - 1]?.code
+      : statuses[statuses.length - 1]?.code;
     return String(last ?? "").trim();
   }
 
@@ -293,13 +297,13 @@ class CdekService {
       url: `${baseUrl}/v2/webhooks`,
       headers: { Authorization: `Bearer ${token}` }
     });
-    return Array.isArray(response.entity) ? response.entity : [];
+    return Array.isArray(response) ? response : Array.isArray(response.entity) ? response.entity : [];
   }
 
   async registerWebhook(type: CdekWebhookType, url: string) {
     const token = await this.getToken();
     const { baseUrl } = getCdekConfig();
-    return this.request<CdekWebhookListResponse>('registerWebhook', {
+    return this.request<CdekWebhookCreateResponse>('registerWebhook', {
       method: 'POST',
       url: `${baseUrl}/v2/webhooks`,
       headers: { Authorization: `Bearer ${token}` },
@@ -329,15 +333,14 @@ class CdekService {
     if (existing?.uuid) {
       return { created: false, webhookUuid: String(existing.uuid), total: hooks.length };
     }
+    if (hooks.some((hook) => String(hook.type ?? '').toUpperCase() === 'ORDER_STATUS')) {
+      throw new Error('CDEK_ORDER_STATUS_WEBHOOK_URL_CONFLICT');
+    }
 
     const created = await this.registerWebhook('ORDER_STATUS', normalizedUrl);
-    const createdHook = (created.entity ?? []).find((hook) =>
-      String(hook.type ?? '').toUpperCase() === 'ORDER_STATUS' &&
-      String(hook.url ?? '').trim() === normalizedUrl
-    );
     return {
       created: true,
-      webhookUuid: String(createdHook?.uuid ?? ''),
+      webhookUuid: String(created.entity?.uuid ?? ''),
       total: hooks.length + 1
     };
   }
@@ -669,10 +672,8 @@ class CdekService {
     const requestUuid = String(response?.requests?.[0]?.request_uuid ?? '').trim();
     const relatedEntities = this.extractPrintForms(response);
     console.debug('[CDEK][getOrderInfo] forms snapshot', {
-      cdekOrderId: id,
-      waybillUrl: relatedEntities.waybillUrl,
-      relatedEntities,
-      rawRelatedEntities: response?.related_entities ?? []
+      hasWaybill: Boolean(relatedEntities.waybillUrl),
+      barcodeCount: relatedEntities.barcodeUrls.length
     });
 
     return {

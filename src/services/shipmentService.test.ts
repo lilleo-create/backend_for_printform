@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { prisma } from '../lib/prisma';
 import { cdekService } from './cdekService';
+import { cdekWebhookService } from './cdekWebhookService';
 import {
   isValidCdekPvzCode,
   mapExternalStatusToInternal,
@@ -55,7 +56,7 @@ test('CDEK PVZ validator rejects empty and obviously invalid values', () => {
 });
 
 
-test('syncByOrderId persists trackingNumber even when snapshot value has extra spaces', async () => {
+test('syncByOrderId applies the authenticated CDEK snapshot through the shared path', async () => {
   (prisma.order.findUnique as any) = async () => ({
     id: 'order-1',
     cdekOrderId: 'cdek-order-uuid',
@@ -73,21 +74,13 @@ test('syncByOrderId persists trackingNumber even when snapshot value has extra s
     raw: { related_entities: [] }
   });
 
-  (prisma.$transaction as any) = async (cb: any) => cb({
-    orderShipment: {
-      upsert: async () => ({ id: 'shipment-1', status: 'READY_TO_SHIP', statusRaw: {} })
-    },
-    order: {
-      update: async ({ data }: any) => {
-        assert.equal(data.trackingNumber, '1234567890');
-        return {};
-      }
-    },
-    orderShipmentStatusHistory: {
-      create: async () => ({ id: 'history-1' })
-    }
-  });
+  let applied = false;
+  (cdekWebhookService.applyVerifiedCdekStatus as any) = async (orderId: string, verified: any) => {
+    applied = orderId === 'order-1' && verified.cdekOrderId === 'cdek-order-uuid';
+  };
+  (prisma.orderShipment.findUnique as any) = async () => ({ id: 'shipment-1', status: 'READY_TO_SHIP' });
 
   const result = await shipmentService.syncByOrderId('order-1');
+  assert.equal(applied, true);
   assert.equal(result.snapshot.trackingNumber, ' 1234567890 ');
 });

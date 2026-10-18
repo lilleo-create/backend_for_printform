@@ -67,24 +67,40 @@ const readStatusNode = (raw: Record<string, unknown>) => {
 export const parseCdekOrderStatusPayload = (payload: unknown): ParsedCdekOrderStatusEvent => {
   const raw = readRecord(payload);
   const entity = readRecord(raw.entity);
+  const attributes = readRecord(raw.attributes);
   const order = readRecord(raw.order);
   const { code, name } = readStatusNode(raw);
 
-  const cdekOrderUuid = readString(entity.uuid, entity.order_uuid, order.uuid, order.order_uuid, raw.uuid) || null;
-  const cdekNumber = readString(entity.cdek_number, order.cdek_number, raw.cdek_number) || null;
-  const imNumber = readString(entity.im_number, entity.number, order.im_number, order.number, raw.number, raw.im_number) || null;
-  const eventAtRaw = readString(raw.date_time, raw.event_date_time, raw.event_at, (readRecord(raw.status)).date_time);
+  // ORDER_STATUS v2 notifications carry order identifiers and status in attributes.
+  // The top-level uuid identifies the notification, not necessarily the CDEK order.
+  const cdekOrderUuid = readString(attributes.uuid, attributes.order_uuid, entity.uuid, entity.order_uuid, order.uuid, order.order_uuid) || null;
+  const cdekNumber = readString(attributes.cdek_number, entity.cdek_number, order.cdek_number, raw.cdek_number) || null;
+  const imNumber = readString(attributes.number, attributes.im_number, entity.im_number, entity.number, order.im_number, order.number, raw.number, raw.im_number) || null;
+  const eventAtRaw = readString(attributes.status_date_time, raw.date_time, raw.event_date_time, raw.event_at, (readRecord(raw.status)).date_time);
   const eventAt = eventAtRaw ? new Date(eventAtRaw) : null;
 
   return {
     cdekOrderUuid,
     cdekNumber,
     imNumber,
-    statusCode: code,
+    statusCode: readString(attributes.status_code, code).toUpperCase(),
     statusName: name,
     eventAt: eventAt && !Number.isNaN(eventAt.valueOf()) ? eventAt : null,
     raw
   };
+};
+
+export const mapCdekStatusToShipmentStatus = (statusCode: string) => {
+  const code = String(statusCode ?? '').trim().toUpperCase();
+  if (code === 'DRAFT' || code === 'VALIDATING') return 'VALIDATING';
+  if (code === 'ACCEPTED' || code === 'READY_TO_SHIP') return 'READY_TO_SHIP';
+  const state = mapCdekStatusToInternalDeliveryState(code);
+  if (state === 'DELIVERED') return 'DELIVERED';
+  if (state === 'CANCELLED') return 'CANCELLED';
+  if (state === 'FAILED' || state === 'RETURNED') return 'FAILED';
+  if (state === 'READY_FOR_SHIPMENT') return 'READY_TO_SHIP';
+  if (state === 'HANDED_TO_DELIVERY' || state === 'IN_TRANSIT' || state === 'READY_FOR_PICKUP') return 'IN_TRANSIT';
+  return 'CREATED';
 };
 
 export const mapCdekStatusToInternalDeliveryState = (statusCode: string): InternalDeliveryState => {
