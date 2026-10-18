@@ -397,7 +397,7 @@ cdekRoutes.patch('/orders/:orderId', authenticate, async (req: AuthRequest, res)
 cdekRoutes.post('/webhooks/order-status', async (req, res) => {
   const payload = req.body;
   const attributes = payload?.attributes;
-  const hasIdentifier = [attributes?.uuid, attributes?.cdek_number, attributes?.number, attributes?.im_number]
+  const hasIdentifier = [payload?.uuid, attributes?.uuid, attributes?.cdek_number, attributes?.number, attributes?.im_number]
     .some((value) => typeof value === 'string' && value.trim().length > 0);
   if (!payload || typeof payload !== 'object' || Array.isArray(payload) || payload.type !== 'ORDER_STATUS' ||
     !attributes || typeof attributes !== 'object' || Array.isArray(attributes) ||

@@ -33,6 +33,18 @@ const HANDED_TO_DELIVERY_CODES = new Set([
 
 const IN_TRANSIT_CODES = new Set([
   'READY_FOR_SHIPMENT_IN_SENDER_CITY',
+  'READY_TO_SHIP_AT_SENDING_OFFICE',
+  'PASSED_TO_CARRIER_AT_SENDING_OFFICE',
+  'SEND_TO_TRANSIT_OFFICE',
+  'MET_AT_TRANSIT_OFFICE',
+  'ACCEPTED_TO_OFFICE_TRANSIT_WAREHOUSE',
+  'READY_TO_SHIP_IN_TRANSIT_OFFICE',
+  'PASSED_TO_CARRIER_AT_TRANSIT_OFFICE',
+  'SEND_TO_RECIPIENT_OFFICE',
+  'MET_AT_RECIPIENT_OFFICE',
+  'ACCEPTED_AT_DELIVERY_WAREHOUSE',
+  'ISSUED_FOR_DELIVERY',
+  'TAKEN_BY_COURIER',
   'SENT_TO_TRANSIT_CITY',
   'ACCEPTED_IN_TRANSIT_CITY',
   'ACCEPTED_AT_RECIPIENT_CITY_WAREHOUSE',
@@ -71,9 +83,8 @@ export const parseCdekOrderStatusPayload = (payload: unknown): ParsedCdekOrderSt
   const order = readRecord(raw.order);
   const { code, name } = readStatusNode(raw);
 
-  // ORDER_STATUS v2 notifications carry order identifiers and status in attributes.
-  // The top-level uuid identifies the notification, not necessarily the CDEK order.
-  const cdekOrderUuid = readString(attributes.uuid, attributes.order_uuid, entity.uuid, entity.order_uuid, order.uuid, order.order_uuid) || null;
+  // ORDER_STATUS v2 uses top-level uuid for the CDEK order; attributes carries status and numbers.
+  const cdekOrderUuid = readString(attributes.uuid, attributes.order_uuid, entity.uuid, entity.order_uuid, order.uuid, order.order_uuid, raw.uuid) || null;
   const cdekNumber = readString(attributes.cdek_number, entity.cdek_number, order.cdek_number, raw.cdek_number) || null;
   const imNumber = readString(attributes.number, attributes.im_number, entity.im_number, entity.number, order.im_number, order.number, raw.number, raw.im_number) || null;
   const eventAtRaw = readString(attributes.status_date_time, raw.date_time, raw.event_date_time, raw.event_at, (readRecord(raw.status)).date_time);

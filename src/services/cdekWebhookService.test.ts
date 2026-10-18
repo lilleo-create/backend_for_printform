@@ -20,9 +20,8 @@ const load = async () => {
 
 const signal = (statusCode: string, uuid = 'cdek-1') => ({
   type: 'ORDER_STATUS',
-  uuid: 'webhook-event-1',
+  uuid,
   attributes: {
-    uuid,
     cdek_number: 'tracking-1',
     status_code: statusCode,
     status_date_time: '2026-10-18T10:00:00Z'
