@@ -48,6 +48,7 @@ type YooKassaRefundResponse = {
   status: string;
   amount?: YooKassaAmount;
   payment_id?: string;
+  metadata?: Record<string, string>;
   [key: string]: unknown;
 };
 
@@ -318,6 +319,17 @@ export const yookassaService = {
       timeout: 15000
     });
 
+    return response.data;
+  },
+
+  async getRefund(refundId: string) {
+    const response = await axios.get<YooKassaRefundResponse>(`${YOOKASSA_REFUNDS_API_URL}/${encodeURIComponent(refundId)}`, {
+      headers: {
+        Authorization: authHeader(),
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
+    });
     return response.data;
   },
 

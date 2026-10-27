@@ -4,7 +4,7 @@ import express from 'express';
 import { AddressInfo } from 'node:net';
 import { paymentRoutes } from './paymentRoutes';
 import { errorHandler } from '../middleware/errorHandler';
-import { paymentFlowService } from '../services/paymentFlowService';
+import { yookassaWebhookService } from '../services/yookassaWebhookService';
 
 const buildApp = () => {
   const app = express();
@@ -35,11 +35,12 @@ const sendWebhook = async (body: unknown) => {
   }
 };
 
-test('yookassa webhook maps payment.succeeded to succeeded', async () => {
+test('yookassa webhook forwards succeeded signal without trusting body status or amount', async () => {
   let payload: any = null;
-  (paymentFlowService.processWebhook as any) = async (input: any) => {
-    payload = input;
-    return { ok: true };
+  const original = yookassaWebhookService.handlePaymentSignal;
+  (yookassaWebhookService.handlePaymentSignal as any) = async (event: string, input: any) => {
+    payload = { event, ...input };
+    return { reason: 'APPLIED' };
   };
 
   const response = await sendWebhook({
@@ -53,18 +54,16 @@ test('yookassa webhook maps payment.succeeded to succeeded', async () => {
   });
 
   assert.equal(response.status, 200);
-  assert.equal(payload.externalId, 'yk-pay-1');
-  assert.equal(payload.status, 'succeeded');
-  assert.equal(payload.orderId, 'order-1');
-  assert.equal(payload.amount, '1.00');
-  assert.equal(payload.provider, 'yookassa');
+  assert.deepEqual(payload, { event: 'payment.succeeded', externalId: 'yk-pay-1', bodyOrderId: 'order-1' });
+  yookassaWebhookService.handlePaymentSignal = original;
 });
 
 test('yookassa webhook maps payment.canceled to canceled', async () => {
   let payload: any = null;
-  (paymentFlowService.processWebhook as any) = async (input: any) => {
-    payload = input;
-    return { ok: true };
+  const original = yookassaWebhookService.handlePaymentSignal;
+  (yookassaWebhookService.handlePaymentSignal as any) = async (event: string, input: any) => {
+    payload = { event, ...input };
+    return { reason: 'APPLIED' };
   };
 
   const response = await sendWebhook({
@@ -79,14 +78,16 @@ test('yookassa webhook maps payment.canceled to canceled', async () => {
 
   assert.equal(response.status, 200);
   assert.equal(payload.externalId, 'yk-pay-2');
-  assert.equal(payload.status, 'canceled');
+  assert.equal(payload.event, 'payment.canceled');
+  yookassaWebhookService.handlePaymentSignal = original;
 });
 
-test('yookassa webhook maps refund.succeeded to processRefundWebhook', async () => {
+test('yookassa webhook forwards refund signal', async () => {
   let payload: any = null;
-  (paymentFlowService.processRefundWebhook as any) = async (input: any) => {
+  const original = yookassaWebhookService.handleRefundSignal;
+  (yookassaWebhookService.handleRefundSignal as any) = async (input: any) => {
     payload = input;
-    return { ok: true };
+    return { reason: 'APPLIED' };
   };
 
   const response = await sendWebhook({
@@ -100,7 +101,6 @@ test('yookassa webhook maps refund.succeeded to processRefundWebhook', async () 
   });
 
   assert.equal(response.status, 200);
-  assert.equal(payload.externalRefundId, 'yk-refund-1');
-  assert.equal(payload.amount, '1.00');
-  assert.equal(payload.orderId, 'order-3');
+  assert.deepEqual(payload, { externalId: 'yk-refund-1', bodyOrderId: 'order-3' });
+  yookassaWebhookService.handleRefundSignal = original;
 });

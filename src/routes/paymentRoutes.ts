@@ -3,8 +3,8 @@ import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { authenticate, AuthRequest } from '../middleware/authMiddleware';
 import { writeLimiter } from '../middleware/rateLimiters';
-import { prisma } from '../lib/prisma';
 import { paymentFlowService } from '../services/paymentFlowService';
+import { yookassaWebhookService } from '../services/yookassaWebhookService';
 import { quoteCheckoutShipping } from '../services/checkoutShippingService';
 import { ShippingQuoteError } from '../services/shippingPackageService';
 
@@ -133,77 +133,38 @@ paymentRoutes.post('/start', authenticate, writeLimiter, async (req: AuthRequest
   }
 });
 
-paymentRoutes.post('/yookassa/webhook', async (req, res, next) => {
+paymentRoutes.post('/yookassa/webhook', async (req, res) => {
+  const parsed = yookassaWebhookSchema.safeParse(req.body);
+  if (!parsed.success) return res.json({ received: true });
+  const payload = parsed.data;
   try {
-    const payload = yookassaWebhookSchema.parse(req.body);
+    let result: { reason: string; orderId?: string };
+    if (payload.event === 'refund.succeeded') {
+      result = await yookassaWebhookService.handleRefundSignal({
+        externalId: payload.object.id, bodyOrderId: payload.object.metadata?.orderId
+      });
+    } else if (payload.event === 'payment.succeeded' || payload.event === 'payment.canceled') {
+      result = await yookassaWebhookService.handlePaymentSignal(payload.event, {
+        externalId: payload.object.id, bodyOrderId: payload.object.metadata?.orderId
+      });
+    } else {
+      return res.json({ received: true });
+    }
 
     console.info('[YOOKASSA][WEBHOOK]', {
-      event: payload.event,
-      objectId: payload.object.id,
-      paymentId: payload.object.payment_id ?? payload.object.id,
-      dealId: payload.object.metadata?.dealId ?? payload.object.deal?.id ?? null,
-      orderId: payload.object.metadata?.orderId ?? null,
-      amount: payload.object.amount?.value ?? null,
-      status: payload.object.status ?? null
+      event: payload.event, externalId: payload.object.id,
+      verification: result.reason, orderId: result.orderId ?? null
     });
-
-    if (payload.event === 'refund.succeeded') {
-      await paymentFlowService.processRefundWebhook({
-        externalRefundId: payload.object.id,
-        amount: payload.object.amount?.value ?? '0',
-        orderId: payload.object.metadata?.orderId,
-        payload
-      });
-      return res.json({ received: true });
-    }
-
-    if (payload.event.startsWith('deal.') || payload.event.startsWith('payout.')) {
-      console.info('[YOOKASSA][DEAL_WEBHOOK]', {
-        event: payload.event,
-        dealId: payload.object.metadata?.dealId ?? null,
-        orderId: payload.object.metadata?.orderId ?? null,
-        payoutId: payload.object.id,
-        status: payload.object.status ?? null
-      });
-      return res.json({ received: true });
-    }
-
-    if (payload.event === 'payment.succeeded' || payload.event === 'payment.canceled') {
-      const orderId = payload.object.metadata?.orderId;
-      if (!orderId) {
-        throw new Error('ORDER_ID_MISSING');
-      }
-
-      await paymentFlowService.processWebhook({
-        externalId: payload.object.id,
-        status: payload.object.status === 'succeeded' ? 'succeeded' : 'canceled',
-        orderId,
-        amount: payload.object.amount?.value ?? '0',
-        dealId: payload.object.metadata?.dealId ?? payload.object.deal?.id,
-        provider: 'yookassa',
-        payload
-      });
-
-      if (payload.event === 'payment.succeeded') {
-        const resolvedDealId = payload.object.metadata?.dealId ?? payload.object.deal?.id ?? null;
-        if (resolvedDealId) {
-          await prisma.order.updateMany({
-            where: { id: orderId, yookassaDealId: null },
-            data: {
-              yookassaDealId: resolvedDealId
-            }
-          });
-        }
-      }
-    }
 
     return res.json({ received: true });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
     console.error('[YOOKASSA][WEBHOOK_ERROR]', {
-      message,
-      error
+      event: payload.event, externalId: payload.object.id,
+      verification: 'RETRYABLE_ERROR',
+      reason: error instanceof Error && error.message === 'YOOKASSA_VERIFICATION_UNAVAILABLE'
+        ? 'PROVIDER_UNAVAILABLE'
+        : 'PROCESSING_ERROR'
     });
-    return res.status(200).json({ received: true });
+    return res.status(503).json({ received: false, error: { code: 'WEBHOOK_RETRY' } });
   }
 });

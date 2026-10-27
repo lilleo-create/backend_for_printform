@@ -98,3 +98,32 @@ test('safe deal payment sends the exact supplied order return URL to YooKassa', 
     env.yookassaReturnUrl = originalConfig.returnUrl;
   }
 });
+
+test('getRefund retrieves current refund from YooKassa with merchant authentication', async () => {
+  process.env.JWT_SECRET ??= 'test-secret-longer-than-thirty-two-characters';
+  process.env.JWT_REFRESH_SECRET ??= 'test-refresh-secret-longer-than-thirty-two-characters';
+  process.env.OTP_HASH_PEPPER ??= 'test-pepper-longer-than-thirty-two-characters';
+  process.env.DATABASE_URL ??= 'postgresql://test:test@localhost:5432/test';
+  process.env.FRONTEND_URL ??= 'https://example.test';
+  const { env } = await import('../config/env');
+  const { yookassaService } = await import('./yookassaService');
+  const originalGet = axios.get;
+  const originalConfig = { shopId: env.yookassaShopId, secretKey: env.yookassaSecretKey, returnUrl: env.yookassaReturnUrl };
+  try {
+    env.yookassaShopId = 'test-shop';
+    env.yookassaSecretKey = 'test-secret';
+    env.yookassaReturnUrl = 'https://print-form.ru/payment/return';
+    (axios.get as any) = async (url: string, options: any) => {
+      assert.equal(url, 'https://api.yookassa.ru/v3/refunds/refund-1');
+      assert.match(options.headers.Authorization, /^Basic /);
+      return { data: { id: 'refund-1', status: 'succeeded', payment_id: 'payment-1', amount: { value: '204.75', currency: 'RUB' } } };
+    };
+    const refund = await yookassaService.getRefund('refund-1');
+    assert.equal(refund.payment_id, 'payment-1');
+  } finally {
+    (axios.get as any) = originalGet;
+    env.yookassaShopId = originalConfig.shopId;
+    env.yookassaSecretKey = originalConfig.secretKey;
+    env.yookassaReturnUrl = originalConfig.returnUrl;
+  }
+});
