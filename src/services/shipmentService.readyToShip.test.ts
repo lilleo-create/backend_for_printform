@@ -27,7 +27,10 @@ const setup = () => {
     ]),
     recipientName: 'Test', recipientPhone: '+79990000000',
     items: [{ id: 'item-1', productId: 'product-1', quantity: 1, priceAtPurchase: 1000,
-      product: { id: 'product-1', sellerId: 'seller-1', title: 'Item', sku: 'SKU' }, variant: null }],
+      product: { id: 'product-1', sellerId: 'seller-1', title: 'Item', sku: 'SKU',
+        seller: { name: 'Seller', fullName: 'Seller Full', phone: '+79991234567',
+          sellerProfile: { contactName: 'Contact', contactPhone: '+79991234567', representativeName: null,
+            storeName: 'Store', phone: '+79991234567' } } }, variant: null }],
     buyer: {}, contact: null
   };
   let writes = 0;

@@ -1,5 +1,6 @@
 import axios, { type AxiosRequestConfig } from "axios";
 import { assertCdekConfigured, getCdekConfig } from "../config/cdek";
+import { normalizeCdekContactPhone } from './cdekShipmentContacts';
 
 type CdekTokenResponse = {
   access_token: string;
@@ -47,8 +48,8 @@ type CreateOrderParams = {
   comment?: string;
   recipientName: string;
   recipientPhone: string;
-  senderName?: string;
-  senderPhone?: string;
+  senderName: string;
+  senderPhone: string;
   weightGrams: number;
   lengthCm: number;
   widthCm: number;
@@ -540,8 +541,10 @@ class CdekService {
     if (!this.looksLikeCdekPvz(params.toPvzCode)) {
       throw new Error(`CDEK_DESTINATION_PVZ_INVALID_CODE: ${params.toPvzCode}`);
     }
-    if (!params.recipientName) throw new Error("CDEK_RECIPIENT_NAME_MISSING");
-    if (!params.recipientPhone) throw new Error("CDEK_RECIPIENT_PHONE_MISSING");
+    if (!params.recipientName?.trim()) throw new Error("CDEK_RECIPIENT_NAME_REQUIRED");
+    const recipientPhone = normalizeCdekContactPhone(params.recipientPhone ?? '', 'RECIPIENT_PHONE_REQUIRED', 'RECIPIENT_PHONE_INVALID');
+    if (!params.senderName?.trim()) throw new Error("CDEK_SENDER_NAME_REQUIRED");
+    const senderPhone = normalizeCdekContactPhone(params.senderPhone ?? '', 'CDEK_SENDER_PHONE_REQUIRED', 'CDEK_SENDER_PHONE_INVALID');
     if (!params.orderId) throw new Error("CDEK_ORDER_ID_MISSING");
     if (!Array.isArray(params.items) || params.items.length === 0)
       throw new Error("CDEK_ITEMS_MISSING");
@@ -572,13 +575,13 @@ class CdekService {
         comment: params.comment ?? "",
 
         recipient: {
-          name: params.recipientName,
-          phones: [{ number: params.recipientPhone }],
+          name: params.recipientName.trim(),
+          phones: [{ number: recipientPhone }],
         },
 
         sender: {
-          name: params.senderName ?? "Маркетплейс PrintForm",
-          phones: [{ number: params.senderPhone ?? "+70000000000" }],
+          name: params.senderName.trim(),
+          phones: [{ number: senderPhone }],
         },
 
         services: [],
@@ -595,7 +598,7 @@ class CdekService {
               name: item.name,
               ware_key: item.article ?? item.id,
               payment: { value: 0 },
-              cost: Math.round(item.price / 100), // price is in kopecks, CDEK expects rubles
+              cost: item.price / 100, // price is in kopecks, CDEK expects rubles
               weight: item.weight,
               amount: item.quantity,
             })),
@@ -726,8 +729,8 @@ class CdekService {
     recipientPhone: string;
     items: CreateOrderItem[];
     comment?: string;
-    senderName?: string;
-    senderPhone?: string;
+    senderName: string;
+    senderPhone: string;
     weightGrams: number;
     lengthCm: number;
     widthCm: number;

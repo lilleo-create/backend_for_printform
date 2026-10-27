@@ -170,7 +170,11 @@ export const errorHandler = (
         message === 'DELIVERY_METHOD_NOT_SUPPORTED' ||
         message === 'REGISTRATION_SESSION_INVALID'
       ? 400
-      : message === 'ORDER_NOT_PAID' || message === 'PICKUP_POINT_REQUIRED'
+      : message === 'ORDER_NOT_PAID' || message === 'PICKUP_POINT_REQUIRED' ||
+        message === 'CDEK_SENDER_NAME_REQUIRED' || message === 'CDEK_SENDER_PHONE_REQUIRED' ||
+        message === 'CDEK_SENDER_PHONE_INVALID' || message === 'CDEK_RECIPIENT_NAME_REQUIRED' ||
+        message === 'RECIPIENT_PHONE_REQUIRED' || message === 'RECIPIENT_PHONE_INVALID' ||
+        message === 'MULTI_SELLER_CHECKOUT_NOT_SUPPORTED' || message === 'SHIPPING_SNAPSHOT_INVALID'
       ? 409
       : 500;
 

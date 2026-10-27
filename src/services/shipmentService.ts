@@ -6,6 +6,7 @@ import { cdekWebhookService } from './cdekWebhookService';
 import { mapCdekStatusToShipmentStatus } from './cdekStatusMapper';
 import { BUYER_SHIPMENT_SELECT } from '../utils/serializers';
 import { toCdekPackage, type ShippingSnapshot } from './shippingPackageService';
+import { resolveCdekRecipient, resolveCdekSender } from './cdekShipmentContacts';
 
 export type ShipmentInternalStatus =
   | 'CREATED'
@@ -125,17 +126,16 @@ const loadOrderForCdekShipment = async (orderId: string, sellerId?: string) => {
   let order = await prisma.order.findUnique({
     where: { id: orderId },
     include: {
-      items: { include: { product: true, variant: true } },
+      items: { include: { product: { include: { seller: { include: { sellerProfile: true } } } }, variant: true } },
       buyer: { select: BUYER_SHIPMENT_SELECT },
       contact: true
     }
   });
 
   if (!order) throw makeError('ORDER_NOT_FOUND');
-  if (sellerId) {
-    const hasAccess = order.items.some((item) => item.product.sellerId === sellerId);
-    if (!hasAccess) throw makeError('ORDER_NOT_FOUND');
-  }
+  const sellerIds = [...new Set(order.items.map(item => item.product.sellerId))];
+  if (sellerIds.length !== 1) throw makeError('MULTI_SELLER_CHECKOUT_NOT_SUPPORTED');
+  if (sellerId && sellerIds[0] !== sellerId) throw makeError('ORDER_NOT_FOUND');
   const isPaid = order.paymentStatus === 'PAID' || Boolean(order.paidAt);
   if (!isPaid) throw makeError('ORDER_NOT_PAID');
   if (['REFUND_PENDING', 'PARTIALLY_REFUNDED', 'REFUNDED', 'CANCELLED'].includes(order.paymentStatus) ||
@@ -162,22 +162,43 @@ const loadOrderForCdekShipment = async (orderId: string, sellerId?: string) => {
     throw makeError('CDEK_DESTINATION_PVZ_PROVIDER_MISMATCH', `buyerPickupPvzMeta.provider must be CDEK for carrier CDEK (got ${buyerProvider})`);
   }
 
-  const recipientName = String(order.recipientName ?? '').trim() || String(order.contact?.name ?? '').trim() || String(order.buyer?.name ?? '').trim() || 'Получатель';
-  const recipientPhone = String(order.recipientPhone ?? '').trim() || String(order.contact?.phone ?? '').trim() || String(order.buyer?.phone ?? '').trim();
-  if (!recipientPhone) throw makeError('RECIPIENT_PHONE_REQUIRED');
+  const recipient = resolveCdekRecipient(
+    String(order.recipientName ?? '').trim() || String(order.contact?.name ?? '').trim() || String(order.buyer?.name ?? '').trim(),
+    String(order.recipientPhone ?? '').trim() || String(order.contact?.phone ?? '').trim() || String(order.buyer?.phone ?? '').trim()
+  );
 
   if (!order.shippingSnapshot) throw makeError('SHIPPING_SNAPSHOT_MISSING');
   const snapshot = order.shippingSnapshot as ShippingSnapshot;
   const shippingPackage = toCdekPackage(snapshot);
+  const snapshotByProduct = new Map<string, { quantity: number; weight: number }>();
+  for (const entry of snapshot.items) {
+    const previous = snapshotByProduct.get(entry.productId);
+    if (previous && previous.weight !== entry.weightGrossG) throw makeError('SHIPPING_SNAPSHOT_INVALID');
+    snapshotByProduct.set(entry.productId, {
+      quantity: (previous?.quantity ?? 0) + entry.quantity,
+      weight: entry.weightGrossG
+    });
+  }
+  const orderQuantityByProduct = new Map<string, number>();
+  for (const item of order.items) {
+    orderQuantityByProduct.set(item.productId, (orderQuantityByProduct.get(item.productId) ?? 0) + item.quantity);
+  }
+  if (snapshotByProduct.size !== orderQuantityByProduct.size ||
+    [...orderQuantityByProduct].some(([productId, quantity]) => snapshotByProduct.get(productId)?.quantity !== quantity)) {
+    throw makeError('SHIPPING_SNAPSHOT_INVALID');
+  }
   const items = order.items.map((item) => ({
     id: item.id,
     name: item.product.title,
     article: item.variant?.sku ?? item.product.sku,
     price: item.priceAtPurchase,
     quantity: item.quantity,
-    weight: snapshot.items.find(entry => entry.productId === item.productId)?.weightGrossG ?? 0,
+    weight: snapshotByProduct.get(item.productId)?.weight ?? 0,
   }));
-  if (items.some(item => !item.weight)) throw makeError('SHIPPING_SNAPSHOT_INVALID');
+  if (items.some(item => !item.weight) ||
+    items.reduce((sum, item) => sum + item.weight * item.quantity, 0) !== shippingPackage.weightGrams) {
+    throw makeError('SHIPPING_SNAPSHOT_INVALID');
+  }
 
   return {
     order,
@@ -185,8 +206,9 @@ const loadOrderForCdekShipment = async (orderId: string, sellerId?: string) => {
     toPvzCodeRaw,
     fromPvzCode,
     toPvzCode,
-    recipientName,
-    recipientPhone,
+    recipientName: recipient.recipientName,
+    recipientPhone: recipient.recipientPhone,
+    seller: order.items[0].product.seller,
     items,
     shippingPackage
   };
@@ -201,6 +223,7 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
     toPvzCode,
     recipientName,
     recipientPhone,
+    seller,
     items,
     shippingPackage
   } = await loadOrderForCdekShipment(orderId, sellerId);
@@ -217,6 +240,8 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
       }
     };
   }
+
+  const { senderName, senderPhone } = resolveCdekSender(seller);
 
   const internalRequestId = randomUUID();
   const now = new Date();
@@ -249,6 +274,8 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
       toPvzCode,
       recipientName,
       recipientPhone,
+      senderName,
+      senderPhone,
       items,
       comment: `Order ${order.id}`,
       weightGrams: shippingPackage.weightGrams,
