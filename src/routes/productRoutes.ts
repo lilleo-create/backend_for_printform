@@ -204,10 +204,10 @@ export const sellerProductCreateSchema = z.object({
   variantLabel: z.string().min(1).max(120).optional(),
   variantSize: z.string().min(1).max(64).optional(),
   variantAttributes: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
-  weightGrossG: z.number().int().positive().optional(),
-  dxCm: z.number().positive().optional(),
-  dyCm: z.number().positive().optional(),
-  dzCm: z.number().positive().optional(),
+  weightGrossG: z.number().int().positive(),
+  dxCm: z.number().positive(),
+  dyCm: z.number().positive(),
+  dzCm: z.number().positive(),
   variants: z
     .array(
       z.object({
