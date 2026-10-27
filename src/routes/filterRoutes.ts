@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { listReferenceCategoryCounts } from '../services/categoryCountsService';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -13,6 +14,14 @@ router.get('/reference-categories', async (_req, res) => {
   });
 
   res.json(categories);
+});
+
+router.get('/reference-categories/with-counts', async (_req, res, next) => {
+  try {
+    res.json(await listReferenceCategoryCounts());
+  } catch (error) {
+    next(error);
+  }
 });
 
 // GET /filters/cities
