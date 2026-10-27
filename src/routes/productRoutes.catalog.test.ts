@@ -45,10 +45,30 @@ test('GET /products returns pagination meta and supports popularity sort params'
   assert.equal(Array.isArray(response.body.data), true);
 });
 
-test('GET /products/filters/meta returns categories/materials/price range', async () => {
+test('GET /products accepts repeated category, material and color plus single values', async () => {
+  const received: any[] = [];
+  productUseCases.list = (async (filters: any) => {
+    received.push(filters);
+    return { items: [], meta: { total: 0, page: 1, limit: 12, hasMore: false, nextPage: null } };
+  }) as any;
+  const app = buildApp();
+  await request(app).get('/products?category=Decor&category=Miniatures&material=PLA&material=PETG&color=Black&color=White').expect(200);
+  await request(app).get('/products?category=Decor&material=PLA&color=Black').expect(200);
+  assert.deepEqual(received[0].categories, ['Decor', 'Miniatures']);
+  assert.deepEqual(received[0].materials, ['PLA', 'PETG']);
+  assert.deepEqual(received[0].colors, ['Black', 'White']);
+  assert.deepEqual(received[1].categories, ['Decor']);
+  assert.deepEqual(received[1].materials, ['PLA']);
+  assert.deepEqual(received[1].colors, ['Black']);
+});
+
+test('GET /products/filters/meta returns categories/materials/colors/price range', async () => {
   (prisma.product.findMany as any) = async ({ distinct }: any) => {
     if (distinct.includes('category')) {
       return [{ category: 'Figurines' }];
+    }
+    if (distinct.includes('color')) {
+      return [{ color: 'Black' }, { color: 'White' }];
     }
     return [{ material: 'PLA' }];
   };
@@ -62,6 +82,7 @@ test('GET /products/filters/meta returns categories/materials/price range', asyn
 
   assert.deepEqual(response.body.data.categories, ['Figurines']);
   assert.deepEqual(response.body.data.materials, ['PLA']);
+  assert.deepEqual(response.body.data.colors, ['Black', 'White']);
   assert.equal(response.body.data.price.min, 100);
   assert.equal(response.body.data.price.max, 1000);
 });

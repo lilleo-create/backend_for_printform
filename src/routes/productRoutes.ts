@@ -44,11 +44,16 @@ const mediaUrlSchema = z.string().refine((value) => {
   }
 });
 
+const repeatedFilterSchema = z.union([z.string(), z.array(z.string())]).optional()
+  .transform((value) => (value === undefined ? [] : Array.isArray(value) ? value : [value])
+    .map((item) => item.trim()).filter(Boolean));
+
 const listSchema = z.object({
   shopId: z.string().optional(),
   q: z.string().optional(),
-  category: z.string().optional(),
-  material: z.string().optional(),
+  category: repeatedFilterSchema,
+  material: repeatedFilterSchema,
+  color: repeatedFilterSchema,
   minPrice: z.coerce.number().int().optional(),
   maxPrice: z.coerce.number().int().optional(),
   available: z.coerce.boolean().optional(),
@@ -64,8 +69,9 @@ productRoutes.get('/', publicReadLimiter, async (req, res, next) => {
     const products = await productUseCases.list({
       shopId: params.shopId,
       query: params.q,
-      category: params.category,
-      material: params.material,
+      categories: params.category,
+      materials: params.material,
+      colors: params.color,
       minPrice: params.minPrice,
       maxPrice: params.maxPrice,
       available: params.available,
@@ -90,7 +96,7 @@ productRoutes.get('/filters/meta', publicReadLimiter, async (req, res, next) => 
       moderationStatus: 'APPROVED'
     } as const;
 
-    const [categories, materials, priceRange] = await Promise.all([
+    const [categories, materials, colors, priceRange] = await Promise.all([
       prisma.product.findMany({
         where: baseWhere,
         distinct: ['category'],
@@ -103,6 +109,12 @@ productRoutes.get('/filters/meta', publicReadLimiter, async (req, res, next) => 
         select: { material: true },
         orderBy: { material: 'asc' }
       }),
+      prisma.product.findMany({
+        where: baseWhere,
+        distinct: ['color'],
+        select: { color: true },
+        orderBy: { color: 'asc' }
+      }),
       prisma.product.aggregate({
         where: baseWhere,
         _min: { price: true },
@@ -114,6 +126,7 @@ productRoutes.get('/filters/meta', publicReadLimiter, async (req, res, next) => 
       data: {
         categories: categories.map((item) => item.category).filter(Boolean),
         materials: materials.map((item) => item.material).filter(Boolean),
+        colors: colors.map((item) => item.color).filter(Boolean),
         price: {
           min: priceRange._min.price ?? null,
           max: priceRange._max.price ?? null

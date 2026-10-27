@@ -314,8 +314,9 @@ export const productRepository = {
   findMany: async (filters: {
     shopId?: string;
     query?: string;
-    category?: string;
-    material?: string;
+    categories?: string[];
+    materials?: string[];
+    colors?: string[];
     minPrice?: number;
     maxPrice?: number;
     sort?: 'createdAt' | 'rating' | 'price' | 'popularity';
@@ -344,8 +345,9 @@ export const productRepository = {
       parentProductId: null,
       deletedAt: null,
       moderationStatus: 'APPROVED',
-      category: filters.category,
-      material: filters.material,
+      category: filters.categories?.length ? { in: filters.categories } : undefined,
+      material: filters.materials?.length ? { in: filters.materials } : undefined,
+      color: filters.colors?.length ? { in: filters.colors } : undefined,
       price: {
         gte: filters.minPrice,
         lte: filters.maxPrice

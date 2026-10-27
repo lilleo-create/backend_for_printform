@@ -5,8 +5,9 @@ export const productUseCases = {
   list: (filters: {
     shopId?: string;
     query?: string;
-    category?: string;
-    material?: string;
+    categories?: string[];
+    materials?: string[];
+    colors?: string[];
     minPrice?: number;
     maxPrice?: number;
     sort?: 'createdAt' | 'rating' | 'price' | 'popularity';
