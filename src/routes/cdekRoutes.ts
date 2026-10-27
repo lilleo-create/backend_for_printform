@@ -562,31 +562,7 @@ cdekRoutes.post('/orders/:orderId/sync', authenticate, async (req: AuthRequest, 
     }
 
     const info = await cdekService.getOrderInfo(cdekOrderUuid);
-
-    await prisma.$transaction(async (tx) => {
-      await tx.order.update({
-        where: { id: order.id },
-        data: {
-          cdekStatus: info.status || undefined,
-          trackingNumber: info.trackingNumber || undefined
-        }
-      });
-
-      const existingShipment = await tx.orderShipment.findUnique({ where: { orderId: order.id } });
-      if (existingShipment) {
-        const statusRaw = (existingShipment.statusRaw ?? {}) as Record<string, unknown>;
-        await tx.orderShipment.update({
-          where: { id: existingShipment.id },
-          data: {
-            statusRaw: {
-              ...statusRaw,
-              cdek_order_uuid: cdekOrderUuid,
-              trackingNumber: info.trackingNumber ?? ''
-            }
-          }
-        });
-      }
-    });
+    await cdekWebhookService.applyVerifiedCdekStatus(order.id, info);
 
     return res.json({ data: info });
   } catch (error: any) {

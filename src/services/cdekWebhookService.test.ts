@@ -68,6 +68,7 @@ const harness = async (verifiedStatus: string) => {
   let writes = 0;
   let releases = 0;
   let apiCalls = 0;
+  let activeQuery: any = null;
   let shipment: any = null;
   const tx: any = {
     $queryRaw: async () => [{ id: order.id }],
@@ -103,7 +104,10 @@ const harness = async (verifiedStatus: string) => {
   (deps.prisma.order.findFirst as any) = async ({ where }: any) =>
     where.OR?.some((part: any) => part.cdekOrderId === 'cdek-1' || part.cdekOrderUuid === 'cdek-1') ? { ...order, shipment } : null;
   (deps.prisma.order.findUnique as any) = async () => ({ ...order, shipment });
-  (deps.prisma.order.findMany as any) = async () => [{ id: order.id }];
+  (deps.prisma.order.findMany as any) = async (query: any) => {
+    activeQuery = query;
+    return [{ id: order.id }];
+  };
   (deps.prisma.$transaction as any) = async (callback: any) => callback(tx);
   (deps.cdekService.getOrderByUuid as any) = async () => { apiCalls++; return snapshot(verifiedStatus); };
   (deps.payoutService.releaseForDeliveredOrder as any) = async () => {
@@ -115,7 +119,8 @@ const harness = async (verifiedStatus: string) => {
     get shipment() { return shipment; },
     get writes() { return writes; },
     get releases() { return releases; },
-    get apiCalls() { return apiCalls; }
+    get apiCalls() { return apiCalls; },
+    get activeQuery() { return activeQuery; }
   };
 };
 
@@ -202,4 +207,5 @@ test('background sync uses the same verified apply path', async () => {
   assert.equal(h.apiCalls, 1);
   assert.equal(h.order.deliveryStatus, 'READY_FOR_PICKUP');
   assert.equal(h.shipment.status, 'IN_TRANSIT');
+  assert.equal(h.activeQuery.take, undefined);
 });

@@ -141,10 +141,10 @@ export const cdekWebhookService = {
     return this.applyVerifiedCdekStatus(order.id, snapshot);
   },
 
-  async syncCdekStatusesForActiveOrders(limit = 100) {
+  async syncCdekStatusesForActiveOrders(limit?: number) {
     const orders = await prisma.order.findMany({
       where: { cdekOrderId: { not: null }, status: { notIn: ['DELIVERED', 'CANCELLED', 'RETURNED'] } },
-      take: limit,
+      ...(limit ? { take: limit } : {}),
       select: { id: true }
     });
     let synced = 0;
