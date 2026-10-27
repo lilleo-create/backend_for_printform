@@ -136,15 +136,13 @@ const loadOrderForCdekShipment = async (orderId: string, sellerId?: string) => {
     const hasAccess = order.items.some((item) => item.product.sellerId === sellerId);
     if (!hasAccess) throw makeError('ORDER_NOT_FOUND');
   }
-  order = await normalizePvzProvider(order);
-
-  const latestPayment = await prisma.payment.findFirst({
-    where: { orderId: order.id },
-    orderBy: { createdAt: 'desc' },
-    select: { status: true }
-  });
-  const isPaid = Boolean(order.paidAt) || latestPayment?.status === 'SUCCEEDED';
+  const isPaid = order.paymentStatus === 'PAID' || Boolean(order.paidAt);
   if (!isPaid) throw makeError('ORDER_NOT_PAID');
+  if (['REFUND_PENDING', 'PARTIALLY_REFUNDED', 'REFUNDED', 'CANCELLED'].includes(order.paymentStatus) ||
+    !['PAID', 'PRINTING', 'READY_FOR_SHIPMENT'].includes(order.status)) {
+    throw makeError('SELLER_SHIPMENT_STATUS_LOCKED');
+  }
+  order = await normalizePvzProvider(order);
   const fulfillment = order as Order & { isPacked?: boolean };
   if (!fulfillment.isPacked) {
     throw makeError('FULFILLMENT_STEPS_INCOMPLETE', 'Перед отгрузкой отметьте: Упаковка.');
@@ -157,6 +155,8 @@ const loadOrderForCdekShipment = async (orderId: string, sellerId?: string) => {
   if (!fromPvzCode) throw makeError('CDEK_DROPOFF_PVZ_NOT_SET');
   if (!toPvzCode) throw makeError('CDEK_DESTINATION_PVZ_MISSING');
 
+  const sellerProvider = parsePvzProvider(order.sellerDropoffPvzMeta);
+  if (sellerProvider && sellerProvider !== 'CDEK') throw makeError('CDEK_DROPOFF_PVZ_PROVIDER_MISMATCH');
   const buyerProvider = parsePvzProvider(order.buyerPickupPvzMeta);
   if (buyerProvider && buyerProvider !== 'CDEK') {
     throw makeError('CDEK_DESTINATION_PVZ_PROVIDER_MISMATCH', `buyerPickupPvzMeta.provider must be CDEK for carrier CDEK (got ${buyerProvider})`);
@@ -220,6 +220,8 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
 
   const internalRequestId = randomUUID();
   const now = new Date();
+  let createdCdekOrderId: string | null = null;
+  let shipmentCommitted = false;
 
   try {
     if (!isValidCdekPvzCode(fromPvzCode)) {
@@ -256,6 +258,7 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
     });
 
     if (!created.cdekOrderId) throw makeError('CDEK_CREATE_ORDER_NO_UUID');
+    createdCdekOrderId = created.cdekOrderId;
 
     const statusRaw = {
       cdek_order_number: order.id,
@@ -266,6 +269,15 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
     };
 
     const shipment = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${order.id} FOR UPDATE`;
+      const current = await tx.order.findUnique({ where: { id: order.id }, include: { shipment: true } });
+      if (!current || !['PAID', 'PRINTING', 'READY_FOR_SHIPMENT'].includes(current.status) ||
+        (current.paymentStatus !== 'PAID' && !current.paidAt) || !current.isPacked ||
+        ['REFUND_PENDING', 'PARTIALLY_REFUNDED', 'REFUNDED', 'CANCELLED'].includes(current.paymentStatus) ||
+        (current.readyForShipmentAt && current.status !== 'READY_FOR_SHIPMENT') ||
+        current.shipment || current.cdekOrderId) {
+        throw makeError('SELLER_SHIPMENT_STATUS_LOCKED');
+      }
       const nextShipment = await tx.orderShipment.upsert({
         where: { orderId: order.id },
         create: {
@@ -311,6 +323,7 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
 
       return nextShipment;
     });
+    shipmentCommitted = true;
 
     let synced: Awaited<ReturnType<typeof syncShipmentByOrder>> | null = null;
     try {
@@ -329,6 +342,15 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
       }
     };
   } catch (error) {
+    if (createdCdekOrderId && !shipmentCommitted) {
+      try {
+        await cdekService.deleteOrder(createdCdekOrderId);
+      } catch (cleanupError) {
+        console.error('[CDEK][createShipmentCdek] orphan cleanup failed', {
+          orderId: order.id, code: (cleanupError as { code?: string }).code ?? 'CDEK_DELETE_FAILED'
+        });
+      }
+    }
     console.error('[CDEK][createShipmentCdek] failed', { orderId: order.id, error });
     throw error;
   }
@@ -336,8 +358,20 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
 
 export const markReadyToShipCdek = async (orderId: string, sellerId?: string) => {
   const { order } = await loadOrderForCdekShipment(orderId, sellerId);
+  if (order.status === 'PAID') throw makeError('PRODUCTION_NOT_STARTED');
 
   const existingShipment = await prisma.orderShipment.findUnique({ where: { orderId: order.id } });
+  if (order.readyForShipmentAt && existingShipment && order.cdekOrderId) {
+    return {
+      shipment: existingShipment,
+      cdek: {
+        cdekOrderId: order.cdekOrderId,
+        trackingNumber: order.trackingNumber,
+        cdekRequestUuid: null,
+        state: order.cdekStatus
+      }
+    };
+  }
   let cdekOrderId = String(order.cdekOrderId ?? '').trim() || null;
   let trackingNumber = order.trackingNumber;
   let cdekState = order.cdekStatus;
@@ -357,6 +391,14 @@ export const markReadyToShipCdek = async (orderId: string, sellerId?: string) =>
   const now = new Date();
 
   const shipment = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${order.id} FOR UPDATE`;
+    const current = await tx.order.findUnique({ where: { id: order.id }, include: { shipment: true } });
+    if (!current || !['PRINTING', 'READY_FOR_SHIPMENT'].includes(current.status) ||
+      (current.paymentStatus !== 'PAID' && !current.paidAt) || !current.isPacked ||
+      ['REFUND_PENDING', 'PARTIALLY_REFUNDED', 'REFUNDED', 'CANCELLED'].includes(current.paymentStatus)) {
+      throw makeError('SELLER_SHIPMENT_STATUS_LOCKED');
+    }
+    if (current.readyForShipmentAt && current.shipment) return current.shipment;
     const nextShipment = await tx.orderShipment.update({
       where: { id: shipmentForOrder.id },
       data: {
@@ -369,6 +411,7 @@ export const markReadyToShipCdek = async (orderId: string, sellerId?: string) =>
       where: { id: order.id },
       data: {
         readyForShipmentAt: now,
+        dropoffDeadlineAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
         status: 'READY_FOR_SHIPMENT' as any,
         statusUpdatedAt: now,
         cdekOrderId: cdekOrderId,

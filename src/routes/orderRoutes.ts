@@ -221,32 +221,7 @@ orderRoutes.post('/:orderId/retry-payment', authenticate, writeLimiter, async (r
 });
 
 orderRoutes.post('/:id/ready-for-shipment', authenticate, writeLimiter, async (req: AuthRequest, res, next) => {
-  try {
-    const order = await prisma.order.findFirst({
-      where: {
-        id: req.params.id,
-        status: 'PAID',
-        items: { some: { product: { sellerId: req.user!.userId } } }
-      }
-    });
-
-    if (!order) {
-      return res.status(404).json({ error: { code: 'ORDER_NOT_FOUND' } });
-    }
-
-    const now = new Date();
-    const updated = await prisma.order.update({
-      where: { id: order.id },
-      data: {
-        status: 'READY_FOR_SHIPMENT',
-        readyForShipmentAt: now,
-        dropoffDeadlineAt: new Date(now.getTime() + 24 * 60 * 60 * 1000)
-      }
-    });
-    return res.json({ data: withOrderPublicId(updated) });
-  } catch (error) {
-    return next(error);
-  }
+  return res.status(410).json({ error: { code: 'USE_SELLER_READY_TO_SHIP' } });
 });
 
 

@@ -18,7 +18,7 @@ test('CDEK shipment uses the paid order snapshot after product measurements chan
   let sent: any;
   try {
     (prisma.order.findUnique as any) = async () => ({
-      id: 'order-1', paidAt: new Date(), isPacked: true,
+      id: 'order-1', status: 'PAID', paymentStatus: 'PAID', paidAt: new Date(), isPacked: true,
       buyerPickupPvzId: 'MSK123', sellerDropoffPvzId: 'SPB123',
       buyerPickupPvzMeta: { provider: 'CDEK' },
       shippingSnapshot: snapshot,
@@ -36,8 +36,15 @@ test('CDEK shipment uses the paid order snapshot after product measurements chan
     };
     (cdekService.getOrderByUuid as any) = async () => { throw new Error('sync unavailable'); };
     (prisma.$transaction as any) = async (callback: any) => callback({
+      $queryRaw: async () => [{ id: 'order-1' }],
       orderShipment: { upsert: async () => ({ id: 'shipment-1' }) },
-      order: { update: async () => ({}) },
+      order: {
+        findUnique: async () => ({
+          id: 'order-1', status: 'PAID', paymentStatus: 'PAID', paidAt: new Date(),
+          isPacked: true, readyForShipmentAt: null, shipment: null, cdekOrderId: null
+        }),
+        update: async () => ({})
+      },
       orderShipmentStatusHistory: { create: async () => ({}) }
     });
     await createShipmentCdek('order-1', 'seller');

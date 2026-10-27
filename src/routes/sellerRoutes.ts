@@ -302,9 +302,7 @@ const sellerOrdersQuerySchema = z.object({
 });
 
 const sellerOrderStatusSchema = z.object({
-  status: z.enum(['CREATED', 'PRINTING', 'HANDED_TO_DELIVERY', 'IN_TRANSIT', 'DELIVERED']),
-  trackingNumber: z.string().min(2).optional(),
-  carrier: z.string().min(2).optional()
+  status: z.string().trim().min(1)
 });
 
 const sellerShipmentStageSchema = z.object({
@@ -492,7 +490,7 @@ const sellerDropoffPvzSaveSchema = z.object({
 
 
 
-const orderStatusFlow: OrderStatus[] = ['CREATED', 'PRINTING', 'HANDED_TO_DELIVERY', 'IN_TRANSIT', 'DELIVERED'];
+const orderStatusFlow: OrderStatus[] = ['CREATED', 'PAID', 'PRINTING', 'READY_FOR_SHIPMENT', 'HANDED_TO_DELIVERY', 'IN_TRANSIT', 'DELIVERED'];
 const shipmentStageFlow = ['CREATING', 'PRINTING', 'READY_FOR_DROP', 'IN_TRANSIT', 'READY_FOR_PICKUP'] as const;
 
 const normalizeShipmentStage = (status?: string | null) => {
@@ -1332,23 +1330,34 @@ sellerRoutes.get('/orders', async (req: AuthRequest, res, next) => {
 sellerRoutes.patch('/orders/:id/fulfillment-steps', writeLimiter, async (req: AuthRequest, res, next) => {
   try {
     const payload = sellerFulfillmentStepsSchema.parse(req.body);
-    const order = await prisma.order.findFirst({ where: { id: req.params.id, items: { some: { product: { sellerId: req.user!.userId } } } } });
-    if (!order) return res.status(404).json({ error: { code: 'ORDER_NOT_FOUND' } });
-    if (!(await isOrderPaid(order))) {
-      return res.status(400).json({ error: { code: 'PAYMENT_REQUIRED', message: 'Чеклист доступен только для оплаченных заказов.' } });
-    }
-
-    const updated = await prisma.order.update({
-      where: { id: order.id },
-      data: {
-        ...(payload.isPacked !== undefined ? { isPacked: payload.isPacked } : {}),
-        ...(payload.isLabelPrinted !== undefined ? { isLabelPrinted: payload.isLabelPrinted } : {}),
-        ...(payload.isActPrinted !== undefined ? { isActPrinted: payload.isActPrinted } : {}),
-        fulfillmentUpdatedAt: new Date()
-      } as any
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${req.params.id} FOR UPDATE`;
+      const order = await tx.order.findFirst({ where: { id: req.params.id, items: { some: { product: { sellerId: req.user!.userId } } } } });
+      if (!order) return { error: 'ORDER_NOT_FOUND', status: 404 } as const;
+      if ((order.paymentStatus !== 'PAID' && !order.paidAt) ||
+        ['REFUND_PENDING', 'PARTIALLY_REFUNDED', 'REFUNDED', 'CANCELLED'].includes(order.paymentStatus)) {
+        return { error: 'PAYMENT_REQUIRED', status: 409 } as const;
+      }
+      if (!['PAID', 'PRINTING'].includes(order.status) || order.readyForShipmentAt) {
+        return { error: 'FULFILLMENT_LOCKED', status: 409 } as const;
+      }
+      const shipment = await tx.orderShipment.findUnique({ where: { orderId: order.id } });
+      if ((shipment || order.cdekOrderId) && payload.isPacked === false) {
+        return { error: 'PACKING_LOCKED_AFTER_SHIPMENT', status: 409 } as const;
+      }
+      const updated = await tx.order.update({
+        where: { id: order.id },
+        data: {
+          ...(payload.isPacked !== undefined ? { isPacked: payload.isPacked } : {}),
+          ...(payload.isLabelPrinted !== undefined ? { isLabelPrinted: payload.isLabelPrinted } : {}),
+          ...(payload.isActPrinted !== undefined ? { isActPrinted: payload.isActPrinted } : {}),
+          fulfillmentUpdatedAt: new Date()
+        }
+      });
+      return { updated } as const;
     });
-
-    return res.json({ data: { isPacked: (updated as any).isPacked, isLabelPrinted: (updated as any).isLabelPrinted, isActPrinted: (updated as any).isActPrinted } });
+    if ('error' in result) return res.status(result.status ?? 409).json({ error: { code: result.error } });
+    return res.json({ data: { isPacked: result.updated.isPacked, isLabelPrinted: result.updated.isLabelPrinted, isActPrinted: result.updated.isActPrinted } });
   } catch (error) {
     next(error);
   }
@@ -1373,6 +1382,9 @@ sellerRoutes.post('/orders/:orderId/ready-to-ship', writeLimiter, async (req: Au
 });
 
 sellerRoutes.post('/orders/:orderId/shipment', writeLimiter, async (req: AuthRequest, res, next) => {
+  if (env.isProduction) {
+    return res.status(410).json({ error: { code: 'USE_READY_TO_SHIP' } });
+  }
   try {
     const result = await shipmentService.createShipmentCdek({
       orderId: req.params.orderId,
@@ -1427,16 +1439,6 @@ sellerRoutes.get('/shipments/:id/label', async (req: AuthRequest, res, next) => 
     if (result.status === 'need_ready_to_ship') return res.status(409).json({ error: NEED_READY_TO_SHIP_ERROR });
     if (result.status === 'processing') return res.status(409).json({ error: FORMS_NOT_READY_ERROR });
     if (result.status !== 'ready') return res.status(502).json({ error: DOCUMENT_DOWNLOAD_FAILED_ERROR });
-
-    await prisma.$transaction(async (tx) => {
-      await tx.order.update({
-        where: { id: shipment.orderId },
-        data: {
-          isLabelPrinted: true,
-          fulfillmentUpdatedAt: new Date()
-        } as any
-      });
-    });
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="cdek-label-${shipment.id}.pdf"`);
@@ -1495,16 +1497,6 @@ sellerRoutes.get('/shipments/:id/act', async (req: AuthRequest, res, next) => {
     if (result.status === 'processing') return res.status(409).json({ error: FORMS_NOT_READY_ERROR });
     if (result.status === 'expired') return res.status(409).json({ error: FORMS_EXPIRED_ERROR });
     if (result.status !== 'ready') return res.status(502).json({ error: DOCUMENT_DOWNLOAD_FAILED_ERROR });
-
-    await prisma.$transaction(async (tx) => {
-      await tx.order.update({
-        where: { id: shipment.orderId },
-        data: {
-          isActPrinted: true,
-          fulfillmentUpdatedAt: new Date()
-        } as any
-      });
-    });
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', withUtf8PdfDisposition(`cdek-act-${shipment.id}.pdf`));
@@ -1633,7 +1625,6 @@ sellerRoutes.get('/orders/:orderId/documents/label.pdf', async (req: AuthRequest
     if (result.status === 'processing') return res.status(409).json({ error: FORMS_NOT_READY_ERROR });
     if (result.status !== 'ready') return res.status(502).json({ error: DOCUMENT_DOWNLOAD_FAILED_ERROR });
 
-    await prisma.order.update({ where: { id: order.id }, data: { isLabelPrinted: true, fulfillmentUpdatedAt: new Date() } as any });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', withUtf8PdfDisposition(`cdek-label-${order.id}.pdf`));
     res.setHeader('Content-Length', result.pdf.length);
@@ -1674,7 +1665,6 @@ sellerRoutes.get('/orders/:orderId/documents/handover-act.pdf', async (req: Auth
     if (result.status === 'expired') return res.status(409).json({ error: FORMS_EXPIRED_ERROR });
     if (result.status !== 'ready') return res.status(502).json({ error: DOCUMENT_DOWNLOAD_FAILED_ERROR });
 
-    await prisma.order.update({ where: { id: order.id }, data: { isActPrinted: true, fulfillmentUpdatedAt: new Date() } as any });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', withUtf8PdfDisposition(`handover-act-${order.id}.pdf`));
     res.setHeader('Content-Length', result.pdf.length);
@@ -2118,142 +2108,37 @@ sellerRoutes.get('/finance', async (req: AuthRequest, res, next) => {
 });
 
 sellerRoutes.post('/orders/:id/mark-received', writeLimiter, async (req: AuthRequest, res, next) => {
-  try {
-    const sellerId = req.user!.userId;
-    const updated = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      const order = await tx.order.findFirst({
-        where: { id: req.params.id, items: { some: { product: { sellerId } } } },
-        include: { items: { where: { product: { sellerId } }, include: { product: { select: { sellerId: true } } } } }
-      });
-      if (!order) return null;
-      if (['CANCELLED', 'RETURNED'].includes(order.status)) {
-        const error = new Error('ORDER_NOT_COMPLETABLE');
-        (error as any).status = 400;
-        throw error;
-      }
-
-      const nextStatus = order.status === 'DELIVERED' ? order.status : 'DELIVERED';
-      const completedAt = order.completedAt ?? new Date();
-      await tx.order.update({
-        where: { id: order.id },
-        data: { status: nextStatus, statusUpdatedAt: new Date(), completedAt }
-      });
-
-      const releaseResult = await orderCompletionService.releaseFundsForCompletedOrder(order.id, tx);
-      const reloaded = await tx.order.findUnique({ where: { id: order.id } });
-      if (!reloaded) {
-        const error = new Error('ORDER_NOT_FOUND');
-        (error as any).status = 404;
-        throw error;
-      }
-
-      const breakdown = orderCompletionService.buildOrderFinanceBreakdown(reloaded);
-      const financeView = await sellerPayoutService.buildFinanceView(sellerId);
-
-      return {
-        order: reloaded,
-        releaseResult,
-        breakdown,
-        financeSnapshot: {
-          pendingPayoutMinor: Number(financeView.summary.awaitingPayoutKopecks ?? 0),
-          frozenMinor: Number(financeView.summary.frozenKopecks ?? 0),
-          paidOutMinor: Number(financeView.summary.paidOutKopecks ?? 0),
-          refundsAndHoldsMinor: Number(financeView.summary.refundedKopecks ?? 0) + Number(financeView.summary.blockedKopecks ?? 0),
-          availableToPayoutMinor: Number(financeView.summary.awaitingPayoutKopecks ?? 0)
-        }
-      };
-    });
-
-    if (!updated) return res.status(404).json({ error: { code: 'ORDER_NOT_FOUND' } });
-
-    res.json({
-      data: {
-        order: {
-          id: updated.order.id,
-          status: 'completed',
-          completedAt: updated.order.completedAt,
-          fundsReleasedAt: updated.order.fundsReleasedAt
-        },
-        finance: {
-          grossAmountMinor: updated.breakdown.grossAmountMinor,
-          serviceFeeMinor: updated.breakdown.serviceFeeMinor,
-          platformFeeMinor: updated.breakdown.platformFeeMinor,
-          providerFeeMinor: updated.breakdown.providerFeeMinor,
-          sellerNetAmountMinor: updated.breakdown.sellerNetAmountMinor,
-          frozenMinorAfter: updated.financeSnapshot.frozenMinor,
-          availableToPayoutMinorAfter: updated.financeSnapshot.availableToPayoutMinor
-        },
-        snapshot: updated.financeSnapshot,
-        idempotent: updated.releaseResult?.reason === 'ALREADY_RELEASED'
-      }
-    });
-  } catch (error) {
-    next(error);
-  }
+  return res.status(410).json({ error: { code: 'MANUAL_DELIVERY_CONFIRMATION_DISABLED' } });
 });
 
 // ------------------- Status updates -------------------
 sellerRoutes.patch('/orders/:id/status', writeLimiter, async (req: AuthRequest, res, next) => {
   try {
     const payload = sellerOrderStatusSchema.parse(req.body);
+    if (payload.status !== 'PRINTING') {
+      return res.status(409).json({ error: { code: 'STATUS_MANAGED_BY_CARRIER' } });
+    }
 
     const order = await prisma.order.findFirst({
       where: { id: req.params.id, items: { some: { product: { sellerId: req.user!.userId } } } },
-      include: {
-        items: { where: { product: { sellerId: req.user!.userId } }, include: { product: true, variant: true } },
-        contact: true,
-        shippingAddress: true,
-        buyer: { select: BUYER_PUBLIC_SELECT }
-      }
     });
 
     if (!order) return res.status(404).json({ error: { code: 'ORDER_NOT_FOUND' } });
-
-    const currentIndex = orderStatusFlow.indexOf(order.status);
-    const nextIndex = orderStatusFlow.indexOf(payload.status);
-    if (currentIndex === -1 || nextIndex === -1) return res.status(400).json({ error: { code: 'STATUS_INVALID' } });
-    if (order.status === 'DELIVERED') return res.status(400).json({ error: { code: 'STATUS_FINAL' } });
-    if (nextIndex <= currentIndex) return res.status(400).json({ error: { code: 'STATUS_BACKWARD' } });
-    if (nextIndex !== currentIndex + 1) return res.status(400).json({ error: { code: 'STATUS_SKIP_NOT_ALLOWED' } });
-
-    const trackingNumber = payload.trackingNumber ?? (order as any).trackingNumber ?? undefined;
-    const carrier = payload.carrier ?? (order as any).carrier ?? undefined;
-
-    if (['HANDED_TO_DELIVERY', 'IN_TRANSIT', 'DELIVERED'].includes(payload.status) && (!trackingNumber || !carrier)) {
-      return res.status(400).json({ error: { code: 'TRACKING_REQUIRED' } });
+    if (order.status !== 'PAID' || order.cdekOrderId || order.readyForShipmentAt) {
+      return res.status(409).json({ error: { code: 'STATUS_TRANSITION_NOT_ALLOWED' } });
     }
-
-    const updated = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      const nextOrder = await tx.order.update({
-        where: { id: order.id },
-        data: {
-          status: payload.status,
-          statusUpdatedAt: new Date(),
-          trackingNumber,
-          carrier,
-          ...(payload.status === 'DELIVERED' ? { completedAt: order.completedAt ?? new Date() } : {})
-        },
-        include: {
-          items: { where: { product: { sellerId: req.user!.userId } }, include: { product: true, variant: true } },
-          contact: true,
-          shippingAddress: true,
-          buyer: { select: BUYER_PUBLIC_SELECT }
-        }
-      });
-
-      if (payload.status === 'DELIVERED') {
-        await orderCompletionService.completeOrderFromDeliveryReceipt(
-          order.id,
-          'manual_test',
-          tx
-        );
-        await orderCompletionService.releaseFundsForCompletedOrder(order.id, tx);
-      }
-
-      return nextOrder;
+    if ((order.paymentStatus !== 'PAID' && !order.paidAt) ||
+      ['REFUND_PENDING', 'PARTIALLY_REFUNDED', 'REFUNDED', 'CANCELLED'].includes(order.paymentStatus)) {
+      return res.status(409).json({ error: { code: 'PAYMENT_REQUIRED' } });
+    }
+    const claimed = await prisma.order.updateMany({
+      where: { id: order.id, status: 'PAID', cdekOrderId: null, readyForShipmentAt: null, shipment: { is: null },
+        paymentStatus: { notIn: ['REFUND_PENDING', 'PARTIALLY_REFUNDED', 'REFUNDED', 'CANCELLED'] },
+        OR: [{ paymentStatus: 'PAID' }, { paidAt: { not: null } }] },
+      data: { status: 'PRINTING', statusUpdatedAt: new Date() }
     });
-
-
+    if (claimed.count !== 1) return res.status(409).json({ error: { code: 'STATUS_TRANSITION_NOT_ALLOWED' } });
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
     res.json({ data: updated });
   } catch (error) {
     next(error);
@@ -2285,6 +2170,9 @@ sellerRoutes.post('/orders/:id/mark-received/test', writeLimiter, async (req: Au
 });
 
 sellerRoutes.patch('/orders/:id/shipment-stage', writeLimiter, async (req: AuthRequest, res, next) => {
+  if (env.isProduction) {
+    return res.status(410).json({ error: { code: 'MANUAL_SHIPMENT_STATUS_DISABLED' } });
+  }
   try {
     const payload = sellerShipmentStageSchema.parse(req.body);
     const order = await prisma.order.findFirst({
