@@ -4,7 +4,7 @@ import { prisma } from '../lib/prisma';
 import { orderRepository } from './orderRepository';
 import { buildShippingSnapshot } from '../services/shippingPackageService';
 
-test('order total and persisted snapshot include the quoted delivery amount', async () => {
+test('seller-sponsored order keeps real CDEK quote without charging buyer', async () => {
   const originalTransaction = prisma.$transaction;
   const snapshot = buildShippingSnapshot([
     { productId: 'a', quantity: 3, weightGrossG: 350, dxCm: 19, dyCm: 12, dzCm: 9.5 }
@@ -21,8 +21,9 @@ test('order total and persisted snapshot include the quoted delivery amount', as
       deliveryAmountKopecks: 27550,
       shippingSnapshot: snapshot
     });
-    assert.equal(created.total, 57550);
+    assert.equal(created.total, 30000);
     assert.equal(created.deliveryAmountKopecks, 27550);
+    assert.equal(created.deliveryChargedToBuyerKopecks, 0);
     assert.deepEqual(created.shippingSnapshot, snapshot);
     assert.ok(created.deliveryCalculatedAt instanceof Date);
   } finally {

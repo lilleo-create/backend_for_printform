@@ -16,9 +16,7 @@ type StartPaymentInput = {
     email?: string | null;
   };
   packagesCount?: number;
-  expectedDeliveryAmountKopecks?: number;
-  expectedShippingSnapshot?: unknown;
-  items: { productId: string; variantId?: string; quantity: number }[];
+  items: { productId: string; variantId?: string; quantity: number; expectedPriceKopecks?: number }[];
   buyerPickupPvz: {
     provider?: 'CDEK';
     pvzId: string;
@@ -155,14 +153,6 @@ export const paymentFlowService = {
 
           const shipping = await quoteCheckoutShipping(input.items, normalizedBuyerPickupPvz);
           const { snapshot, deliveryAmountKopecks } = shipping;
-          if (input.expectedDeliveryAmountKopecks != null &&
-              input.expectedDeliveryAmountKopecks !== deliveryAmountKopecks) {
-            throw new Error('SHIPPING_QUOTE_CHANGED');
-          }
-          if (input.expectedShippingSnapshot != null &&
-              JSON.stringify(input.expectedShippingSnapshot) !== JSON.stringify(snapshot)) {
-            throw new Error('SHIPPING_QUOTE_CHANGED');
-          }
           const deliveryDaysMin = shipping.quote.deliveryDaysMin;
           const deliveryDaysMax = shipping.quote.deliveryDaysMax;
 
@@ -191,6 +181,7 @@ export const paymentFlowService = {
             orderLabels: [],
             items: input.items,
             deliveryAmountKopecks,
+            deliveryChargedToBuyerKopecks: 0,
             deliveryDaysMin,
             deliveryDaysMax
           };
@@ -240,13 +231,7 @@ export const paymentFlowService = {
       }
 
       if (!order) throw new Error('ORDER_CREATE_FAILED');
-      if (!order.shippingSnapshot || !order.deliveryAmountKopecks ||
-          (input.expectedDeliveryAmountKopecks != null &&
-            input.expectedDeliveryAmountKopecks !== order.deliveryAmountKopecks) ||
-          (input.expectedShippingSnapshot != null &&
-            JSON.stringify(input.expectedShippingSnapshot) !== JSON.stringify(order.shippingSnapshot))) {
-        throw new Error('SHIPPING_QUOTE_CHANGED');
-      }
+      if (!order.shippingSnapshot || !order.deliveryAmountKopecks) throw new Error('SHIPPING_QUOTE_FAILED');
 
       const normalizedBuyerPickupPvz = normalizeBuyerPickupPvz(input.buyerPickupPvz);
       console.info('[PAYMENT][START]', {

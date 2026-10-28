@@ -19,9 +19,10 @@ export const orderRepository = {
     shippingSnapshot?: ShippingSnapshot;
     orderLabels?: { packageNo: number; code: string }[];
     deliveryAmountKopecks?: number;
+    deliveryChargedToBuyerKopecks?: number;
     deliveryDaysMin?: number;
     deliveryDaysMax?: number;
-    items: { productId: string; variantId?: string; quantity: number }[];
+    items: { productId: string; variantId?: string; quantity: number; expectedPriceKopecks?: number }[];
   }) =>
     prisma.$transaction(async (tx) => {
       const productIds = data.items.map((item) => item.productId);
@@ -43,6 +44,9 @@ export const orderRepository = {
           ? variants.find((entry) => entry.id === item.variantId)
           : undefined;
         const priceAtPurchase = product.price + (variant?.priceDelta ?? 0);
+        if (item.expectedPriceKopecks != null && item.expectedPriceKopecks !== priceAtPurchase) {
+          throw new Error('PRODUCT_PRICE_CHANGED');
+        }
         return {
           productId: item.productId,
           variantId: item.variantId,
@@ -54,7 +58,8 @@ export const orderRepository = {
 
       const itemsSubtotal = itemsWithPrice.reduce((sum, item) => sum + item.priceAtPurchase * item.quantity, 0);
       const deliveryAmountKopecks = data.deliveryAmountKopecks ?? 0;
-      const total = itemsSubtotal + deliveryAmountKopecks;
+      const deliveryChargedToBuyerKopecks = data.deliveryChargedToBuyerKopecks ?? 0;
+      const total = itemsSubtotal + deliveryChargedToBuyerKopecks;
       const economics = calculateOrderEconomics(total);
 
       const normalizePvzMeta = (pvz?: { pvzId: string; raw: unknown; addressFull?: string; provider?: 'CDEK' }) => {
@@ -105,6 +110,7 @@ export const orderRepository = {
           total,
           // Only include when non-zero so old Prisma clients use DB default(0) safely
           ...(deliveryAmountKopecks > 0 ? { deliveryAmountKopecks } : {}),
+          deliveryChargedToBuyerKopecks,
           ...(data.shippingSnapshot ? { deliveryCalculatedAt: new Date() } : {}),
           ...(data.deliveryDaysMin != null && data.deliveryDaysMin > 0 ? { deliveryDaysMin: data.deliveryDaysMin } : {}),
           ...(data.deliveryDaysMax != null && data.deliveryDaysMax > 0 ? { deliveryDaysMax: data.deliveryDaysMax } : {}),

@@ -234,7 +234,7 @@ test('startPayment rejects multi-seller checkout items', async () => {
   );
 });
 
-test('createOrderCancellationRefund marks order CANCELLED with REFUND_PENDING when refund is pending', async () => {
+test('full refund returns only buyer-paid total for seller-sponsored delivery', async () => {
   (prisma.$transaction as any) = async (cb: any) =>
     cb({
       order: {
@@ -243,7 +243,9 @@ test('createOrderCancellationRefund marks order CANCELLED with REFUND_PENDING wh
           buyerId: 'buyer-1',
           paymentStatus: 'PAID',
           status: 'PAID',
-          total: 10000,
+          total: 150000,
+          deliveryAmountKopecks: 20475,
+          deliveryChargedToBuyerKopecks: 0,
           currency: 'RUB',
           payoutStatus: 'HOLD',
           shipment: null,
@@ -258,11 +260,15 @@ test('createOrderCancellationRefund marks order CANCELLED with REFUND_PENDING wh
       }
     });
 
-  (yookassaService.createRefund as any) = async () => ({
+  let refundRequest: any;
+  (yookassaService.createRefund as any) = async (input: any) => {
+    refundRequest = input;
+    return {
     id: 'ext-refund-1',
     status: 'pending',
     payload: { id: 'ext-refund-1', status: 'pending' }
-  });
+    };
+  };
 
   const { order, refund } = await paymentFlowService.createOrderCancellationRefund({
     orderId: 'order-1',
@@ -273,6 +279,8 @@ test('createOrderCancellationRefund marks order CANCELLED with REFUND_PENDING wh
   assert.equal(order.paymentStatus, 'REFUND_PENDING');
   assert.equal(order.payoutStatus, 'BLOCKED');
   assert.equal(refund.externalId, 'ext-refund-1');
+  assert.equal(refund.amount, 150000);
+  assert.equal(refundRequest.amount, 150000);
 });
 
 test('createOrderCancellationRefund marks order CANCELLED with REFUNDED when refund is succeeded immediately', async () => {

@@ -325,6 +325,7 @@ model Order {
   acquiringFeeKopecks        Int?
   sellerNetAmountKopecks     Int?
   deliveryAmountKopecks      Int?                 @default(0)
+  deliveryChargedToBuyerKopecks Int?
   platformFeePercent         Float?
   grossAmountMinor           Int?
   platformFeeMinor           Int?

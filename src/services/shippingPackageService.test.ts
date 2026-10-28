@@ -39,7 +39,7 @@ test('missing city code and CDEK failure block the quote', async () => {
   await assert.rejects(calculateShippingQuote(snapshot, 1, 42, async () => { throw new Error('network'); }), { code: 'CDEK_QUOTE_FAILED' });
 });
 
-test('successful quote uses the same CDEK package and gives kopecks for the order/payment total', async () => {
+test('successful quote uses the same CDEK package and returns actual cost in kopecks', async () => {
   const snapshot = buildShippingSnapshot([item({ quantity: 3 })]);
   let sent: any;
   const result = await calculateShippingQuote(snapshot, 1, 42, async (params) => {
@@ -49,7 +49,6 @@ test('successful quote uses the same CDEK package and gives kopecks for the orde
   });
   assert.deepEqual(sent, { fromCityCode: 1, toCityCode: 42, ...toCdekPackage(snapshot) });
   assert.equal(result.deliveryAmountKopecks, 27550);
-  assert.equal(30000 + result.deliveryAmountKopecks, 57550);
   await assert.rejects(calculateShippingQuote(snapshot, 1, 42, async () => ({
     ...result.quote, totalSum: 0
   })), { code: 'CDEK_QUOTE_INVALID' });

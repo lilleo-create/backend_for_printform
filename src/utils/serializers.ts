@@ -30,6 +30,7 @@ const BUYER_HIDDEN_ORDER_FIELDS = new Set([
   'acquiringFeeKopecks',
   'platformFeePercent',
   'deliveryAmountKopecks',
+  'deliveryChargedToBuyerKopecks',
   'grossAmountMinor',
   'platformFeeMinor',
   'providerFeeMinor',

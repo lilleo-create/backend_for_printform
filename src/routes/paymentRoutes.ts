@@ -18,8 +18,6 @@ const startSchema = z.object({
     email: z.string().email().optional().nullable()
   }),
   packagesCount: z.number().int().min(1).default(1),
-  expectedDeliveryAmountKopecks: z.number().int().positive().optional(),
-  expectedShippingSnapshot: z.unknown().optional(),
   buyerPickupPvz: z.object({
     provider: z.string().optional(),
     pvzId: z.string().min(1),
@@ -33,7 +31,8 @@ const startSchema = z.object({
       z.object({
         productId: z.string(),
         variantId: z.string().optional(),
-        quantity: z.number().int().min(1)
+        quantity: z.number().int().min(1),
+        expectedPriceKopecks: z.number().int().nonnegative().optional()
       })
     )
     .min(1)
@@ -86,8 +85,6 @@ paymentRoutes.post('/start', authenticate, writeLimiter, async (req: AuthRequest
       paymentAttemptKey: payload.paymentAttemptKey,
       recipient: payload.recipient,
       packagesCount: payload.packagesCount,
-      expectedDeliveryAmountKopecks: payload.expectedDeliveryAmountKopecks,
-      expectedShippingSnapshot: payload.expectedShippingSnapshot,
       items: payload.items,
       buyerPickupPvz: {
         ...payload.buyerPickupPvz,
@@ -102,9 +99,11 @@ paymentRoutes.post('/start', authenticate, writeLimiter, async (req: AuthRequest
       message === 'PRODUCT_NOT_FOUND' ||
       message === 'MULTI_SELLER_CHECKOUT_NOT_SUPPORTED' ||
       message === 'SELLER_DROPOFF_PVZ_REQUIRED'
-      || message === 'SHIPPING_QUOTE_CHANGED'
+      || message === 'SHIPPING_QUOTE_FAILED'
       || error instanceof ShippingQuoteError
         ? 400
+        : message === 'PRODUCT_PRICE_CHANGED'
+        ? 409
         : message === 'ORDER_CREATE_FAILED' || message === 'YOOKASSA_CONFIG_MISSING'
         ? 500
         : message === 'YOOKASSA_CREATE_FAILED'

@@ -17,9 +17,10 @@ export const orderUseCases = {
     shippingSnapshot?: ShippingSnapshot;
     orderLabels?: { packageNo: number; code: string }[];
     deliveryAmountKopecks?: number;
+    deliveryChargedToBuyerKopecks?: number;
     deliveryDaysMin?: number;
     deliveryDaysMax?: number;
-    items: { productId: string; variantId?: string; quantity: number }[];
+    items: { productId: string; variantId?: string; quantity: number; expectedPriceKopecks?: number }[];
   }) => {
     let order: any;
     try {

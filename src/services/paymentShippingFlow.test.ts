@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-test('payments/start charges goods plus the accepted CDEK quote and persists its snapshot', async () => {
+test('payments/start accepts changed CDEK tariff and charges goods only', async () => {
   process.env.JWT_SECRET = 'test_secret_0123456789_abcdefghijk';
   process.env.JWT_REFRESH_SECRET = 'test_refresh_0123456789_abcdefgh';
   process.env.OTP_HASH_PEPPER = 'test_pepper_0123456789_abcdefghij';
@@ -32,24 +32,24 @@ test('payments/start charges goods plus the accepted CDEK quote and persists its
       defaultDropoffPvzId: 'MSK123', defaultDropoffPvzMeta: { raw: { city_code: 44 } }
     });
     (cdekService.calculateDelivery as any) = async () => ({
-      totalSum: 275.5, deliverySum: 275.5, deliveryDaysMin: 2, deliveryDaysMax: 4
+      totalSum: 210, deliverySum: 210, deliveryDaysMin: 2, deliveryDaysMax: 4
     });
     (orderUseCases.create as any) = async (input: any) => {
       created = input;
-      return { id: 'order-1', total: 30000 + input.deliveryAmountKopecks,
+      return { id: 'order-1', total: 150000,
         currency: 'RUB', packagesCount: 1, orderLabels: [],
         shippingSnapshot: input.shippingSnapshot,
         deliveryAmountKopecks: input.deliveryAmountKopecks };
     };
     (prisma.order.update as any) = async ({ data }: any) => ({
-      id: 'order-1', total: 57550, currency: 'RUB', packagesCount: 1,
+      id: 'order-1', total: 150000, currency: 'RUB', packagesCount: 1,
       shippingSnapshot: created.shippingSnapshot,
       deliveryAmountKopecks: created.deliveryAmountKopecks, ...data
     });
     (prisma.payment.findFirst as any) = async () => null;
     (prisma.$transaction as any) = async (callback: any) => callback({
       order: {
-        findUnique: async () => ({ id: 'order-1', total: 57550, currency: 'RUB', paymentId: null }),
+        findUnique: async () => ({ id: 'order-1', total: 150000, currency: 'RUB', paymentId: null }),
         updateMany: async () => ({ count: 1 })
       },
       payment: { create: async () => ({ id: 'payment-1', provider: 'yookassa' }) }
@@ -63,12 +63,16 @@ test('payments/start charges goods plus the accepted CDEK quote and persists its
       buyerId: 'buyer', paymentAttemptKey: 'attempt-1',
       recipient: { name: 'Test', phone: '+79990000000' },
       buyerPickupPvz: { pvzId: 'SPB123', raw: { city_code: 137 } },
-      items: [{ productId: 'a', quantity: 3 }],
-      expectedDeliveryAmountKopecks: 27550
+      items: [{ productId: 'a', quantity: 1, expectedPriceKopecks: 150000 }],
+      expectedDeliveryAmountKopecks: 20475,
+      expectedShippingSnapshot: { source: 'checkout', totalWeightGrams: 350,
+        items: [{ weightGrossG: 350, quantity: 1, productId: 'a' }],
+        packages: [{ heightCm: 10, widthCm: 12, lengthCm: 19, weightGrams: 350 }] }
     });
-    assert.equal(created.deliveryAmountKopecks, 27550);
-    assert.equal(created.shippingSnapshot.packages[0].weightGrams, 1050);
-    assert.equal(charged.amount, 57550);
+    assert.equal(created.deliveryAmountKopecks, 21000);
+    assert.equal(created.deliveryChargedToBuyerKopecks, 0);
+    assert.equal(created.shippingSnapshot.packages[0].weightGrams, 350);
+    assert.equal(charged.amount, 150000);
   } finally {
     (prisma.order.updateMany as any) = originals.orderUpdateMany;
     (prisma.order.findFirst as any) = originals.orderFindFirst;
@@ -97,7 +101,8 @@ test('payments/start creates neither order nor YooKassa payment when city or CDE
   const originals = {
     orderUpdateMany: prisma.order.updateMany, orderFindFirst: prisma.order.findFirst,
     productFindMany: prisma.product.findMany, settingsFind: prisma.sellerSettings.findUnique,
-    calculate: cdekService.calculateDelivery, createOrder: orderUseCases.create,
+    calculate: cdekService.calculateDelivery, cityCode: cdekService.getCityCodeByPvzCode,
+    createOrder: orderUseCases.create,
     createPayment: yookassaService.createPayment
   };
   let orderCreates = 0;
@@ -111,6 +116,7 @@ test('payments/start creates neither order nor YooKassa payment when city or CDE
     (prisma.sellerSettings.findUnique as any) = async () => ({
       defaultDropoffPvzId: 'MSK123', defaultDropoffPvzMeta: { raw: { city_code: 44 } }
     });
+    (cdekService.getCityCodeByPvzCode as any) = async () => null;
     (orderUseCases.create as any) = async () => { orderCreates++; };
     (yookassaService.createPayment as any) = async () => { paymentCreates++; };
     const base = {
@@ -133,6 +139,7 @@ test('payments/start creates neither order nor YooKassa payment when city or CDE
     (prisma.product.findMany as any) = originals.productFindMany;
     (prisma.sellerSettings.findUnique as any) = originals.settingsFind;
     (cdekService.calculateDelivery as any) = originals.calculate;
+    (cdekService.getCityCodeByPvzCode as any) = originals.cityCode;
     (orderUseCases.create as any) = originals.createOrder;
     (yookassaService.createPayment as any) = originals.createPayment;
   }
