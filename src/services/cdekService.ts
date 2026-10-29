@@ -77,6 +77,7 @@ type CdekOrderEntity = {
   order_uuid?: string;
   cdek_number?: string;
   statuses?: Array<{ code?: string; date_time?: string }>;
+  delivery_detail?: { total_sum?: number; delivery_sum?: number };
 };
 
 type CdekOrderResponse = {

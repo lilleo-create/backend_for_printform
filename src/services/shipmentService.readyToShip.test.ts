@@ -18,7 +18,10 @@ const setup = () => {
   const shipment: any = { id: 'shipment-1', orderId: 'order-1', status: 'READY_TO_SHIP' };
   const order: any = {
     id: 'order-1', status: 'PRINTING', paymentStatus: 'PAID', paidAt: new Date(),
-    isPacked: true, readyForShipmentAt: null, cdekOrderId: 'cdek-uuid',
+    isPacked: true, packedWeightGrams: 400, packedLengthCm: 12, packedWidthCm: 12,
+    packedHeightCm: 12, packedDeliveryAmountKopecks: 24700,
+    packedQuoteCalculatedAt: new Date(), sellerNetAmountKopecks: 100000,
+    readyForShipmentAt: null, cdekOrderId: 'cdek-uuid',
     cdekStatus: 'ACCEPTED', trackingNumber: '123', buyerPickupPvzId: 'MSK123',
     sellerDropoffPvzId: 'SPB123', buyerPickupPvzMeta: { provider: 'CDEK' },
     sellerDropoffPvzMeta: { provider: 'CDEK' },
@@ -62,6 +65,10 @@ test('ready-to-ship requires paid order and packing', async () => {
   await assert.rejects(markReadyToShipCdek('order-1', 'seller-1'),
     (error: any) => error.code === 'FULFILLMENT_STEPS_INCOMPLETE');
   h.order.isPacked = true;
+  h.order.packedWeightGrams = null;
+  await assert.rejects(markReadyToShipCdek('order-1', 'seller-1'),
+    (error: any) => error.code === 'PACKED_PARCEL_REQUIRED');
+  h.order.packedWeightGrams = 400;
   h.order.status = 'PAID';
   await assert.rejects(markReadyToShipCdek('order-1', 'seller-1'),
     (error: any) => error.code === 'PRODUCTION_NOT_STARTED');

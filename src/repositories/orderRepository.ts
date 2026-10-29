@@ -110,6 +110,7 @@ export const orderRepository = {
           total,
           // Only include when non-zero so old Prisma clients use DB default(0) safely
           ...(deliveryAmountKopecks > 0 ? { deliveryAmountKopecks } : {}),
+          checkoutDeliveryEstimateKopecks: deliveryAmountKopecks,
           deliveryChargedToBuyerKopecks,
           ...(data.shippingSnapshot ? { deliveryCalculatedAt: new Date() } : {}),
           ...(data.deliveryDaysMin != null && data.deliveryDaysMin > 0 ? { deliveryDaysMin: data.deliveryDaysMin } : {}),

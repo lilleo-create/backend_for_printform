@@ -20,6 +20,7 @@ test('seller-sponsored CDEK quote is stored but buyer and Payment owe goods only
       deliveryChargedToBuyerKopecks: 0
     });
     assert.equal(created.deliveryAmountKopecks, 20475);
+    assert.equal(created.checkoutDeliveryEstimateKopecks, 20475);
     assert.equal(created.deliveryChargedToBuyerKopecks, 0);
     assert.equal(created.total, 150000);
   } finally {

@@ -11,7 +11,8 @@ export type ShippingItem = {
 
 export type ShippingSnapshot = {
   packages: [{ weightGrams: number; lengthCm: number; widthCm: number; heightCm: number }];
-  items: { productId: string; quantity: number; weightGrossG: number }[];
+  items: { productId: string; quantity: number; weightGrossG: number;
+    lengthCm?: number; widthCm?: number; heightCm?: number }[];
   totalWeightGrams: number;
   source: 'checkout';
 };
@@ -43,7 +44,8 @@ export const buildShippingSnapshot = (items: ShippingItem[]): ShippingSnapshot =
       throw new ShippingQuoteError('SHIPPING_DIMENSIONS_REQUIRED');
     }
     weightGrams += item.weightGrossG * item.quantity;
-    snapshotItems.push({ productId: item.productId, quantity: item.quantity, weightGrossG: item.weightGrossG });
+    snapshotItems.push({ productId: item.productId, quantity: item.quantity, weightGrossG: item.weightGrossG,
+      lengthCm: item.dxCm, widthCm: item.dyCm, heightCm: item.dzCm });
     lengthCm = Math.max(lengthCm, item.dxCm);
     widthCm = Math.max(widthCm, item.dyCm);
     heightCm += item.dzCm * item.quantity;
@@ -56,6 +58,52 @@ export const buildShippingSnapshot = (items: ShippingItem[]): ShippingSnapshot =
     items: snapshotItems,
     totalWeightGrams: weightGrams,
     source: 'checkout'
+  };
+};
+
+export type PackedParcel = { weightGrams: number; lengthCm: number; widthCm: number; heightCm: number };
+
+export const validatePackedParcel = (parcel: PackedParcel, snapshot: ShippingSnapshot): PackedParcel => {
+  if (!Number.isSafeInteger(parcel.weightGrams) || parcel.weightGrams <= 0 || parcel.weightGrams > 100_000) {
+    throw new ShippingQuoteError('PACKED_WEIGHT_INVALID');
+  }
+  const dimensions = [parcel.lengthCm, parcel.widthCm, parcel.heightCm];
+  if (dimensions.some(value => !Number.isFinite(value) || value <= 0 || value > 300)) {
+    throw new ShippingQuoteError('PACKED_DIMENSIONS_INVALID');
+  }
+  if (!Array.isArray(snapshot.items) || snapshot.items.length === 0 ||
+      snapshot.items.some(item => !Number.isInteger(item.quantity) || item.quantity <= 0 ||
+        !Number.isSafeInteger(item.weightGrossG) || item.weightGrossG <= 0)) {
+    throw new ShippingQuoteError('SHIPPING_SNAPSHOT_INVALID');
+  }
+  const itemWeight = snapshot.items.reduce((sum, item) => sum + item.weightGrossG * item.quantity, 0);
+  if (parcel.weightGrams < itemWeight) throw new ShippingQuoteError('PACKED_WEIGHT_TOO_LOW');
+  if (snapshot.items.length === 1 && snapshot.items[0].quantity === 1) {
+    const item = snapshot.items[0];
+    const checkoutParcel = snapshot.packages?.[0];
+    const itemDimensions = [item.lengthCm ?? checkoutParcel?.lengthCm,
+      item.widthCm ?? checkoutParcel?.widthCm, item.heightCm ?? checkoutParcel?.heightCm];
+    if (itemDimensions.every((value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0)) {
+      const sortedItem = itemDimensions.sort((a, b) => a - b);
+      const sortedParcel = [...dimensions].sort((a, b) => a - b);
+      if (sortedItem.some((value, index) => value > sortedParcel[index])) {
+        throw new ShippingQuoteError('PACKED_DIMENSIONS_TOO_SMALL');
+      }
+    }
+  }
+  return parcel;
+};
+
+export const toCdekPackedParcel = (parcel: PackedParcel): PackedParcel => {
+  if (!Number.isSafeInteger(parcel.weightGrams) || parcel.weightGrams <= 0 ||
+      [parcel.lengthCm, parcel.widthCm, parcel.heightCm].some(value => !Number.isFinite(value) || value <= 0)) {
+    throw new ShippingQuoteError('PACKED_PARCEL_REQUIRED');
+  }
+  return {
+    weightGrams: parcel.weightGrams,
+    lengthCm: Math.ceil(Number(parcel.lengthCm.toFixed(6))),
+    widthCm: Math.ceil(Number(parcel.widthCm.toFixed(6))),
+    heightCm: Math.ceil(Number(parcel.heightCm.toFixed(6)))
   };
 };
 
@@ -76,8 +124,8 @@ export const toCdekPackage = (snapshot: ShippingSnapshot) => {
   };
 };
 
-export const calculateShippingQuote = async (
-  snapshot: ShippingSnapshot,
+const calculateParcelQuote = async (
+  parcel: PackedParcel,
   fromCityCode: number,
   toCityCode: number,
   calculate = cdekService.calculateDelivery.bind(cdekService),
@@ -91,7 +139,7 @@ export const calculateShippingQuote = async (
   }
   let quote: Awaited<ReturnType<typeof cdekService.calculateDelivery>>;
   try {
-    quote = await calculate({ fromCityCode, toCityCode, ...toCdekPackage(snapshot), ...points });
+    quote = await calculate({ fromCityCode, toCityCode, ...parcel, ...points });
   } catch {
     throw new ShippingQuoteError('CDEK_QUOTE_FAILED');
   }
@@ -102,3 +150,21 @@ export const calculateShippingQuote = async (
   }
   return { quote, deliveryAmountKopecks: Math.round(quote.totalSum * 100) };
 };
+
+export const calculateShippingQuote = async (
+  snapshot: ShippingSnapshot,
+  fromCityCode: number,
+  toCityCode: number,
+  calculate = cdekService.calculateDelivery.bind(cdekService),
+  points?: { shipmentPoint: string; deliveryPoint: string }
+) => calculateParcelQuote(toCdekPackage(snapshot), fromCityCode, toCityCode, calculate, points);
+
+export const calculatePackedShippingQuote = async (
+  parcel: PackedParcel,
+  snapshot: ShippingSnapshot,
+  fromCityCode: number,
+  toCityCode: number,
+  calculate = cdekService.calculateDelivery.bind(cdekService),
+  points?: { shipmentPoint: string; deliveryPoint: string }
+) => calculateParcelQuote(toCdekPackedParcel(validatePackedParcel(parcel, snapshot)),
+  fromCityCode, toCityCode, calculate, points);

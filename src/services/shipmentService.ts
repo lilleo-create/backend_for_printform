@@ -5,7 +5,7 @@ import { cdekService, type CdekOrderSnapshot } from './cdekService';
 import { cdekWebhookService } from './cdekWebhookService';
 import { mapCdekStatusToShipmentStatus } from './cdekStatusMapper';
 import { BUYER_SHIPMENT_SELECT } from '../utils/serializers';
-import { toCdekPackage, type ShippingSnapshot } from './shippingPackageService';
+import { toCdekPackedParcel, validatePackedParcel, type ShippingSnapshot } from './shippingPackageService';
 import { resolveCdekRecipient, resolveCdekSender } from './cdekShipmentContacts';
 
 export type ShipmentInternalStatus =
@@ -136,16 +136,21 @@ const loadOrderForCdekShipment = async (orderId: string, sellerId?: string) => {
   const sellerIds = [...new Set(order.items.map(item => item.product.sellerId))];
   if (sellerIds.length !== 1) throw makeError('MULTI_SELLER_CHECKOUT_NOT_SUPPORTED');
   if (sellerId && sellerIds[0] !== sellerId) throw makeError('ORDER_NOT_FOUND');
-  const isPaid = order.paymentStatus === 'PAID' || Boolean(order.paidAt);
+  const isPaid = order.paymentStatus === 'PAID' && Boolean(order.paidAt);
   if (!isPaid) throw makeError('ORDER_NOT_PAID');
+  if (order.status === 'PAID') throw makeError('PRODUCTION_NOT_STARTED');
   if (['REFUND_PENDING', 'PARTIALLY_REFUNDED', 'REFUNDED', 'CANCELLED'].includes(order.paymentStatus) ||
-    !['PAID', 'PRINTING', 'READY_FOR_SHIPMENT'].includes(order.status)) {
+    !['PRINTING', 'READY_FOR_SHIPMENT'].includes(order.status)) {
     throw makeError('SELLER_SHIPMENT_STATUS_LOCKED');
   }
   order = await normalizePvzProvider(order);
   const fulfillment = order as Order & { isPacked?: boolean };
   if (!fulfillment.isPacked) {
     throw makeError('FULFILLMENT_STEPS_INCOMPLETE', 'Перед отгрузкой отметьте: Упаковка.');
+  }
+  if (!order.packedWeightGrams || !order.packedLengthCm || !order.packedWidthCm ||
+      !order.packedHeightCm || !order.packedDeliveryAmountKopecks || !order.packedQuoteCalculatedAt) {
+    throw makeError('PACKED_PARCEL_REQUIRED');
   }
 
   const fromPvzCodeRaw = String(order.sellerDropoffPvzId ?? '');
@@ -169,7 +174,12 @@ const loadOrderForCdekShipment = async (orderId: string, sellerId?: string) => {
 
   if (!order.shippingSnapshot) throw makeError('SHIPPING_SNAPSHOT_MISSING');
   const snapshot = order.shippingSnapshot as ShippingSnapshot;
-  const shippingPackage = toCdekPackage(snapshot);
+  const shippingPackage = toCdekPackedParcel(validatePackedParcel({
+    weightGrams: order.packedWeightGrams,
+    lengthCm: order.packedLengthCm,
+    widthCm: order.packedWidthCm,
+    heightCm: order.packedHeightCm
+  }, snapshot));
   const snapshotByProduct = new Map<string, { quantity: number; weight: number }>();
   for (const entry of snapshot.items) {
     const previous = snapshotByProduct.get(entry.productId);
@@ -196,7 +206,7 @@ const loadOrderForCdekShipment = async (orderId: string, sellerId?: string) => {
     weight: snapshotByProduct.get(item.productId)?.weight ?? 0,
   }));
   if (items.some(item => !item.weight) ||
-    items.reduce((sum, item) => sum + item.weight * item.quantity, 0) !== shippingPackage.weightGrams) {
+    items.reduce((sum, item) => sum + item.weight * item.quantity, 0) > shippingPackage.weightGrams) {
     throw makeError('SHIPPING_SNAPSHOT_INVALID');
   }
 
@@ -298,8 +308,12 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
     const shipment = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${order.id} FOR UPDATE`;
       const current = await tx.order.findUnique({ where: { id: order.id }, include: { shipment: true } });
-      if (!current || !['PAID', 'PRINTING', 'READY_FOR_SHIPMENT'].includes(current.status) ||
-        (current.paymentStatus !== 'PAID' && !current.paidAt) || !current.isPacked ||
+      if (!current || !['PRINTING', 'READY_FOR_SHIPMENT'].includes(current.status) ||
+        current.paymentStatus !== 'PAID' || !current.paidAt || !current.isPacked ||
+        current.packedWeightGrams !== order.packedWeightGrams ||
+        current.packedLengthCm !== order.packedLengthCm || current.packedWidthCm !== order.packedWidthCm ||
+        current.packedHeightCm !== order.packedHeightCm ||
+        current.packedDeliveryAmountKopecks !== order.packedDeliveryAmountKopecks ||
         ['REFUND_PENDING', 'PARTIALLY_REFUNDED', 'REFUNDED', 'CANCELLED'].includes(current.paymentStatus) ||
         (current.readyForShipmentAt && current.status !== 'READY_FOR_SHIPMENT') ||
         current.shipment || current.cdekOrderId) {
@@ -385,7 +399,6 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
 
 export const markReadyToShipCdek = async (orderId: string, sellerId?: string) => {
   const { order } = await loadOrderForCdekShipment(orderId, sellerId);
-  if (order.status === 'PAID') throw makeError('PRODUCTION_NOT_STARTED');
 
   const existingShipment = await prisma.orderShipment.findUnique({ where: { orderId: order.id } });
   if (order.readyForShipmentAt && existingShipment && order.cdekOrderId) {
@@ -398,6 +411,9 @@ export const markReadyToShipCdek = async (orderId: string, sellerId?: string) =>
         state: order.cdekStatus
       }
     };
+  }
+  if ((order.sellerNetAmountKopecks ?? order.total) < order.packedDeliveryAmountKopecks!) {
+    throw makeError('DELIVERY_COST_EXCEEDS_SELLER_NET');
   }
   let cdekOrderId = String(order.cdekOrderId ?? '').trim() || null;
   let trackingNumber = order.trackingNumber;
@@ -421,7 +437,9 @@ export const markReadyToShipCdek = async (orderId: string, sellerId?: string) =>
     await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${order.id} FOR UPDATE`;
     const current = await tx.order.findUnique({ where: { id: order.id }, include: { shipment: true } });
     if (!current || !['PRINTING', 'READY_FOR_SHIPMENT'].includes(current.status) ||
-      (current.paymentStatus !== 'PAID' && !current.paidAt) || !current.isPacked ||
+      current.paymentStatus !== 'PAID' || !current.paidAt || !current.isPacked ||
+      !current.packedWeightGrams || !current.packedLengthCm || !current.packedWidthCm ||
+      !current.packedHeightCm || !current.packedDeliveryAmountKopecks ||
       ['REFUND_PENDING', 'PARTIALLY_REFUNDED', 'REFUNDED', 'CANCELLED'].includes(current.paymentStatus)) {
       throw makeError('SELLER_SHIPMENT_STATUS_LOCKED');
     }

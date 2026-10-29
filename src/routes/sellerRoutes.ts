@@ -15,6 +15,8 @@ import { sellerDeliveryProfileService } from "../services/sellerDeliveryProfileS
 import { orderCompletionService } from "../services/orderCompletionService";
 import { sellerPayoutService } from "../services/sellerPayoutService";
 import { shipmentService } from "../services/shipmentService";
+import { orderPackingService } from "../services/orderPackingService";
+import { ShippingQuoteError } from "../services/shippingPackageService";
 import { sellerOrderDocumentsService } from "../services/sellerOrderDocumentsService";
 import { resolveRoleAfterSellerEnablement } from '../utils/accessControl';
 import { cdekService } from "../services/cdekService";
@@ -319,6 +321,31 @@ const sellerFulfillmentStepsSchema = z.object({
   isLabelPrinted: z.boolean().optional(),
   isActPrinted: z.boolean().optional()
 });
+
+const packedParcelSchema = z.object({
+  weightGrams: z.number().int().positive().max(100_000),
+  lengthCm: z.number().finite().positive().max(300),
+  widthCm: z.number().finite().positive().max(300),
+  heightCm: z.number().finite().positive().max(300)
+});
+
+const packedConfirmationSchema = packedParcelSchema.extend({
+  expectedDeliveryAmountKopecks: z.number().int().positive()
+});
+
+const sendPackingError = (res: Response, error: unknown) => {
+  if (error instanceof z.ZodError) {
+    res.status(400).json({ error: { code: 'PACKED_PARCEL_INVALID' } });
+    return true;
+  }
+  if (error instanceof ShippingQuoteError) {
+    const status = error.code === 'ORDER_NOT_FOUND' ? 404
+      : error.code === 'CDEK_QUOTE_FAILED' ? 503 : 409;
+    res.status(status).json({ error: { code: error.code } });
+    return true;
+  }
+  return false;
+};
 
 const sellerMediaUrlSchema = z.string().refine((value) => {
   if (value.startsWith('/uploads/')) {
@@ -1338,6 +1365,9 @@ sellerRoutes.patch('/orders/:id/fulfillment-steps', writeLimiter, async (req: Au
         ['REFUND_PENDING', 'PARTIALLY_REFUNDED', 'REFUNDED', 'CANCELLED'].includes(order.paymentStatus)) {
         return { error: 'PAYMENT_REQUIRED', status: 409 } as const;
       }
+      if (payload.isPacked !== undefined) {
+        return { error: payload.isPacked ? 'PACKED_PARCEL_REQUIRED' : 'PACKING_MANAGED_BY_PACK_FLOW', status: 409 } as const;
+      }
       if (!['PAID', 'PRINTING'].includes(order.status) || order.readyForShipmentAt) {
         return { error: 'FULFILLMENT_LOCKED', status: 409 } as const;
       }
@@ -1359,6 +1389,30 @@ sellerRoutes.patch('/orders/:id/fulfillment-steps', writeLimiter, async (req: Au
     if ('error' in result) return res.status(result.status ?? 409).json({ error: { code: result.error } });
     return res.json({ data: { isPacked: result.updated.isPacked, isLabelPrinted: result.updated.isLabelPrinted, isActPrinted: result.updated.isActPrinted } });
   } catch (error) {
+    next(error);
+  }
+});
+
+sellerRoutes.post('/orders/:id/pack/quote', writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const parcel = packedParcelSchema.parse(req.body);
+    const result = await orderPackingService.quote(req.params.id, req.user!.userId, parcel);
+    return res.json({ data: result });
+  } catch (error) {
+    if (sendPackingError(res, error)) return;
+    next(error);
+  }
+});
+
+sellerRoutes.post('/orders/:id/pack', writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const payload = packedConfirmationSchema.parse(req.body);
+    const { expectedDeliveryAmountKopecks, ...parcel } = payload;
+    const order = await orderPackingService.confirm(req.params.id, req.user!.userId,
+      parcel, expectedDeliveryAmountKopecks);
+    return res.json({ data: { order: withOrderPublicId(order), financials: financialsForSeller(order) } });
+  } catch (error) {
+    if (sendPackingError(res, error)) return;
     next(error);
   }
 });

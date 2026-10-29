@@ -123,21 +123,15 @@ test('production mark-received and shipment-stage cannot mutate or release', asy
   assert.equal(h.releases, 0);
 });
 
-test('packing toggles before shipment and cannot be unset after shipment', async () => {
+test('legacy fulfillment endpoint cannot mark a parcel packed without measurements', async () => {
   const h = harness();
   const call = (value: boolean) => request(app).patch('/seller/orders/order-1/fulfillment-steps')
     .set('Authorization', auth).send({ isPacked: value });
-  assert.equal((await call(true)).status, 200);
-  assert.equal((await call(false)).status, 200);
-  assert.equal((await call(true)).status, 200);
-  h.order.shipment = { id: 'shipment-1' };
-  const blocked = await call(false);
+  const blocked = await call(true);
   assert.equal(blocked.status, 409);
-  assert.equal(blocked.body.error.code, 'PACKING_LOCKED_AFTER_SHIPMENT');
-  assert.equal(h.order.isPacked, true);
-  h.order.status = 'READY_FOR_SHIPMENT';
-  h.order.readyForShipmentAt = new Date();
-  assert.equal((await call(true)).body.error.code, 'FULFILLMENT_LOCKED');
+  assert.equal(blocked.body.error.code, 'PACKED_PARCEL_REQUIRED');
+  assert.equal(h.order.isPacked, false);
+  assert.equal(h.writes, 0);
 });
 
 test.after(() => {

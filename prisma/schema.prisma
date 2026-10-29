@@ -304,6 +304,13 @@ model Order {
   deliveryCalculatedAt       DateTime?
   readyForShipmentAt         DateTime?
   isPacked                   Boolean              @default(false)
+  packedWeightGrams          Int?
+  packedLengthCm             Float?
+  packedWidthCm              Float?
+  packedHeightCm             Float?
+  packedAt                   DateTime?
+  packedQuoteCalculatedAt    DateTime?
+  actualDeliveryUpdatedAt    DateTime?
   isLabelPrinted             Boolean              @default(false)
   isActPrinted               Boolean              @default(false)
   fulfillmentUpdatedAt       DateTime?
@@ -325,6 +332,9 @@ model Order {
   acquiringFeeKopecks        Int?
   sellerNetAmountKopecks     Int?
   deliveryAmountKopecks      Int?                 @default(0)
+  checkoutDeliveryEstimateKopecks Int?
+  packedDeliveryAmountKopecks Int?
+  actualDeliveryAmountKopecks Int?
   deliveryChargedToBuyerKopecks Int?
   platformFeePercent         Float?
   grossAmountMinor           Int?

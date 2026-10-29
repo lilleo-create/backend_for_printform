@@ -209,3 +209,22 @@ test('background sync uses the same verified apply path', async () => {
   assert.equal(h.shipment.status, 'IN_TRANSIT');
   assert.equal(h.activeQuery.take, undefined);
 });
+
+test('verified post-handoff CDEK cost updates seller expense without changing buyer payment', async () => {
+  const h = await harness('RECEIVED_AT_SHIPMENT_WAREHOUSE');
+  h.order.total = 149900;
+  h.order.deliveryChargedToBuyerKopecks = 0;
+  h.order.checkoutDeliveryEstimateKopecks = 20475;
+  h.order.packedDeliveryAmountKopecks = 24700;
+  h.order.deliveryAmountKopecks = 24700;
+  const verified = snapshot('RECEIVED_AT_SHIPMENT_WAREHOUSE');
+  (verified.raw.entity as any).delivery_detail = { delivery_sum: 261, total_sum: 1499 };
+  await h.cdekWebhookService.applyVerifiedCdekStatus(h.order.id, verified);
+  assert.equal(h.order.actualDeliveryAmountKopecks, 26100);
+  assert.equal(h.order.deliveryAmountKopecks, 26100);
+  assert.equal(h.order.total, 149900);
+  assert.equal(h.order.deliveryChargedToBuyerKopecks, 0);
+  const updatedAt = h.order.actualDeliveryUpdatedAt;
+  await h.cdekWebhookService.applyVerifiedCdekStatus(h.order.id, verified);
+  assert.equal(h.order.actualDeliveryUpdatedAt, updatedAt);
+});
