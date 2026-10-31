@@ -35,7 +35,8 @@ test('packing quote uses actual parcel, confirmation stores cost without changin
     (prisma.orderShipment.findUnique as any) = async () => null;
     (cdekService.calculateDelivery as any) = async (input: any) => {
       sent = input;
-      return { totalSum: 247, deliverySum: 247, deliveryDaysMin: 2, deliveryDaysMax: 4 };
+      return { totalSum: 247, deliverySum: 247, weightCalcGrams: 675,
+        deliveryDaysMin: 2, deliveryDaysMax: 4 };
     };
     (prisma.$transaction as any) = async (callback: any) => callback({
       $queryRaw: async () => [{ id: order.id }],
@@ -47,6 +48,8 @@ test('packing quote uses actual parcel, confirmation stores cost without changin
     });
     const quote = await orderPackingService.quote('order-1', 'seller-1', parcel);
     assert.equal(quote.deliveryAmountKopecks, 24700);
+    assert.equal(quote.physicalWeightGrams, 520);
+    assert.equal(quote.billableWeightGrams, 675);
     assert.deepEqual({ weightGrams: sent.weightGrams, lengthCm: sent.lengthCm,
       widthCm: sent.widthCm, heightCm: sent.heightCm },
     { weightGrams: 520, lengthCm: 22, widthCm: 15, heightCm: 12 });

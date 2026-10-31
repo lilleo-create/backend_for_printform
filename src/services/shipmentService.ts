@@ -7,6 +7,7 @@ import { mapCdekStatusToShipmentStatus } from './cdekStatusMapper';
 import { BUYER_SHIPMENT_SELECT } from '../utils/serializers';
 import { toCdekPackedParcel, validatePackedParcel, type ShippingSnapshot } from './shippingPackageService';
 import { resolveCdekRecipient, resolveCdekSender } from './cdekShipmentContacts';
+import { resolveCdekWareKey } from './cdekWareKey';
 
 export type ShipmentInternalStatus =
   | 'CREATED'
@@ -200,7 +201,7 @@ const loadOrderForCdekShipment = async (orderId: string, sellerId?: string) => {
   const items = order.items.map((item) => ({
     id: item.id,
     name: item.product.title,
-    article: item.variant?.sku ?? item.product.sku,
+    article: resolveCdekWareKey(item.product, item.variant),
     price: item.priceAtPurchase,
     quantity: item.quantity,
     weight: snapshotByProduct.get(item.productId)?.weight ?? 0,

@@ -361,7 +361,6 @@ const sellerMediaUrlSchema = z.string().refine((value) => {
 });
 
 const sellerVariantMutationSchema = z.object({
-  sku: z.string().min(3).optional(),
   price: z.number().int('PRICE_MUST_BE_INTEGER_MINOR_UNITS').positive().optional(),
   color: z.string().min(2).optional(),
   variantLabel: z.string().min(1).max(120).optional(),
@@ -402,12 +401,6 @@ type SellerMediaInput = {
 
 type SellerProductPayload = Partial<z.infer<typeof sellerProductCreateSchema>>;
 type SellerProductVariantPayload = NonNullable<z.infer<typeof sellerProductCreateSchema>['variants']>[number];
-
-const generateSkuFallback = (suffix?: string) => {
-  const randomPart = Math.random().toString(36).slice(2, 8).toUpperCase();
-  const normalizedSuffix = suffix ? `-${suffix}` : '';
-  return `SKU-${Date.now()}-${randomPart}${normalizedSuffix}`;
-};
 
 const normalizeProductMediaInput = (payload: SellerProductPayload): SellerMediaInput[] => {
   if (payload.media !== undefined) {
@@ -454,7 +447,6 @@ const normalizeVariantPayload = (
   const videoMedia = media.filter((item) => item.type === 'VIDEO');
 
   return {
-    sku: variantPayload.sku ?? generateSkuFallback(),
     title: basePayload.title,
     category: basePayload.category,
     price: variantPayload.price ?? basePayload.price,
@@ -947,15 +939,7 @@ sellerRoutes.post('/products', writeLimiter, async (req: AuthRequest, res, next)
 
     const payload = sellerProductCreateSchema.parse(req.body);
 
-    if (payload.sku && payload.sku.trim() !== '') {
-      const skuExists = await prisma.product.findFirst({ where: { sku: payload.sku, deletedAt: null } });
-      if (skuExists) {
-        return res.status(409).json({ error: { code: 'SKU_CONFLICT', message: 'Артикул уже занят' } });
-      }
-    }
-
     const normalizedCategory = await ensureReferenceCategory(payload.category);
-    const skuFallback = payload.sku ?? generateSkuFallback();
 
     const media = normalizeProductMediaInput(payload);
     const imageMedia = media.filter((item) => item.type === 'IMAGE');
@@ -970,7 +954,6 @@ sellerRoutes.post('/products', writeLimiter, async (req: AuthRequest, res, next)
       category: normalizedCategory,
       descriptionShort: payload.descriptionShort ?? payload.description,
       descriptionFull: payload.descriptionFull ?? payload.description,
-      sku: skuFallback,
       currency: payload.currency ?? 'RUB',
       sellerId: req.user!.userId,
       image: imageMedia[0].url,
@@ -989,9 +972,6 @@ sellerRoutes.post('/products', writeLimiter, async (req: AuthRequest, res, next)
     if (error instanceof Error && error.message === 'CATEGORY_INVALID') {
       return res.status(400).json({ error: { code: 'CATEGORY_INVALID', message: 'Категория недоступна.' } });
     }
-    if (error instanceof Error && error.message === 'SKU_DUPLICATE_IN_VARIANTS') {
-      return res.status(400).json({ error: { code: 'SKU_DUPLICATE_IN_VARIANTS', message: 'SKU варианта должен быть уникальным.' } });
-    }
     next(error);
   }
 });
@@ -1005,15 +985,6 @@ sellerRoutes.put('/products/:id', writeLimiter, async (req: AuthRequest, res, ne
 
     const payload = sellerProductUpdateSchema.parse(req.body);
     const productAccessResult = await productUseCases.getForSellerEdit(req.params.id, req.user!.userId);
-
-    if (payload.sku && payload.sku.trim() !== '') {
-      const skuExists = await prisma.product.findFirst({
-        where: { sku: payload.sku, id: { not: req.params.id }, deletedAt: null }
-      });
-      if (skuExists) {
-        return res.status(409).json({ error: { code: 'SKU_CONFLICT', message: 'Артикул уже занят' } });
-      }
-    }
 
     if (productAccessResult.code === 'NOT_FOUND') {
       return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Товар не найден.' } });
@@ -1037,7 +1008,6 @@ sellerRoutes.put('/products/:id', writeLimiter, async (req: AuthRequest, res, ne
       category: normalizedCategory ?? payload.category,
       descriptionShort: payload.descriptionShort ?? payload.description,
       descriptionFull: payload.descriptionFull ?? payload.description,
-      sku: payload.sku,
       currency: payload.currency,
       sellerId: req.user!.userId,
       image: imageMedia[0]?.url ?? payload.image,
@@ -1123,7 +1093,6 @@ sellerRoutes.post('/products/:id/variants', writeLimiter, async (req: AuthReques
     const imageMedia = media.filter((item) => item.type === 'IMAGE');
     const videoMedia = media.filter((item) => item.type === 'VIDEO');
     const variantInput = {
-      sku: payload.sku ?? generateSkuFallback(),
       title: baseProduct.title,
       category: baseProduct.category,
       price: payload.price ?? baseProduct.price,

@@ -181,7 +181,7 @@ model ProductVariant {
   name       String
   options    Json
   priceDelta Int?
-  sku        String?
+  sku        String      @unique
   stock      Int?
   createdAt  DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
@@ -335,6 +335,9 @@ model Order {
   checkoutDeliveryEstimateKopecks Int?
   packedDeliveryAmountKopecks Int?
   actualDeliveryAmountKopecks Int?
+  cdekBaseDeliveryAmountKopecks Int?
+  cdekAdditionalServicesAmountKopecks Int?
+  cdekCurrentTotalAmountKopecks Int?
   deliveryChargedToBuyerKopecks Int?
   platformFeePercent         Float?
   grossAmountMinor           Int?
@@ -367,6 +370,12 @@ model Order {
 
 model OrderPublicNumberCounter {
   scope     String   @id
+  lastValue Int
+  updatedAt DateTime @updatedAt
+}
+
+model PrintFormArticleCounter {
+  id        Int      @id
   lastValue Int
   updatedAt DateTime @updatedAt
 }

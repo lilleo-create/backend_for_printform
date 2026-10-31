@@ -28,6 +28,12 @@ test('seller economics uses actual cost before packed quote before checkout esti
     deliveryChargedToBuyerKopecks: 0, checkoutDeliveryEstimateKopecks: 20475 };
   assert.equal(financialsForSeller(base).sellerNetAfterDeliveryAmount, 129425);
   assert.equal(financialsForSeller({ ...base, packedDeliveryAmountKopecks: 24700 }).sellerNetAfterDeliveryAmount, 125200);
+  const afterCdekOrder = financialsForSeller({ ...base, packedDeliveryAmountKopecks: 20475,
+    cdekBaseDeliveryAmountKopecks: 20475, cdekAdditionalServicesAmountKopecks: 1180,
+    cdekCurrentTotalAmountKopecks: 21655 });
+  assert.equal(afterCdekOrder.effectiveDeliveryCost, 21655);
+  assert.equal(afterCdekOrder.sellerNetAfterDeliveryAmount, 128245);
+  assert.equal(afterCdekOrder.total, 149900);
   assert.equal(financialsForSeller({ ...base, packedDeliveryAmountKopecks: 24700,
     actualDeliveryAmountKopecks: 26100 }).sellerNetAfterDeliveryAmount, 123800);
 });

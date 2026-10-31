@@ -5,6 +5,9 @@ export type OrderFinancialsSource = {
   checkoutDeliveryEstimateKopecks?: number | null;
   packedDeliveryAmountKopecks?: number | null;
   actualDeliveryAmountKopecks?: number | null;
+  cdekBaseDeliveryAmountKopecks?: number | null;
+  cdekAdditionalServicesAmountKopecks?: number | null;
+  cdekCurrentTotalAmountKopecks?: number | null;
   acquiringFeeKopecks?: number | null;
   platformFeePercent?: number | null;
   platformFeeKopecks?: number | null;
@@ -17,7 +20,8 @@ export const formatOrderFinancials = (order: OrderFinancialsSource) => {
   const deliveryAmount = order.deliveryChargedToBuyerKopecks ?? actualDeliveryAmount;
   const itemsSubtotal = order.total - deliveryAmount;
   const effectiveDeliveryCost = order.actualDeliveryAmountKopecks ??
-    order.packedDeliveryAmountKopecks ?? order.checkoutDeliveryEstimateKopecks ?? actualDeliveryAmount;
+    order.cdekCurrentTotalAmountKopecks ?? order.packedDeliveryAmountKopecks ??
+    order.checkoutDeliveryEstimateKopecks ?? actualDeliveryAmount;
   const sellerNetAmount = order.sellerNetAmountKopecks ?? 0;
 
   return {
@@ -27,6 +31,9 @@ export const formatOrderFinancials = (order: OrderFinancialsSource) => {
     checkoutDeliveryEstimateAmount: order.checkoutDeliveryEstimateKopecks ?? actualDeliveryAmount,
     packedDeliveryAmount: order.packedDeliveryAmountKopecks ?? null,
     confirmedActualDeliveryAmount: order.actualDeliveryAmountKopecks ?? null,
+    cdekBaseDeliveryAmount: order.cdekBaseDeliveryAmountKopecks ?? null,
+    cdekAdditionalServicesAmount: order.cdekAdditionalServicesAmountKopecks ?? null,
+    cdekCurrentTotalAmount: order.cdekCurrentTotalAmountKopecks ?? null,
     effectiveDeliveryCost,
     sellerNetAfterDeliveryAmount: sellerNetAmount - effectiveDeliveryCost,
     total: order.total,

@@ -1,6 +1,7 @@
 import axios, { type AxiosRequestConfig } from "axios";
 import { assertCdekConfigured, getCdekConfig } from "../config/cdek";
 import { normalizeCdekContactPhone } from './cdekShipmentContacts';
+import { isPrintFormArticle } from './productArticleService';
 
 type CdekTokenResponse = {
   access_token: string;
@@ -35,7 +36,7 @@ type CalculateDeliveryParams = {
 type CreateOrderItem = {
   id: string;
   name: string;
-  article?: string;
+  article: string;
   price: number; // kopecks
   quantity: number;
   weight: number; // grams per unit
@@ -414,6 +415,8 @@ class CdekService {
       period_max: number;
       calendar_min: number | null;
       calendar_max: number | null;
+      weight_calc?: number;
+      services?: Array<{ code?: string; sum?: number; total_sum?: number }>;
     }>("calculateDelivery", {
       method: "POST",
       url: `${baseUrl}/v2/calculator/tariff`,
@@ -444,6 +447,7 @@ class CdekService {
         delivery_sum: data?.delivery_sum ?? null,
         period_min: data?.period_min ?? null,
         period_max: data?.period_max ?? null,
+        weight_calc: data?.weight_calc ?? null,
         deliveryAmountKopecks: Number.isFinite(totalSum) && totalSum > 0
           ? Math.round(totalSum * 100) : null
       });
@@ -456,6 +460,13 @@ class CdekService {
       deliveryDaysMax: Number(response.period_max ?? 0),
       calendarMin: response.calendar_min ?? null,
       calendarMax: response.calendar_max ?? null,
+      weightCalcGrams: Number.isFinite(response.weight_calc) && Number(response.weight_calc) > 0
+        ? Number(response.weight_calc) : null,
+      services: Array.isArray(response.services) ? response.services.map(service => ({
+        code: service.code ?? null,
+        sum: service.sum ?? null,
+        totalSum: service.total_sum ?? null
+      })) : [],
       tariffCode: 136 as const,
     };
   }
@@ -588,6 +599,8 @@ class CdekService {
     if (!params.orderId) throw new Error("CDEK_ORDER_ID_MISSING");
     if (!Array.isArray(params.items) || params.items.length === 0)
       throw new Error("CDEK_ITEMS_MISSING");
+    if (params.items.some(item => !isPrintFormArticle(item.article)))
+      throw new Error('CDEK_ARTICLE_INVALID');
     if ([params.weightGrams, params.lengthCm, params.widthCm, params.heightCm].some(
       value => !Number.isInteger(value) || value <= 0
     ) || params.items.some(item => !Number.isInteger(item.weight) || item.weight <= 0)) {
@@ -636,7 +649,7 @@ class CdekService {
             comment: params.comment ?? "",
             items: params.items.map((item) => ({
               name: item.name,
-              ware_key: item.article ?? item.id,
+              ware_key: item.article,
               payment: { value: 0 },
               cost: item.price / 100, // price is in kopecks, CDEK expects rubles
               weight: item.weight,

@@ -45,7 +45,8 @@ test('create variant without sku succeeds', async () => {
 
   (productUseCases.createVariant as any) = async (_masterProductId: string, _sellerId: string, data: any) => ({
     id: 'variant-1',
-    ...data
+    ...data,
+    sku: 'PF-000001-V2'
   });
 
   const app = buildApp();
@@ -61,7 +62,7 @@ test('create variant without sku succeeds', async () => {
 
   assert.equal(response.status, 201);
   assert.ok(typeof response.body?.data?.sku === 'string');
-  assert.match(response.body?.data?.sku ?? '', /^SKU-/);
+  assert.match(response.body?.data?.sku ?? '', /^PF-/);
 });
 
 test('update variant without sku succeeds', async () => {

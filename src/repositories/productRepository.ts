@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { normalizeProductDto } from '../utils/productDto';
+import { allocatePrintFormArticle } from '../services/productArticleService';
 
 export interface ProductMediaInput {
   type: 'IMAGE' | 'VIDEO';
@@ -28,7 +29,7 @@ export interface ProductInput {
   description: string;
   descriptionShort: string;
   descriptionFull: string;
-  sku: string;
+  sku?: string;
   currency: string;
   material: string;
   technology: string;
@@ -285,21 +286,9 @@ const getVariantSwitcherItems = async (product: {
   };
 };
 
-const ensureUniqueSkus = (baseSku: string, variants: ProductVariantItemInput[] = []) => {
-  const skuSet = new Set<string>();
-  const allSkus = [baseSku, ...variants.map((variant) => variant.sku)];
-  for (const sku of allSkus) {
-    if (skuSet.has(sku)) {
-      throw new Error('SKU_DUPLICATE_IN_VARIANTS');
-    }
-    skuSet.add(sku);
-  }
-};
-
-const buildSkuFallback = () => `SKU-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-
 const stripClientOnlyProductFields = <T extends Partial<ProductInput>>(data: T) => {
   const {
+    sku: _sku,
     imageUrls: _imageUrls,
     videoUrls: _videoUrls,
     media: _media,
@@ -459,8 +448,6 @@ export const productRepository = {
     };
   },
   create: async (data: ProductWithVariantsInput) => {
-    ensureUniqueSkus(data.sku, data.variants);
-
     if (data.variants?.length) {
       const created = await prisma.$transaction(async (tx) => {
         const variantsInput = data.variants ?? [];
@@ -484,6 +471,7 @@ export const productRepository = {
         const mainProduct = await tx.product.create({
           data: {
             ...productData,
+            sku: await allocatePrintFormArticle(tx),
             variantGroupId: null,
             image: primaryImage,
             videoUrls: mediaRecords.filter((item) => item.type === 'VIDEO').map((item) => item.url),
@@ -539,6 +527,7 @@ export const productRepository = {
           await tx.product.create({
             data: {
               ...variantData,
+              sku: await allocatePrintFormArticle(tx, mainProduct.sku),
               sellerId: data.sellerId,
               variantGroupId: mainProduct.id,
               parentProductId: mainProduct.id,
@@ -608,6 +597,7 @@ export const productRepository = {
     const product = await prisma.product.create({
       data: {
         ...productData,
+        sku: await allocatePrintFormArticle(prisma),
         image: primaryImage,
         videoUrls: mediaRecords.filter((item) => item.type === 'VIDEO').map((item) => item.url),
         moderationStatus: 'PENDING',
@@ -653,7 +643,7 @@ export const productRepository = {
     return toProductView(product);
   },
   update: async (id: string, data: Partial<ProductInput>) => {
-    const { imageUrls, videoUrls, media, characteristics, specifications, ...rest } = data;
+    const { sku: _sku, imageUrls, videoUrls, media, characteristics, specifications, ...rest } = data;
     const nextSpecifications = specifications ?? characteristics;
     const mediaRecords = media !== undefined || imageUrls !== undefined || videoUrls !== undefined || data.image !== undefined
       ? buildMediaRecords({
@@ -797,9 +787,9 @@ export const productRepository = {
   createVariant: async (masterProductId: string, sellerId: string, data: ProductVariantItemInput) => {
     const masterProduct = await prisma.product.findFirst({
       where: { id: masterProductId, sellerId },
-      select: { id: true, sellerId: true, variantGroupId: true }
+      select: { id: true, sellerId: true, variantGroupId: true, parentProductId: true, sku: true }
     });
-    if (!masterProduct) {
+    if (!masterProduct || masterProduct.parentProductId) {
       return null;
     }
 
@@ -818,7 +808,7 @@ export const productRepository = {
     const created = await prisma.product.create({
       data: {
         ...productData,
-        sku: data.sku ?? buildSkuFallback(),
+        sku: await allocatePrintFormArticle(prisma, masterProduct.sku),
         sellerId,
         variantGroupId: groupId,
         parentProductId: masterProduct.id,

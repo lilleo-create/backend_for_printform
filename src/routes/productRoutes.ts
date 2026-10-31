@@ -194,7 +194,6 @@ export const sellerProductCreateSchema = z.object({
   description: z.string().min(5),
   descriptionShort: z.string().min(5).optional(),
   descriptionFull: z.string().min(5),
-  sku: z.string().min(3).optional(),
   currency: z.string().min(1).optional(),
   material: z.string().min(2),
   technology: z.string().min(2),
@@ -211,7 +210,6 @@ export const sellerProductCreateSchema = z.object({
   variants: z
     .array(
       z.object({
-        sku: z.string().min(3).optional(),
         price: z.number().int('PRICE_MUST_BE_INTEGER_MINOR_UNITS').positive().optional(),
         color: z.string().min(2).optional(),
         variantLabel: z.string().min(1).max(120).optional(),

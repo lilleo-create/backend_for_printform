@@ -8,13 +8,15 @@ test('createVariant maps client payload to Prisma contract without imageUrls/vid
   const originalFindFirst = prisma.product.findFirst;
   const originalCreate = prisma.product.create;
   const originalUpdate = prisma.product.update;
+  const originalCounterUpdate = prisma.printFormArticleCounter.update;
 
   let prismaCreateData: any = null;
   let prismaUpdateData: any = null;
 
   (prisma.product.findFirst as any) = async ({ where }: any) => {
     if (where?.id === 'master-1' && where?.sellerId === 'seller-1') {
-      return { id: 'master-1', sellerId: 'seller-1', variantGroupId: null };
+      return { id: 'master-1', sellerId: 'seller-1', variantGroupId: null,
+        parentProductId: null, sku: 'PF-000001' };
     }
     return null;
   };
@@ -35,6 +37,7 @@ test('createVariant maps client payload to Prisma contract without imageUrls/vid
     prismaUpdateData = args;
     return { id: 'master-1', variantGroupId: 'master-1' };
   };
+  (prisma.printFormArticleCounter.update as any) = async () => ({ lastValue: 2 });
 
   try {
     await productRepository.createVariant('master-1', 'seller-1', {
@@ -64,6 +67,7 @@ test('createVariant maps client payload to Prisma contract without imageUrls/vid
     assert.equal('media' in prismaCreateData, true);
     assert.equal(prismaCreateData.parentProductId, 'master-1');
     assert.equal(prismaCreateData.variantGroupId, 'master-1');
+    assert.equal(prismaCreateData.sku, 'PF-000001-V2');
     assert.deepEqual(prismaUpdateData, {
       where: { id: 'master-1' },
       data: { variantGroupId: 'master-1' }
@@ -72,5 +76,6 @@ test('createVariant maps client payload to Prisma contract without imageUrls/vid
     (prisma.product.findFirst as any) = originalFindFirst;
     (prisma.product.create as any) = originalCreate;
     (prisma.product.update as any) = originalUpdate;
+    (prisma.printFormArticleCounter.update as any) = originalCounterUpdate;
   }
 });

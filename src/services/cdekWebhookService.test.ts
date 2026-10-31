@@ -218,13 +218,34 @@ test('verified post-handoff CDEK cost updates seller expense without changing bu
   h.order.packedDeliveryAmountKopecks = 24700;
   h.order.deliveryAmountKopecks = 24700;
   const verified = snapshot('RECEIVED_AT_SHIPMENT_WAREHOUSE');
-  (verified.raw.entity as any).delivery_detail = { delivery_sum: 261, total_sum: 1499 };
+  (verified.raw.entity as any).delivery_detail = { delivery_sum: 204.75, total_sum: 216.55, payment_sum: 0 };
   await h.cdekWebhookService.applyVerifiedCdekStatus(h.order.id, verified);
-  assert.equal(h.order.actualDeliveryAmountKopecks, 26100);
-  assert.equal(h.order.deliveryAmountKopecks, 26100);
+  assert.equal(h.order.cdekBaseDeliveryAmountKopecks, 20475);
+  assert.equal(h.order.cdekAdditionalServicesAmountKopecks, 1180);
+  assert.equal(h.order.cdekCurrentTotalAmountKopecks, 21655);
+  assert.equal(h.order.actualDeliveryAmountKopecks, 21655);
+  assert.equal(h.order.deliveryAmountKopecks, 21655);
   assert.equal(h.order.total, 149900);
   assert.equal(h.order.deliveryChargedToBuyerKopecks, 0);
   const updatedAt = h.order.actualDeliveryUpdatedAt;
   await h.cdekWebhookService.applyVerifiedCdekStatus(h.order.id, verified);
   assert.equal(h.order.actualDeliveryUpdatedAt, updatedAt);
+  (verified.raw.entity as any).delivery_detail.total_sum = 220;
+  await h.cdekWebhookService.applyVerifiedCdekStatus(h.order.id, verified);
+  assert.equal(h.order.actualDeliveryAmountKopecks, 22000);
+  assert.equal(h.order.cdekAdditionalServicesAmountKopecks, 1525);
+  assert.equal(h.order.total, 149900);
+});
+
+test('verified CDEK cost after order creation stays current, not actual, until handoff', async () => {
+  const h = await harness('ACCEPTED');
+  h.order.packedDeliveryAmountKopecks = 20475;
+  h.order.deliveryAmountKopecks = 20475;
+  const verified = snapshot('ACCEPTED');
+  (verified.raw.entity as any).delivery_detail = { delivery_sum: 204.75, total_sum: 216.55, payment_sum: 0 };
+  await h.cdekWebhookService.applyVerifiedCdekStatus(h.order.id, verified);
+  assert.equal(h.order.cdekCurrentTotalAmountKopecks, 21655);
+  assert.equal(h.order.cdekAdditionalServicesAmountKopecks, 1180);
+  assert.equal(h.order.actualDeliveryAmountKopecks ?? null, null);
+  assert.equal(h.order.deliveryAmountKopecks, 21655);
 });

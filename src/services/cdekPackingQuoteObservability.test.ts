@@ -21,13 +21,16 @@ test('packing quote records only correlated request and actual provider response
     (axios.request as any) = async (config: unknown) => {
       sent = config;
       return { status: 200, data: {
-        total_sum: 204.75, delivery_sum: 199.2,
+        total_sum: 204.75, delivery_sum: 199.2, weight_calc: 675,
+        services: [{ code: 'INSURANCE', sum: 0, total_sum: 0 }],
         period_min: 2, period_max: 4, calendar_min: null, calendar_max: null
       } };
     };
     (console.info as any) = (label: string, fields: Record<string, unknown>) => { logs.push([label, fields]); };
     const quote = await cdekService.calculateDelivery(params, trace);
     assert.equal(quote.totalSum, 204.75);
+    assert.equal(quote.weightCalcGrams, 675);
+    assert.deepEqual(quote.services, [{ code: 'INSURANCE', sum: 0, totalSum: 0 }]);
     assert.equal(sent.data.tariff_code, 136);
     assert.deepEqual(sent.data.packages[0], { weight: 250, length: 15, width: 15, height: 15 });
     const requestLog = logs.find(([label]) => label === '[CDEK][packingQuote][request]')?.[1];
@@ -41,6 +44,7 @@ test('packing quote records only correlated request and actual provider response
     assert.equal(responseLog?.period_min, 2);
     assert.equal(responseLog?.period_max, 4);
     assert.equal(responseLog?.deliveryAmountKopecks, 20475);
+    assert.equal(responseLog?.weight_calc, 675);
     assert.equal(typeof responseLog?.durationMs, 'number');
     assert.doesNotMatch(JSON.stringify(logs), /sensitive-oauth-token|Authorization|email|phone/);
   } finally {

@@ -8,7 +8,7 @@ import {
   parseCdekOrderStatusPayload
 } from './cdekStatusMapper';
 import { orderCompletionService } from './orderCompletionService';
-import { extractVerifiedCdekActualCostKopecks } from './cdekActualCost';
+import { extractVerifiedCdekCosts } from './cdekActualCost';
 import type { Prisma } from '@prisma/client';
 
 type OrderWithShipment = NonNullable<Awaited<ReturnType<typeof findOrder>>>;
@@ -166,7 +166,7 @@ export const cdekWebhookService = {
     const shipmentStatus = mapCdekStatusToShipmentStatus(snapshot.status);
     const verifiedTracking = String(snapshot.trackingNumber ?? '').trim();
     const eventAt = snapshotEventAt(snapshot);
-    const verifiedActualCost = extractVerifiedCdekActualCostKopecks(snapshot);
+    const verifiedCosts = extractVerifiedCdekCosts(snapshot);
     const now = new Date();
     const result = await prisma.$transaction(async (tx) => {
       // Serialize webhook and polling updates for the same order, including completion and funds release.
@@ -177,8 +177,16 @@ export const cdekWebhookService = {
 
       const nextStatus = nextOrderStatus(order.status, mappedState);
       const statusChanged = order.cdekStatus !== snapshot.status;
-      const actualCostChanged = verifiedActualCost !== null &&
-        order.actualDeliveryAmountKopecks !== verifiedActualCost;
+      const baseCostChanged = verifiedCosts.baseAmountKopecks !== null &&
+        order.cdekBaseDeliveryAmountKopecks !== verifiedCosts.baseAmountKopecks;
+      const additionalCostChanged = verifiedCosts.additionalServicesAmountKopecks !== null &&
+        order.cdekAdditionalServicesAmountKopecks !== verifiedCosts.additionalServicesAmountKopecks;
+      const currentCostChanged = verifiedCosts.currentTotalAmountKopecks !== null &&
+        order.cdekCurrentTotalAmountKopecks !== verifiedCosts.currentTotalAmountKopecks;
+      const actualCostChanged = verifiedCosts.actualAmountKopecks !== null &&
+        order.actualDeliveryAmountKopecks !== verifiedCosts.actualAmountKopecks;
+      const effectiveCost = verifiedCosts.actualAmountKopecks ?? order.actualDeliveryAmountKopecks ??
+        verifiedCosts.currentTotalAmountKopecks ?? order.cdekCurrentTotalAmountKopecks;
       const raw = {
         cdek_order_uuid: snapshot.cdekOrderId,
         cdek_state: snapshot.status,
@@ -219,11 +227,15 @@ export const cdekWebhookService = {
           deliveryStatusCode: snapshot.status,
           deliveryStatusRaw: snapshot.raw as Prisma.InputJsonValue,
           deliveryStatusUpdatedAt: eventAt ?? now,
+          ...(baseCostChanged ? { cdekBaseDeliveryAmountKopecks: verifiedCosts.baseAmountKopecks } : {}),
+          ...(additionalCostChanged ? { cdekAdditionalServicesAmountKopecks: verifiedCosts.additionalServicesAmountKopecks } : {}),
+          ...(currentCostChanged ? { cdekCurrentTotalAmountKopecks: verifiedCosts.currentTotalAmountKopecks } : {}),
           ...(actualCostChanged ? {
-            actualDeliveryAmountKopecks: verifiedActualCost,
-            actualDeliveryUpdatedAt: now,
-            deliveryAmountKopecks: verifiedActualCost
+            actualDeliveryAmountKopecks: verifiedCosts.actualAmountKopecks,
+            actualDeliveryUpdatedAt: now
           } : {}),
+          ...(typeof effectiveCost === 'number' && effectiveCost !== order.deliveryAmountKopecks
+            ? { deliveryAmountKopecks: effectiveCost } : {}),
           ...(nextStatus ? { status: nextStatus as typeof order.status, statusUpdatedAt: now } : {})
         }
       });

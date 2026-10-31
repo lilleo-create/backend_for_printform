@@ -50,6 +50,8 @@ export const orderPackingService = {
       });
     return {
       deliveryAmountKopecks: result.deliveryAmountKopecks,
+      physicalWeightGrams: parcel.weightGrams,
+      billableWeightGrams: result.quote.weightCalcGrams,
       deliveryDaysMin: result.quote.deliveryDaysMin,
       deliveryDaysMax: result.quote.deliveryDaysMax
     };

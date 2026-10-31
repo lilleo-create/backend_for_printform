@@ -19,7 +19,7 @@ test('CDEK create-order request contains real contacts and consistent parcel val
       senderName: 'Real Seller', senderPhone: '89991234567',
       recipientName: 'Real Buyer', recipientPhone: '89997654321',
       weightGrams: 1050, lengthCm: 19, widthCm: 13, heightCm: 29,
-      items: [{ id: 'item-1', name: 'Product', article: 'SKU-1', price: 20475, quantity: 3, weight: 350 }]
+      items: [{ id: 'item-1', name: 'Product', article: 'PF-000001', price: 20475, quantity: 3, weight: 350 }]
     };
     await cdekService.createOrderFromMarketplaceOrder(payload);
     assert.equal(requestCount, 1);
@@ -32,7 +32,7 @@ test('CDEK create-order request contains real contacts and consistent parcel val
       width: body.packages[0].width, height: body.packages[0].height },
     { weight: 1050, length: 19, width: 13, height: 29 });
     assert.deepEqual(body.packages[0].items[0], {
-      name: 'Product', ware_key: 'SKU-1', payment: { value: 0 },
+      name: 'Product', ware_key: 'PF-000001', payment: { value: 0 },
       cost: 204.75, weight: 350, amount: 3
     });
 
