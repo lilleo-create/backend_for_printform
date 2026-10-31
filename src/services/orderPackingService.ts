@@ -39,12 +39,13 @@ const cityCode = async (meta: unknown, pvzId: string, errorCode: string) => {
 };
 
 export const orderPackingService = {
-  async quote(orderId: string, sellerId: string, parcel: PackedParcel) {
+  async quote(orderId: string, sellerId: string, parcel: PackedParcel, requestId?: string) {
     const order = await load(orderId, sellerId);
     const fromCityCode = await cityCode(order.sellerDropoffPvzMeta, order.sellerDropoffPvzId!, 'SELLER_CITY_CODE_REQUIRED');
     const toCityCode = await cityCode(order.buyerPickupPvzMeta, order.buyerPickupPvzId!, 'BUYER_CITY_CODE_REQUIRED');
     const result = await calculatePackedShippingQuote(parcel, order.shippingSnapshot as ShippingSnapshot,
-      fromCityCode, toCityCode, params => cdekService.calculateDelivery(params), {
+      fromCityCode, toCityCode, params => cdekService.calculateDelivery(params,
+        requestId ? { requestId, orderId } : undefined), {
         shipmentPoint: order.sellerDropoffPvzId!, deliveryPoint: order.buyerPickupPvzId!
       });
     return {

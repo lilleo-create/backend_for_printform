@@ -3,6 +3,7 @@ import { z } from "zod";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import { randomUUID } from "crypto";
 import { env } from "../config/env";
 import { requireAuth, requireSeller, AuthRequest } from "../middleware/authMiddleware";
 import { OrderStatus, SellerType, type Prisma, type SellerKycSubmission, type SellerProfile } from "@prisma/client";
@@ -1394,11 +1395,21 @@ sellerRoutes.patch('/orders/:id/fulfillment-steps', writeLimiter, async (req: Au
 });
 
 sellerRoutes.post('/orders/:id/pack/quote', writeLimiter, async (req: AuthRequest, res, next) => {
+  const requestId = randomUUID();
+  res.setHeader('X-Request-ID', requestId);
+  console.info('[seller pack/quote][start]', { requestId, orderId: req.params.id });
   try {
     const parcel = packedParcelSchema.parse(req.body);
-    const result = await orderPackingService.quote(req.params.id, req.user!.userId, parcel);
-    return res.json({ data: result });
+    const result = await orderPackingService.quote(req.params.id, req.user!.userId, parcel, requestId);
+    console.info('[seller pack/quote][response]', {
+      requestId, orderId: req.params.id, deliveryAmountKopecks: result.deliveryAmountKopecks
+    });
+    return res.json({ data: { ...result, requestId } });
   } catch (error) {
+    console.info('[seller pack/quote][error]', {
+      requestId, orderId: req.params.id,
+      reason: error instanceof ShippingQuoteError ? error.code : error instanceof z.ZodError ? 'PACKED_PARCEL_INVALID' : 'UNEXPECTED'
+    });
     if (sendPackingError(res, error)) return;
     next(error);
   }

@@ -88,3 +88,23 @@ test('packing requires paid production order and rejects a CDEK quote failure wi
     (cdekService.calculateDelivery as any) = original.calculate;
   }
 });
+
+test('packing quote carries its correlation id to the CDEK calculator', async () => {
+  const order: any = makeOrder();
+  let trace: unknown;
+  try {
+    (prisma.order.findFirst as any) = async () => order;
+    (prisma.orderShipment.findUnique as any) = async () => null;
+    (cdekService.calculateDelivery as any) = async (_input: unknown, observed: unknown) => {
+      trace = observed;
+      return { totalSum: 204.75, deliverySum: 204.75, deliveryDaysMin: 2, deliveryDaysMax: 4 };
+    };
+    const result = await orderPackingService.quote(order.id, 'seller-1', parcel, 'trace-123');
+    assert.equal(result.deliveryAmountKopecks, 20475);
+    assert.deepEqual(trace, { requestId: 'trace-123', orderId: order.id });
+  } finally {
+    (prisma.order.findFirst as any) = original.orderFind;
+    (prisma.orderShipment.findUnique as any) = original.shipmentFind;
+    (cdekService.calculateDelivery as any) = original.calculate;
+  }
+});

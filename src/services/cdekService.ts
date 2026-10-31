@@ -136,21 +136,31 @@ class CdekService {
   private async request<T>(
     methodName: string,
     config: AxiosRequestConfig,
+    observe?: (result: { status: number; durationMs: number; data?: T }) => void,
   ): Promise<T> {
     const startedAt = Date.now();
     try {
       const response = await axios.request<T>(config);
+      const durationMs = Date.now() - startedAt;
       console.info(`[CDEK][${methodName}]`, {
         status: response.status,
-        durationMs: Date.now() - startedAt,
+        durationMs,
       });
+      if (observe) {
+        try { observe({ status: response.status, durationMs, data: response.data }); } catch { /* Logs must not affect quotes. */ }
+      }
       return response.data;
     } catch (error: any) {
+      const status = Number(error?.response?.status ?? 0);
+      const durationMs = Date.now() - startedAt;
       console.info(`[CDEK][${methodName}]`, {
-        status: Number(error?.response?.status ?? 0),
-        durationMs: Date.now() - startedAt,
-        data: error?.response?.data,
+        status,
+        durationMs,
+        ...(observe ? {} : { data: error?.response?.data }),
       });
+      if (observe) {
+        try { observe({ status, durationMs }); } catch { /* Logs must not affect quotes. */ }
+      }
       throw error;
     }
   }
@@ -374,13 +384,28 @@ class CdekService {
     };
   }
 
-  async calculateDelivery(params: CalculateDeliveryParams) {
+  async calculateDelivery(params: CalculateDeliveryParams, trace?: { requestId: string; orderId: string }) {
     if ([params.fromCityCode, params.toCityCode, params.weightGrams,
       params.lengthCm, params.widthCm, params.heightCm].some(
       value => !Number.isInteger(value) || value <= 0
     )) throw new Error('CDEK_PACKAGE_INVALID');
     const token = await this.getToken();
     const { baseUrl } = getCdekConfig();
+    if (trace) {
+      console.info('[CDEK][packingQuote][request]', {
+        requestId: trace.requestId,
+        orderId: trace.orderId,
+        weightGrams: params.weightGrams,
+        lengthCm: params.lengthCm,
+        widthCm: params.widthCm,
+        heightCm: params.heightCm,
+        fromCityCode: params.fromCityCode,
+        toCityCode: params.toCityCode,
+        shipmentPoint: params.shipmentPoint ?? null,
+        deliveryPoint: params.deliveryPoint ?? null,
+        tariffCode: 136
+      });
+    }
 
     const response = await this.request<{
       total_sum: number;
@@ -408,7 +433,21 @@ class CdekService {
           },
         ],
       },
-    });
+    }, trace ? ({ status, durationMs, data }) => {
+      const totalSum = Number(data?.total_sum);
+      console.info('[CDEK][packingQuote][response]', {
+        requestId: trace.requestId,
+        orderId: trace.orderId,
+        status,
+        durationMs,
+        total_sum: data?.total_sum ?? null,
+        delivery_sum: data?.delivery_sum ?? null,
+        period_min: data?.period_min ?? null,
+        period_max: data?.period_max ?? null,
+        deliveryAmountKopecks: Number.isFinite(totalSum) && totalSum > 0
+          ? Math.round(totalSum * 100) : null
+      });
+    } : undefined);
 
     return {
       totalSum: Number(response.total_sum ?? 0),
