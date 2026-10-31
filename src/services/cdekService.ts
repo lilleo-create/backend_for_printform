@@ -2,6 +2,7 @@ import axios, { type AxiosRequestConfig } from "axios";
 import { assertCdekConfigured, getCdekConfig } from "../config/cdek";
 import { normalizeCdekContactPhone } from './cdekShipmentContacts';
 import { isPrintFormArticle } from './productArticleService';
+import { safeCdekError } from './safeCdekError';
 
 type CdekTokenResponse = {
   access_token: string;
@@ -44,6 +45,7 @@ type CreateOrderItem = {
 
 type CreateOrderParams = {
   orderId: string;
+  requestId?: string;
   fromPvzCode: string;
   toPvzCode: string;
   comment?: string;
@@ -152,12 +154,13 @@ class CdekService {
       }
       return response.data;
     } catch (error: any) {
-      const status = Number(error?.response?.status ?? 0);
+      const safeError = safeCdekError(error, methodName);
+      const status = safeError.httpStatus ?? 0;
       const durationMs = Date.now() - startedAt;
       console.info(`[CDEK][${methodName}]`, {
         status,
         durationMs,
-        ...(observe ? {} : { data: error?.response?.data }),
+        error: safeError,
       });
       if (observe) {
         try { observe({ status, durationMs }); } catch { /* Logs must not affect quotes. */ }
@@ -616,6 +619,7 @@ class CdekService {
       orderId: params.orderId,
     });
 
+    let responseHttpStatus: number | null = null;
     const response = await this.request<CdekOrderResponse>("createOrder", {
       method: "POST",
       url: `${baseUrl}/v2/orders`,
@@ -658,8 +662,7 @@ class CdekService {
           },
         ],
       },
-    });
-    console.info("[CDEK][createOrder][raw]", JSON.stringify(response, null, 2));
+    }, ({ status }) => { responseHttpStatus = status; });
 
     const cdekOrderUuid = this.extractOrderUuid(response);
     const cdekRequestUuid = String(response?.requests?.[0]?.request_uuid ?? '').trim();
@@ -667,19 +670,19 @@ class CdekService {
     const trackingNumber = this.extractCdekNumber(response);
 
     // лог на один раз (потом уберешь)
-    console.info("[CDEK][createOrder][parsed]", {
+    console.info('[CDEK][create]', {
+      requestId: params.requestId ?? null,
+      orderId: params.orderId,
+      httpStatus: responseHttpStatus,
       cdekOrderId: cdekOrderUuid,
       cdekRequestUuid,
       trackingNumber,
       state,
-      errors: response?.requests?.flatMap((r) => r?.errors ?? []) ?? [],
+      providerErrorCodes: response?.requests?.flatMap((r) => r?.errors ?? []).map((item) => item.code) ?? [],
     });
 
     if (!cdekOrderUuid) {
-      const errors = response?.requests?.flatMap((r) => r?.errors ?? []) ?? [];
-      throw new Error(
-        `CDEK_CREATE_ORDER_NO_UUID: ${JSON.stringify({ state, errors, response }, null, 2)}`,
-      );
+      throw new Error('CDEK_CREATE_ORDER_NO_UUID');
     }
 
     return { cdekOrderId: cdekOrderUuid, trackingNumber, cdekRequestUuid, state };
@@ -722,6 +725,7 @@ class CdekService {
     const response = await this.request<CdekOrderResponse>('getOrderInfo', {
       method: 'GET',
       url: `${baseUrl}/v2/orders/${id}`,
+      timeout: 2_000,
       headers: { Authorization: `Bearer ${token}` }
     });
 
@@ -776,6 +780,7 @@ class CdekService {
    */
   async createOrderFromMarketplaceOrder(payload: {
     orderId: string;
+    requestId?: string;
     fromPvzCode: string;
     toPvzCode: string;
     recipientName: string;
@@ -791,6 +796,7 @@ class CdekService {
   }) {
     return this.createOrder({
       orderId: payload.orderId,
+      requestId: payload.requestId,
       fromPvzCode: payload.fromPvzCode,
       toPvzCode: payload.toPvzCode,
       recipientName: payload.recipientName,
@@ -1049,7 +1055,7 @@ class CdekService {
 
     const token = await this.getToken();
     const startedAt = Date.now();
-    console.info('[CDEK][downloadPdfByUrl][start]', { url: normalizedUrl });
+    console.info('[CDEK][downloadPdfByUrl][start]', { operation: 'downloadPdfByUrl' });
 
     try {
       const response = await axios.get<ArrayBuffer>(normalizedUrl, {
@@ -1062,7 +1068,6 @@ class CdekService {
       const contentLength = Number(response.headers?.['content-length'] ?? 0) || Buffer.byteLength(Buffer.from(response.data));
 
       console.info('[CDEK][downloadPdfByUrl][response]', {
-        url: normalizedUrl,
         status: response.status,
         contentType,
         contentLength,
@@ -1086,11 +1091,7 @@ class CdekService {
       return Buffer.from(response.data);
     } catch (error: any) {
       console.error('[CDEK][downloadPdfByUrl][error]', {
-        url: normalizedUrl,
-        status: Number(error?.response?.status ?? error?.status ?? 0),
-        data: error?.response?.data ?? error?.data,
-        message: String(error?.message ?? 'unknown_error'),
-        durationMs: Date.now() - startedAt
+        error: safeCdekError(error, 'downloadPdfByUrl'), durationMs: Date.now() - startedAt
       });
       throw error;
     }

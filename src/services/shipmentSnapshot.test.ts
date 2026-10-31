@@ -55,7 +55,7 @@ test('CDEK shipment uses the paid order snapshot after product measurements chan
       },
       orderShipmentStatusHistory: { create: async () => ({}) }
     });
-    await createShipmentCdek('order-1', 'seller');
+    await createShipmentCdek('order-1', 'seller', { readbackSleep: async () => {} });
     assert.deepEqual({
       weightGrams: sent.weightGrams, lengthCm: sent.lengthCm,
       widthCm: sent.widthCm, heightCm: sent.heightCm

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { getCdekConfig } from '../config/cdek';
 import { cdekService } from '../services/cdekService';
 import { cdekWebhookService } from '../services/cdekWebhookService';
+import { safeCdekError } from '../services/safeCdekError';
 import { buildShippingSnapshot, toCdekPackage, ShippingQuoteError } from '../services/shippingPackageService';
 import { authenticate, type AuthRequest } from '../middleware/authMiddleware';
 import { prisma } from '../lib/prisma';
@@ -38,13 +39,14 @@ const printBarcodeSchema = z.object({
 const PRINT_POLL_INTERVAL_MS = 750;
 const PRINT_POLL_MAX_WAIT_MS = 15_000;
 
-const toErrorResponse = (error: any) => ({
-  error: {
-    code: error?.response?.data?.code ?? 'CDEK_REQUEST_FAILED',
-    message: error?.response?.data?.message ?? error?.message ?? 'CDEK request failed',
-    details: error?.response?.data ?? null
-  }
-});
+const toErrorResponse = (error: unknown) => {
+  const safe = safeCdekError(error, 'cdekRoute');
+  return { error: {
+    code: safe.providerErrors[0]?.code ?? safe.code ?? 'CDEK_REQUEST_FAILED',
+    message: safe.providerErrors[0]?.message ?? safe.message,
+    details: { httpStatus: safe.httpStatus, providerErrors: safe.providerErrors }
+  } };
+};
 
 const readCityCode = (meta: unknown): number | null => {
   const rec = (v: unknown): Record<string, unknown> =>
@@ -411,7 +413,7 @@ cdekRoutes.post('/webhooks/order-status', async (req, res) => {
       skipped: 'skipped' in result ? result.skipped : null
     }))
     .catch((error) => console.error('[CDEK][webhook][order-status][failed]', {
-      code: error instanceof Error ? error.message : 'UNKNOWN_ERROR'
+      error: safeCdekError(error, 'handleWebhookSignal')
     }));
 });
 
@@ -750,7 +752,7 @@ cdekRoutes.all('/service', async (req, res) => {
       }
     });
   } finally {
-    console.info('[CDEK][proxy]', { status: res.statusCode, durationMs: Date.now() - startedAt, path: pathRaw });
+    console.info('[CDEK][proxy]', { status: res.statusCode, durationMs: Date.now() - startedAt });
   }
 });
 

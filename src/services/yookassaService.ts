@@ -154,8 +154,8 @@ export const yookassaService = {
       console.error('[YOOKASSA][createPayment][ERROR]', {
         orderId: input.orderId,
         idempotenceKey,
-        error,
-        stack: error instanceof Error ? error.stack : undefined
+        code: 'YOOKASSA_CREATE_FAILED',
+        httpStatus: Number((error as any)?.response?.status ?? 0) || null
       });
       const mappedError = new Error('YOOKASSA_CREATE_FAILED') as Error & { cause?: unknown };
       mappedError.cause = error;
@@ -386,8 +386,8 @@ export const yookassaService = {
         paymentId: input.paymentId,
         amount: input.amount,
         idempotenceKey,
-        error,
-        stack: error instanceof Error ? error.stack : undefined
+        code: 'YOOKASSA_REFUND_CREATE_FAILED',
+        httpStatus: Number((error as any)?.response?.status ?? 0) || null
       });
       const mappedError = new Error('YOOKASSA_REFUND_CREATE_FAILED') as Error & { cause?: unknown };
       mappedError.cause = error;

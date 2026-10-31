@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma';
 import { cdekWebhookService } from '../services/cdekWebhookService';
 import { mapCdekStatusToInternalDeliveryState } from '../services/cdekStatusMapper';
+import { safeCdekError } from '../services/safeCdekError';
 
 const SYNC_INTERVAL_MS = 10 * 60 * 1000;
 let timer: NodeJS.Timeout | null = null;
@@ -34,7 +35,7 @@ export const startShipmentsSyncJob = () => {
     if (running) return;
     running = true;
     runShipmentsSyncJob()
-      .catch((error) => console.error('[SHIPMENTS_SYNC_JOB] failed', error))
+      .catch((error) => console.error('[SHIPMENTS_SYNC_JOB] failed', { error: safeCdekError(error, 'runShipmentsSyncJob') }))
       .finally(() => { running = false; });
   }, SYNC_INTERVAL_MS);
   console.info('[SHIPMENTS_SYNC_JOB][START]', { intervalMs: SYNC_INTERVAL_MS });

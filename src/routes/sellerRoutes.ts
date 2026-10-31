@@ -98,6 +98,8 @@ const upload = multer({
 
 const toShipmentView = (shipment: any) => {
   if (!shipment) return null;
+  const readback = shipment.statusRaw && typeof shipment.statusRaw === 'object'
+    ? shipment.statusRaw.readback : null;
   return {
     id: shipment.id,
     provider: shipment.provider,
@@ -106,6 +108,7 @@ const toShipmentView = (shipment: any) => {
     destinationStationId: shipment.destinationStationId,
     lastSyncAt: shipment.lastSyncAt,
     updatedAt: shipment.updatedAt,
+    readbackStatus: readback?.status ?? null,
     preparationChecklist: readPreparationChecklist(shipment.statusRaw)
   };
 };

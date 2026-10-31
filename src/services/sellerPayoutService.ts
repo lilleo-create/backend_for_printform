@@ -418,9 +418,14 @@ export const sellerPayoutService = {
         description: payoutDescription,
         metadata: requestBody.metadata
       });
-      console.log('[trigger payout] yookassa response', externalPayout);
+      console.info('[trigger payout] yookassa response', {
+        payoutId: externalPayout.id, status: externalPayout.status
+      });
     } catch (error) {
-      console.error('[trigger payout] failed', error);
+      console.error('[trigger payout] failed', {
+        code: 'YOOKASSA_PAYOUT_CREATE_FAILED',
+        httpStatus: axios.isAxiosError(error) ? error.response?.status ?? null : null
+      });
       const providerMessage = axios.isAxiosError(error)
         ? String((error.response?.data as any)?.description ?? error.message)
         : String(error);

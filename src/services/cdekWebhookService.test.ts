@@ -116,6 +116,7 @@ const harness = async (verifiedStatus: string) => {
   };
   return {
     ...deps, order, events, histories,
+    setShipment(value: any) { shipment = value; order.shipment = value; },
     get shipment() { return shipment; },
     get writes() { return writes; },
     get releases() { return releases; },
@@ -123,6 +124,19 @@ const harness = async (verifiedStatus: string) => {
     get activeQuery() { return activeQuery; }
   };
 };
+
+test('background sync turns a pending readback into verified without recreating the order', async () => {
+  const h = await harness('IN_TRANSIT');
+  h.setShipment({ id: 'shipment-1', orderId: 'order-1', status: 'READY_TO_SHIP',
+    requestId: 'internal-request-1', statusRaw: { cdek_order_uuid: 'cdek-1',
+      preparationChecklist: { isPacked: true },
+      readback: { status: 'PENDING', checkedAt: '2026-10-18T10:00:00Z', attempts: 4 } } });
+  await h.runShipmentsSyncJob();
+  assert.equal(h.shipment.statusRaw.readback.status, 'VERIFIED');
+  assert.ok(h.shipment.statusRaw.readback.verifiedAt);
+  assert.deepEqual(h.shipment.statusRaw.preparationChecklist, { isPacked: true });
+  assert.equal(h.apiCalls, 1);
+});
 
 test('fake DELIVERED follows verified IN_TRANSIT and cannot release funds', async () => {
   const h = await harness('IN_TRANSIT');

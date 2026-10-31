@@ -4,6 +4,7 @@ import { authenticateOptional, type AuthRequest, requireAuth } from '../middlewa
 import { writeLimiter } from '../middleware/rateLimiters';
 import { prisma } from '../lib/prisma';
 import { cdekService } from '../services/cdekService';
+import { safeCdekError } from '../services/safeCdekError';
 
 export const checkoutRoutes = Router();
 
@@ -677,7 +678,9 @@ checkoutRoutes.put('/pickup', requireAuth, writeLimiter, async (req: AuthRequest
         const resolved = await cdekService.getCityCodeByPvzCode(buyerPickupPvzId);
         if (resolved) cityCode = resolved;
       } catch (err) {
-        console.warn('[CHECKOUT][pickup] failed to resolve city_code from CDEK', { pvzCode: buyerPickupPvzId, err });
+        console.warn('[CHECKOUT][pickup] failed to resolve city_code from CDEK', {
+          pvzCode: buyerPickupPvzId, error: safeCdekError(err, 'getCityCodeByPvzCode')
+        });
       }
     }
 

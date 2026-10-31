@@ -98,7 +98,7 @@ test('ready-to-ship cannot reopen carrier or terminal order', async () => {
   assert.equal(h.writes, 0);
 });
 
-test('cancellation during CDEK creation cannot reopen order and cleans up external order', async () => {
+test('cancellation during CDEK creation cannot reopen order or automatically delete external order', async () => {
   const h = setup();
   h.order.cdekOrderId = null;
   (prisma.orderShipment.findUnique as any) = async () => null;
@@ -107,12 +107,13 @@ test('cancellation during CDEK creation cannot reopen order and cleans up extern
     h.order.status = 'CANCELLED';
     return { cdekOrderId: 'new-cdek-uuid', trackingNumber: null, state: 'ACCEPTED' };
   };
+  (cdekService.getOrderByUuid as any) = async () => { throw { response: { status: 401 } }; };
   (cdekService.deleteOrder as any) = async (uuid: string) => { deleted = uuid; };
   await assert.rejects(markReadyToShipCdek('order-1', 'seller-1'),
     (error: any) => error.code === 'SELLER_SHIPMENT_STATUS_LOCKED');
   assert.equal(h.order.status, 'CANCELLED');
   assert.equal(h.writes, 0);
-  assert.equal(deleted, 'new-cdek-uuid');
+  assert.equal(deleted, null);
 });
 
 test.after(() => {

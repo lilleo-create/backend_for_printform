@@ -8,6 +8,8 @@ import { BUYER_SHIPMENT_SELECT } from '../utils/serializers';
 import { toCdekPackedParcel, validatePackedParcel, type ShippingSnapshot } from './shippingPackageService';
 import { resolveCdekRecipient, resolveCdekSender } from './cdekShipmentContacts';
 import { resolveCdekWareKey } from './cdekWareKey';
+import { verifyCreatedCdekOrderReadback } from './cdekReadback';
+import { safeCdekError } from './safeCdekError';
 
 export type ShipmentInternalStatus =
   | 'CREATED'
@@ -116,8 +118,11 @@ const syncShipmentByOrder = async (orderId: string) => {
   const cdekOrderUuid = String(order.cdekOrderId ?? '').trim() || String((order.shipment?.statusRaw as any)?.cdek_order_uuid ?? '').trim();
   if (!cdekOrderUuid) throw makeError('CDEK_ORDER_UUID_MISSING');
 
+  const requestId = order.shipment?.requestId ?? null;
+  console.info('[CDEK][sync][start]', { requestId, orderId, cdekOrderUuid });
   const snapshot = await cdekService.getOrderByUuid(cdekOrderUuid);
   await cdekWebhookService.applyVerifiedCdekStatus(orderId, snapshot);
+  console.info('[CDEK][sync][verified]', { requestId, orderId, cdekOrderUuid, status: snapshot.status });
   const shipment = await prisma.orderShipment.findUnique({ where: { orderId } });
   if (!shipment) throw makeError('SHIPMENT_NOT_FOUND');
   return { shipment, snapshot };
@@ -225,7 +230,8 @@ const loadOrderForCdekShipment = async (orderId: string, sellerId?: string) => {
   };
 };
 
-export const createShipmentCdek = async (orderId: string, sellerId?: string) => {
+export const createShipmentCdek = async (orderId: string, sellerId?: string,
+  options?: { readbackSleep?: (ms: number) => Promise<void> }) => {
   const {
     order,
     fromPvzCodeRaw,
@@ -257,7 +263,6 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
   const internalRequestId = randomUUID();
   const now = new Date();
   let createdCdekOrderId: string | null = null;
-  let shipmentCommitted = false;
 
   try {
     if (!isValidCdekPvzCode(fromPvzCode)) {
@@ -281,6 +286,7 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
 
     const created = await cdekService.createOrderFromMarketplaceOrder({
       orderId: order.id,
+      requestId: internalRequestId,
       fromPvzCode,
       toPvzCode,
       recipientName,
@@ -297,13 +303,26 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
 
     if (!created.cdekOrderId) throw makeError('CDEK_CREATE_ORDER_NO_UUID');
     createdCdekOrderId = created.cdekOrderId;
+    const readback = await verifyCreatedCdekOrderReadback({
+      requestId: internalRequestId,
+      orderId: order.id,
+      cdekOrderUuid: created.cdekOrderId,
+      getOrder: (uuid) => cdekService.getOrderByUuid(uuid),
+      sleep: options?.readbackSleep
+    });
 
     const statusRaw = {
       cdek_order_number: order.id,
       cdek_order_uuid: created.cdekOrderId,
       cdek_request_uuid: created.cdekRequestUuid ?? '',
       cdek_state: created.state ?? '',
-      trackingNumber: created.trackingNumber ?? ''
+      trackingNumber: created.trackingNumber ?? '',
+      readback: {
+        status: readback.status,
+        ...(readback.status === 'VERIFIED' ? { verifiedAt: readback.checkedAt } : { checkedAt: readback.checkedAt }),
+        attempts: readback.attempts,
+        ...(readback.reasonCode ? { reasonCode: readback.reasonCode } : {})
+      }
     };
 
     const shipment = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
@@ -365,13 +384,18 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
 
       return nextShipment;
     });
-    shipmentCommitted = true;
-
     let synced: Awaited<ReturnType<typeof syncShipmentByOrder>> | null = null;
-    try {
-      synced = await syncShipmentByOrder(order.id);
-    } catch (syncError) {
-      console.warn('[CDEK][createShipmentCdek] immediate sync failed', { orderId: order.id, syncError });
+    if (readback.snapshot) {
+      try {
+        await cdekWebhookService.applyVerifiedCdekStatus(order.id, readback.snapshot);
+        const verifiedShipment = await prisma.orderShipment.findUnique({ where: { orderId: order.id } });
+        if (verifiedShipment) synced = { shipment: verifiedShipment, snapshot: readback.snapshot };
+      } catch (syncError) {
+        console.warn('[CDEK][createShipmentCdek] apply verified snapshot failed', {
+          requestId: internalRequestId, orderId: order.id, cdekOrderUuid: created.cdekOrderId,
+          error: safeCdekError(syncError, 'applyVerifiedCdekStatus')
+        });
+      }
     }
 
     return {
@@ -380,20 +404,15 @@ export const createShipmentCdek = async (orderId: string, sellerId?: string) => 
         cdekOrderId: created.cdekOrderId,
         trackingNumber: synced?.snapshot.trackingNumber || created.trackingNumber,
         cdekRequestUuid: created.cdekRequestUuid,
-        state: synced?.snapshot.status || created.state
+        state: synced?.snapshot.status || created.state,
+        readbackStatus: readback.status
       }
     };
   } catch (error) {
-    if (createdCdekOrderId && !shipmentCommitted) {
-      try {
-        await cdekService.deleteOrder(createdCdekOrderId);
-      } catch (cleanupError) {
-        console.error('[CDEK][createShipmentCdek] orphan cleanup failed', {
-          orderId: order.id, code: (cleanupError as { code?: string }).code ?? 'CDEK_DELETE_FAILED'
-        });
-      }
-    }
-    console.error('[CDEK][createShipmentCdek] failed', { orderId: order.id, error });
+    console.error('[CDEK][createShipmentCdek] failed', {
+      requestId: internalRequestId, orderId: order.id, cdekOrderUuid: createdCdekOrderId,
+      externalOrderMayExist: Boolean(createdCdekOrderId), error: safeCdekError(error, 'createShipmentCdek')
+    });
     throw error;
   }
 };
@@ -419,12 +438,14 @@ export const markReadyToShipCdek = async (orderId: string, sellerId?: string) =>
   let cdekOrderId = String(order.cdekOrderId ?? '').trim() || null;
   let trackingNumber = order.trackingNumber;
   let cdekState = order.cdekStatus;
+  let readbackStatus: string | null = null;
 
   if (!existingShipment || !cdekOrderId) {
     const created = await createShipmentCdek(orderId, sellerId);
     cdekOrderId = created.cdek.cdekOrderId ?? cdekOrderId;
     trackingNumber = created.cdek.trackingNumber ?? trackingNumber;
     cdekState = created.cdek.state ?? cdekState;
+    readbackStatus = 'readbackStatus' in created.cdek ? String(created.cdek.readbackStatus ?? '') : null;
   }
 
   const shipmentForOrder = await prisma.orderShipment.findUnique({ where: { orderId: order.id } });
@@ -478,10 +499,15 @@ export const markReadyToShipCdek = async (orderId: string, sellerId?: string) =>
   });
 
   let synced: Awaited<ReturnType<typeof syncShipmentByOrder>> | null = null;
-  try {
-    synced = await syncShipmentByOrder(order.id);
-  } catch (syncError) {
-    console.warn('[CDEK][markReadyToShipCdek] immediate sync failed', { orderId: order.id, syncError });
+  if (readbackStatus !== 'PENDING' && readbackStatus !== 'AUTH_FAILED') {
+    try {
+      synced = await syncShipmentByOrder(order.id);
+    } catch (syncError) {
+      console.warn('[CDEK][markReadyToShipCdek] immediate sync failed', {
+        orderId: order.id, cdekOrderUuid: cdekOrderId,
+        error: safeCdekError(syncError, 'markReadyToShipCdek')
+      });
+    }
   }
 
   return {
@@ -596,8 +622,7 @@ export const shipmentService = {
       console.info('[CDEK][label][getPrintTaskStatus]', {
         shipmentId: params.shipmentId,
         requestUuid,
-        status: snapshot.status,
-        raw: snapshot
+        status: snapshot.status
       });
       return snapshot;
     };
@@ -639,7 +664,7 @@ export const shipmentService = {
         console.warn('[CDEK][label][downloadByPrintUuid][error]', {
           shipmentId: params.shipmentId,
           requestUuid: printTaskUuid,
-          message: String(error?.message ?? 'unknown_error')
+          error: safeCdekError(error, 'downloadBarcodePdf')
         });
       }
     }
@@ -648,7 +673,7 @@ export const shipmentService = {
       console.error('[CDEK][label][invalid]', {
         shipmentId: params.shipmentId,
         requestUuid: printTaskUuid,
-        raw: snapshot
+        status: snapshot.status
       });
       return { status: 'invalid' as const, reason: 'CDEK barcode print task is INVALID' };
     }
@@ -659,28 +684,24 @@ export const shipmentService = {
 
     console.info('[CDEK][label][candidateSources]', {
       shipmentId: params.shipmentId,
-      barcodeUrl,
+      hasBarcodeUrl: Boolean(barcodeUrl),
     });
 
     // Only use barcode URL — waybill URLs are the act/handover document, not the label sticker
     const candidateUrl = barcodeUrl ?? null;
     if (candidateUrl) {
       try {
-        console.info('[CDEK][label][downloadByUrl][start]', { shipmentId: params.shipmentId, url: candidateUrl });
+        console.info('[CDEK][label][downloadByUrl][start]', { shipmentId: params.shipmentId });
         const pdf = await cdekService.downloadPdfByUrl(candidateUrl);
         console.info('[CDEK][label][downloadByUrl][response]', {
           shipmentId: params.shipmentId,
-          url: candidateUrl,
           size: pdf.length
         });
         return { status: 'ready' as const, pdf };
       } catch (error: any) {
         console.error('[CDEK][label][downloadByUrl][error]', {
           shipmentId: params.shipmentId,
-          url: candidateUrl,
-          status: Number(error?.response?.status ?? error?.status ?? 0),
-          data: error?.response?.data ?? error?.data,
-          message: String(error?.message ?? 'unknown_error')
+          error: safeCdekError(error, 'downloadPdfByUrl')
         });
       }
     }

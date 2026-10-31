@@ -9,6 +9,7 @@ import {
 } from './cdekStatusMapper';
 import { orderCompletionService } from './orderCompletionService';
 import { extractVerifiedCdekCosts } from './cdekActualCost';
+import { safeCdekError } from './safeCdekError';
 import type { Prisma } from '@prisma/client';
 
 type OrderWithShipment = NonNullable<Awaited<ReturnType<typeof findOrder>>>;
@@ -138,7 +139,11 @@ export const cdekWebhookService = {
   async syncCdekOrderStatus(orderId: string) {
     const order = await findOrder(orderId);
     if (!order) throw new Error('ORDER_NOT_FOUND');
+    console.info('[CDEK][sync][start]', { requestId: order.shipment?.requestId ?? null,
+      orderId, cdekOrderUuid: order.cdekOrderId });
     const snapshot = await getVerifiedSnapshot(order);
+    console.info('[CDEK][sync][verified]', { requestId: order.shipment?.requestId ?? null,
+      orderId, cdekOrderUuid: snapshot.cdekOrderId, status: snapshot.status });
     return this.applyVerifiedCdekStatus(order.id, snapshot);
   },
 
@@ -154,7 +159,8 @@ export const cdekWebhookService = {
         await this.syncCdekOrderStatus(order.id);
         synced += 1;
       } catch (error) {
-        console.error('[CDEK][sync][order][failed]', { orderId: order.id, error });
+        console.error('[CDEK][sync][order][failed]', { orderId: order.id,
+          error: safeCdekError(error, 'syncCdekOrderStatus') });
       }
     }
     return { total: orders.length, synced };
@@ -187,13 +193,20 @@ export const cdekWebhookService = {
         order.actualDeliveryAmountKopecks !== verifiedCosts.actualAmountKopecks;
       const effectiveCost = verifiedCosts.actualAmountKopecks ?? order.actualDeliveryAmountKopecks ??
         verifiedCosts.currentTotalAmountKopecks ?? order.cdekCurrentTotalAmountKopecks;
+      const previousRaw = order.shipment?.statusRaw && typeof order.shipment.statusRaw === 'object' &&
+        !Array.isArray(order.shipment.statusRaw) ? order.shipment.statusRaw as Record<string, unknown> : {};
+      const previousReadback = previousRaw.readback && typeof previousRaw.readback === 'object' &&
+        !Array.isArray(previousRaw.readback) ? previousRaw.readback as Record<string, unknown> : null;
       const raw = {
+        ...previousRaw,
         cdek_order_uuid: snapshot.cdekOrderId,
         cdek_state: snapshot.status,
         cdek_request_uuid: snapshot.requestUuid,
         trackingNumber: verifiedTracking,
         print: snapshot.relatedEntities,
-        related_entities: snapshot.raw.related_entities ?? []
+        related_entities: snapshot.raw.related_entities ?? [],
+        ...(previousReadback ? { readback: { ...previousReadback, status: 'VERIFIED',
+          verifiedAt: previousReadback.verifiedAt ?? now.toISOString(), reasonCode: null } } : {})
       };
       const shipment = await tx.orderShipment.upsert({
         where: { orderId },
