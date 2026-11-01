@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { requireAuth, AuthRequest } from '../middleware/authMiddleware';
 import { prisma } from '../lib/prisma';
+import { RETURN_ELIGIBLE_STATUSES } from '../utils/returnEligibility';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { createReturnSchema } from './returns/schemas';
 
@@ -100,7 +101,7 @@ returnRoutes.post('/', requireAuth, writeLimiter, async (req: AuthRequest, res, 
         order: {
           buyerId: req.user!.userId,
           status: {
-            in: ['READY_FOR_SHIPMENT', 'HANDED_TO_DELIVERY', 'IN_TRANSIT', 'DELIVERED']
+            in: [...RETURN_ELIGIBLE_STATUSES]
           }
         }
       },

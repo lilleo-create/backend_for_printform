@@ -10,6 +10,7 @@ import { notFound } from '../utils/httpErrors';
 import { asyncHandler } from "../utils/asyncHandler";
 import { resolveRoleAfterSellerEnablement } from '../utils/accessControl';
 import { getKycStatusLabelRu, getReviewModerationStatusLabelRu } from '../utils/statusLabels';
+import { paymentFlowService } from '../services/paymentFlowService';
 
 export const adminRoutes = Router();
 
@@ -65,6 +66,28 @@ const returnStatusSchema = z.object({
 });
 
 adminRoutes.use(requireAuth, requireAdmin);
+
+const cancelOrderSchema = z.object({
+  reason: z.enum(['buyer request', 'seller unable to fulfill', 'admin/support decision'])
+}).strict();
+
+adminRoutes.post('/orders/:id/cancel', writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const { reason } = cancelOrderSchema.parse(req.body);
+    const { order, refund } = await paymentFlowService.createOrderCancellationRefund({
+      orderId: req.params.id, actor: 'ADMIN', reason
+    });
+    return res.json({ data: order, refund });
+  } catch (error) {
+    const code = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
+    if (code === 'ORDER_NOT_FOUND') return res.status(404).json({ error: { code } });
+    if (['ORDER_NOT_PAID', 'ORDER_ALREADY_SHIPPED', 'REFUND_AMOUNT_EXCEEDS_PAYMENT', 'PAYMENT_EXTERNAL_ID_NOT_FOUND'].includes(code)) {
+      return res.status(409).json({ error: { code } });
+    }
+    if (code === 'REFUND_CREATE_FAILED') return res.status(502).json({ error: { code } });
+    return next(error);
+  }
+});
 
 adminRoutes.get('/seller-documents/:id/download', async (req, res, next) => {
   try {

@@ -27,7 +27,7 @@ const paymentBindingError = (payment: any, order: any, bodyOrderId?: string): st
   if (payment.provider !== 'yookassa') return 'LOCAL_PROVIDER_MISMATCH';
   if (bodyOrderId && bodyOrderId !== payment.orderId) return 'BODY_ORDER_MISMATCH';
   if (payment.amount !== order.total || payment.currency !== order.currency) return 'LOCAL_AMOUNT_MISMATCH';
-  if (order.paymentId && order.paymentId !== payment.id) return 'LOCAL_PAYMENT_MISMATCH';
+  if (order.paymentId !== payment.id) return 'LOCAL_PAYMENT_MISMATCH';
   return null;
 };
 
@@ -48,7 +48,9 @@ export const yookassaWebhookService = {
     if (!payment) return skipped('PAYMENT_UNKNOWN');
     const order = await prisma.order.findUnique({ where: { id: payment.orderId } });
     const bindingError = paymentBindingError(payment, order, signal.bodyOrderId);
-    if (bindingError) return skipped(bindingError, payment.orderId);
+    if (bindingError && !(event === 'payment.succeeded' && bindingError === 'LOCAL_PAYMENT_MISMATCH')) {
+      return skipped(bindingError, payment.orderId);
+    }
 
     let provider: Awaited<ReturnType<typeof yookassaService.getPayment>>;
     try {
@@ -69,6 +71,7 @@ export const yookassaWebhookService = {
     }
 
     return prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${payment.orderId} FOR UPDATE`;
       await tx.$queryRaw`SELECT id FROM "Payment" WHERE id = ${payment.id} FOR UPDATE`;
       const currentPayment = await tx.payment.findFirst({ where: { externalId: signal.externalId } });
       const currentOrder = currentPayment
@@ -76,13 +79,30 @@ export const yookassaWebhookService = {
         : null;
       if (!currentPayment) return skipped('PAYMENT_UNKNOWN');
       const currentBindingError = paymentBindingError(currentPayment, currentOrder, signal.bodyOrderId);
-      if (currentBindingError || currentPayment.id !== payment.id ||
+      if ((currentBindingError && !(event === 'payment.succeeded' && currentBindingError === 'LOCAL_PAYMENT_MISMATCH')) || currentPayment.id !== payment.id ||
           currentPayment.amount !== payment.amount || currentPayment.currency !== payment.currency) {
         return skipped(currentBindingError ?? 'LOCAL_PAYMENT_CHANGED', payment.orderId);
       }
       if (!currentOrder) return skipped('LOCAL_ORDER_MISMATCH', payment.orderId);
 
       if (event === 'payment.succeeded') {
+        if (currentBindingError === 'LOCAL_PAYMENT_MISMATCH' || currentOrder.status === 'CANCELLED') {
+          if ((currentPayment.payloadJson as Record<string, unknown> | null)?.lateSuccessException) {
+            return skipped('LATE_PAYMENT_SUCCEEDED', currentOrder.id);
+          }
+          await tx.payment.update({ where: { id: currentPayment.id }, data: {
+            status: 'SUCCEEDED',
+            payloadJson: {
+              ...((currentPayment.payloadJson && typeof currentPayment.payloadJson === 'object' && !Array.isArray(currentPayment.payloadJson))
+                ? currentPayment.payloadJson as Record<string, unknown> : {}),
+              lateSuccessException: { code: 'LATE_PAYMENT_SUCCEEDED', detectedAt: new Date().toISOString() }
+            } as Prisma.InputJsonValue
+          } });
+          console.error('[YOOKASSA][LATE_PAYMENT_SUCCEEDED]', {
+            orderId: currentOrder.id, paymentId: currentPayment.id, currentPaymentId: currentOrder.paymentId
+          });
+          return skipped('LATE_PAYMENT_SUCCEEDED', currentOrder.id);
+        }
         if (currentPayment.status === 'SUCCEEDED' && currentOrder.paymentStatus === 'PAID') {
           return skipped('DUPLICATE', currentOrder.id);
         }
@@ -105,15 +125,18 @@ export const yookassaWebhookService = {
         return skipped('APPLIED', currentOrder.id);
       }
 
-      if (currentPayment.status === 'CANCELED' && currentOrder.paymentStatus === 'PAYMENT_EXPIRED') {
+      if (currentPayment.status === 'CANCELED' && currentOrder.paymentStatus === 'PAYMENT_EXPIRED' && currentOrder.status === 'EXPIRED') {
         return skipped('DUPLICATE', currentOrder.id);
       }
-      if (currentPayment.status !== 'PENDING' || currentOrder.status !== 'CREATED' ||
+      if (!['PENDING', 'CANCELED'].includes(currentPayment.status) || !['CREATED', 'EXPIRED'].includes(currentOrder.status) ||
           !['PENDING_PAYMENT', 'PAYMENT_EXPIRED'].includes(currentOrder.paymentStatus)) {
         return skipped('PAYMENT_STATE_INVALID', currentOrder.id);
       }
-      await tx.payment.update({ where: { id: currentPayment.id }, data: { status: 'CANCELED' } });
-      await tx.order.update({ where: { id: currentOrder.id }, data: { paymentStatus: 'PAYMENT_EXPIRED' } });
+      if (currentPayment.status !== 'CANCELED') await tx.payment.update({ where: { id: currentPayment.id }, data: { status: 'CANCELED' } });
+      const now = new Date();
+      await tx.order.update({ where: { id: currentOrder.id }, data: {
+        paymentStatus: 'PAYMENT_EXPIRED', status: 'EXPIRED', expiredAt: now, statusUpdatedAt: now
+      } });
       return skipped('APPLIED', currentOrder.id);
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
   },

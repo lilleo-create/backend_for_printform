@@ -5,6 +5,7 @@ import { expirePendingPayments, nextPaymentExpiryDate } from '../utils/orderPaym
 import { money, rublesToKopecks } from '../utils/money';
 import { env } from '../config/env';
 import { yookassaService } from './yookassaService';
+import { yookassaWebhookService } from './yookassaWebhookService';
 import { quoteCheckoutShipping } from './checkoutShippingService';
 
 type StartPaymentInput = {
@@ -356,13 +357,14 @@ export const paymentFlowService = {
         });
         const paymentUrl = yookassaPayment.confirmationUrl;
 
+        const paymentExpiresAt = nextPaymentExpiryDate();
         const claimed = await tx.order.updateMany({
           where: { id: lockedOrder.id, paymentId: null },
           data: {
             paymentId: payment.id,
             paymentProvider: payment.provider,
             paymentStatus: 'PENDING_PAYMENT',
-            paymentExpiresAt: nextPaymentExpiryDate(),
+            paymentExpiresAt,
             expiredAt: null
           }
         });
@@ -392,7 +394,7 @@ export const paymentFlowService = {
           paymentId: payment.id,
           paymentUrl,
           paymentStatus: 'PENDING_PAYMENT' as const,
-          paymentExpiresAt: nextPaymentExpiryDate(),
+          paymentExpiresAt,
           deliveryConfigMissing,
           blockingReason
         };
@@ -401,10 +403,8 @@ export const paymentFlowService = {
       console.error('[PAYMENT][ERROR]', {
         buyerId: input.buyerId,
         paymentAttemptKey: input.paymentAttemptKey,
-        error,
-        stack: error instanceof Error ? error.stack : undefined,
+        code: error instanceof Error ? error.message : 'UNKNOWN_ERROR',
         prismaCode: error instanceof Prisma.PrismaClientKnownRequestError ? error.code : undefined,
-        prismaMeta: error instanceof Prisma.PrismaClientKnownRequestError ? error.meta : undefined
       });
       throw error;
     }
@@ -412,13 +412,40 @@ export const paymentFlowService = {
 
   async retryPayment(orderId: string, buyerId: string) {
     await expirePendingPayments();
-    return prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${orderId} FOR UPDATE`;
       const order = await tx.order.findFirst({ where: { id: orderId, buyerId } });
       if (!order) throw new Error('ORDER_NOT_FOUND');
       if (order.paidAt || order.paymentStatus === 'PAID') throw new Error('ORDER_ALREADY_PAID');
-      if (order.paymentStatus !== 'PAYMENT_EXPIRED') throw new Error('PAYMENT_RETRY_FORBIDDEN');
+      if (order.status !== 'EXPIRED' || order.paymentStatus !== 'PAYMENT_EXPIRED') throw new Error('PAYMENT_RETRY_FORBIDDEN');
       if (!order.shippingSnapshot || !order.deliveryAmountKopecks) {
         throw new Error('SHIPPING_REQUOTE_REQUIRED');
+      }
+
+      const previousPayment = order.paymentId
+        ? await tx.payment.findUnique({ where: { id: order.paymentId } })
+        : await tx.payment.findFirst({ where: { orderId: order.id }, orderBy: { createdAt: 'desc' } });
+      if (previousPayment?.externalId) {
+        let provider;
+        try {
+          provider = await yookassaService.getPayment(previousPayment.externalId);
+        } catch {
+          throw new Error('PAYMENT_PROVIDER_UNAVAILABLE');
+        }
+        if (provider.id !== previousPayment.externalId || provider.metadata?.orderId !== order.id ||
+            provider.amount?.currency !== order.currency ||
+            provider.amount?.value !== money.toRublesString(order.total)) {
+          throw new Error('PAYMENT_PROVIDER_MISMATCH');
+        }
+        if (provider.status === 'succeeded') {
+          return { reconcileExternalId: previousPayment.externalId, orderId: order.id };
+        }
+        if (provider.status !== 'canceled') throw new Error('PAYMENT_ATTEMPT_ACTIVE');
+        if (previousPayment.status !== 'CANCELED') {
+          await tx.payment.update({ where: { id: previousPayment.id }, data: { status: 'CANCELED' } });
+        }
+      } else if (previousPayment) {
+        throw new Error('PAYMENT_ATTEMPT_UNVERIFIED');
       }
 
       const payment = await tx.payment.create({
@@ -436,6 +463,7 @@ export const paymentFlowService = {
       });
 
       let yookassaPayment;
+      const retryIdempotenceKey = `retry-${order.id}-${order.paymentId ?? 'initial'}`;
       if (env.yookassaSafeDealEnabled && order.yookassaDealId) {
         const returnUrl = new URL(env.yookassaReturnUrl);
         returnUrl.searchParams.set('orderId', order.id);
@@ -445,14 +473,16 @@ export const paymentFlowService = {
           amountKopecks: order.total,
           currency: order.currency,
           returnUrl: returnUrl.toString(),
-          description: `Оплата заказа ${order.id}`
+          description: `Оплата заказа ${order.id}`,
+          idempotenceKey: retryIdempotenceKey
         });
       } else {
         yookassaPayment = await yookassaService.createPayment({
           amount: order.total,
           currency: order.currency,
           orderId: order.id,
-          description: `Оплата заказа ${order.id}`
+          description: `Оплата заказа ${order.id}`,
+          idempotenceKey: retryIdempotenceKey
         });
       }
 
@@ -479,20 +509,62 @@ export const paymentFlowService = {
 
       return { orderId: order.id, paymentStatus: 'PENDING_PAYMENT' as const, paymentExpiresAt, paymentUrl };
     });
+    if ('reconcileExternalId' in result && typeof result.reconcileExternalId === 'string') {
+      const reconciled = await yookassaWebhookService.handlePaymentSignal('payment.succeeded', { externalId: result.reconcileExternalId });
+      if (!['APPLIED', 'DUPLICATE'].includes(reconciled.reason)) throw new Error('PAYMENT_RECONCILIATION_REQUIRED');
+      return { orderId: result.orderId, paymentStatus: 'PAID' as const, paymentExpiresAt: null, paymentUrl: '' };
+    }
+    return result;
   },
 
-  async createOrderCancellationRefund(input: { orderId: string; buyerId: string; reason?: string }) {
+  async cancelUnpaidOrder(orderId: string, buyerId: string) {
+    return prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${orderId} FOR UPDATE`;
+      const order = await tx.order.findFirst({ where: { id: orderId, buyerId } });
+      if (!order) throw new Error('ORDER_NOT_FOUND');
+      if (order.status === 'CANCELLED' && order.paymentStatus === 'CANCELLED') return order;
+      if (order.status !== 'CREATED' || order.paymentStatus !== 'PENDING_PAYMENT' || order.paidAt) {
+        throw new Error('ORDER_CANNOT_CANCEL');
+      }
+      const cancelled = await tx.order.update({ where: { id: order.id }, data: {
+        status: 'CANCELLED', paymentStatus: 'CANCELLED', paymentExpiresAt: null,
+        statusUpdatedAt: new Date(), payoutStatus: 'BLOCKED'
+      } });
+      console.info('[ORDER][CANCEL]', { orderId: order.id, source: 'BUYER', mode: 'NO_REFUND' });
+      return cancelled;
+    });
+  },
+
+  async cancelBuyerOrder(orderId: string, buyerId: string) {
+    const order = await prisma.order.findFirst({ where: { id: orderId, buyerId } });
+    if (!order) throw new Error('ORDER_NOT_FOUND');
+    if (order.paymentStatus === 'PAID' || ['REFUND_PENDING', 'REFUNDED'].includes(order.paymentStatus)) {
+      return this.createOrderCancellationRefund({ orderId, buyerId, actor: 'BUYER', reason: 'buyer request' });
+    }
+    const cancelled = await this.cancelUnpaidOrder(orderId, buyerId);
+    return { order: cancelled, refund: null };
+  },
+
+  async createOrderCancellationRefund(input: { orderId: string; buyerId?: string; actor?: 'BUYER' | 'ADMIN'; reason?: string }) {
+    if (input.actor !== 'ADMIN' && !input.buyerId) throw new Error('ORDER_NOT_FOUND');
     return prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${input.orderId} FOR UPDATE`;
       const order = await tx.order.findFirst({
-        where: { id: input.orderId, buyerId: input.buyerId },
+        where: { id: input.orderId, ...(input.actor === 'ADMIN' ? {} : { buyerId: input.buyerId }) },
         include: { shipment: true, payments: { where: { status: 'SUCCEEDED' }, orderBy: { createdAt: 'desc' }, take: 1 } }
       });
       if (!order) throw new Error('ORDER_NOT_FOUND');
+      if (order.status === 'CANCELLED' && ['REFUND_PENDING', 'REFUNDED'].includes(order.paymentStatus)) {
+        const refund = await tx.refund.findFirst({ where: { orderId: order.id }, orderBy: { createdAt: 'desc' } });
+        return { order, refund };
+      }
       if (order.paymentStatus !== 'PAID') throw new Error('ORDER_NOT_PAID');
+      if (input.actor !== 'ADMIN' && order.status !== 'PAID') throw new Error('PRODUCTION_ALREADY_STARTED');
 
       const shipmentStatus = String(order.shipment?.status ?? '').toUpperCase();
       const isAlreadyShipped =
         ['READY_FOR_SHIPMENT', 'HANDED_TO_DELIVERY', 'IN_TRANSIT', 'DELIVERED'].includes(order.status) ||
+        Boolean(order.cdekOrderId || order.shipment?.id || order.readyForShipmentAt) ||
         ['SHIPPED', 'DELIVERED', 'IN_TRANSIT', 'READY_FOR_PICKUP'].includes(shipmentStatus) ||
         ['SHIPPED', 'DELIVERED', 'IN_TRANSIT'].includes(String(order.cdekStatus ?? '').toUpperCase());
       if (isAlreadyShipped) {
@@ -533,7 +605,8 @@ export const paymentFlowService = {
             paymentId: externalPaymentId,
             amountKopecks: refundAmount,
             currency: order.currency,
-            reason: input.reason
+            reason: input.reason,
+            idempotenceKey: `cancel-${order.id}`
           });
         } else {
           refundResponse = await yookassaService.createRefund({
@@ -541,7 +614,8 @@ export const paymentFlowService = {
             amount: refundAmount,
             currency: order.currency,
             orderId: order.id,
-            reason: input.reason
+            reason: input.reason,
+            idempotenceKey: `cancel-${order.id}`
           });
         }
       } catch (error) {
@@ -549,8 +623,7 @@ export const paymentFlowService = {
           orderId: order.id,
           paymentId: externalPaymentId,
           amount: refundAmount,
-          error,
-          stack: error instanceof Error ? error.stack : undefined
+          code: error instanceof Error ? error.message : 'UNKNOWN_ERROR'
         });
         throw new Error('REFUND_CREATE_FAILED');
       }
@@ -584,7 +657,8 @@ export const paymentFlowService = {
         paymentId: externalPaymentId,
         refundId: createdRefund.externalId,
         amount: refundAmount,
-        status: createdRefund.status
+        status: createdRefund.status,
+        source: input.actor ?? 'BUYER'
       });
 
       return { order: updatedOrder, refund: createdRefund };

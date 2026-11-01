@@ -272,46 +272,15 @@ meRoutes.get('/orders', requireAuth, async (req: AuthRequest, res, next) => {
 
 meRoutes.patch('/orders/:id/cancel', requireAuth, writeLimiter, async (req: AuthRequest, res, next) => {
   try {
-    const order = await prisma.order.findFirst({
-      where: { id: req.params.id, buyerId: req.user!.userId },
-      include: { shipment: true }
-    });
-
-    if (!order) {
-      return res.status(404).json({ error: { code: 'ORDER_NOT_FOUND' } });
-    }
-
-    const shipmentStatus = String(order.shipment?.status ?? '').toUpperCase();
-    const isSentToDelivery = ['HANDED_TO_DELIVERY', 'IN_TRANSIT', 'DELIVERED'].includes(order.status) || ['IN_TRANSIT', 'DELIVERED'].includes(shipmentStatus);
-
-    if (isSentToDelivery) {
-      return res.status(409).json({ error: { code: 'ORDER_ALREADY_SHIPPED', message: 'Заказ уже отправлен в доставку. Доступен только возврат.' } });
-    }
-
-    if (order.paymentStatus === 'PAID') {
-      const cancelledWithRefund = await paymentFlowService.createOrderCancellationRefund({
-        orderId: order.id,
-        buyerId: req.user!.userId
-      });
-      return res.json({ data: withOrderPublicId(cancelledWithRefund.order), refund: cancelledWithRefund.refund });
-    }
-
-    const cancelled = await prisma.order.update({
-      where: { id: order.id },
-      data: { status: 'CANCELLED', statusUpdatedAt: new Date(), paymentStatus: 'CANCELLED', payoutStatus: 'BLOCKED' }
-    });
-
-    console.info('[ORDER][CANCEL]', {
-      orderId: order.id,
-      paymentStatus: order.paymentStatus,
-      mode: 'NO_REFUND'
-    });
-
-    return res.json({ data: withOrderPublicId(cancelled) });
+    const { order, refund } = await paymentFlowService.cancelBuyerOrder(req.params.id, req.user!.userId);
+    return res.json({ data: withOrderPublicId(order), refund });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
+    if (message === 'ORDER_NOT_FOUND') return res.status(404).json({ error: { code: message } });
     if (
       message === 'ORDER_NOT_PAID' ||
+      message === 'ORDER_CANNOT_CANCEL' ||
+      message === 'PRODUCTION_ALREADY_STARTED' ||
       message === 'ORDER_ALREADY_SHIPPED' ||
       message === 'REFUND_AMOUNT_EXCEEDS_PAYMENT' ||
       message === 'PAYMENT_EXTERNAL_ID_NOT_FOUND'

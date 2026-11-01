@@ -114,6 +114,7 @@ export const yookassaService = {
     currency: string;
     orderId: string;
     description: string;
+    idempotenceKey?: string;
   }): Promise<{
     id: string;
     confirmationUrl: string;
@@ -124,7 +125,7 @@ export const yookassaService = {
       throw new Error('YOOKASSA_CONFIG_MISSING');
     }
 
-    const idempotenceKey = crypto.randomUUID();
+    const idempotenceKey = input.idempotenceKey ?? crypto.randomUUID();
 
     const returnUrl = new URL(env.yookassaReturnUrl);
     returnUrl.searchParams.set('orderId', input.orderId);
@@ -192,13 +193,14 @@ export const yookassaService = {
     currency: string;
     returnUrl: string;
     description: string;
+    idempotenceKey?: string;
   }): Promise<{
     id: string;
     confirmationUrl: string;
     status: string;
     payload: YooKassaPaymentResponse;
   }> {
-    const idempotenceKey = crypto.randomUUID();
+    const idempotenceKey = input.idempotenceKey ?? crypto.randomUUID();
     const body = {
       amount: {
         value: money.toRublesString(input.amountKopecks),
@@ -339,6 +341,7 @@ export const yookassaService = {
     currency: string;
     orderId: string;
     reason?: string;
+    idempotenceKey?: string;
   }): Promise<{
     id: string;
     status: string;
@@ -348,7 +351,7 @@ export const yookassaService = {
       throw new Error('YOOKASSA_CONFIG_MISSING');
     }
 
-    const idempotenceKey = crypto.randomUUID();
+    const idempotenceKey = input.idempotenceKey ?? crypto.randomUUID();
     const body = {
       amount: {
         value: money.toRublesString(input.amount),
@@ -402,12 +405,13 @@ export const yookassaService = {
     amountKopecks: number;
     currency: string;
     reason?: string;
+    idempotenceKey?: string;
   }): Promise<{
     id: string;
     status: string;
     payload: YooKassaRefundResponse;
   }> {
-    const idempotenceKey = crypto.randomUUID();
+    const idempotenceKey = input.idempotenceKey ?? crypto.randomUUID();
     const body = {
       amount: {
         value: money.toRublesString(input.amountKopecks),

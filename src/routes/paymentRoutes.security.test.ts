@@ -196,11 +196,24 @@ test('verified payment may complete after local payment window expires', async (
   assert.equal(f.order.expiredAt, null);
 });
 
-test('late success for replaced payment cannot overwrite current payment', async () => {
+test('late success for replaced payment is recorded as an exception without overwriting current order', async () => {
   const f = fixture();
   f.order.paymentId = 'new-payment';
   await request(app).post('/payments/yookassa/webhook').send(paymentSignal()).expect(200);
-  assert.deepEqual(f.writes, { payment: 0, order: 0, refund: 0 });
+  assert.equal(f.writes.order, 0);
+  assert.equal(f.payment.status, 'SUCCEEDED');
+  assert.equal((f.payment.payloadJson as any).lateSuccessException.code, 'LATE_PAYMENT_SUCCEEDED');
+  assert.equal(f.order.paymentId, 'new-payment');
+});
+
+test('late success after buyer cancellation does not revive the order', async () => {
+  const f = fixture();
+  f.order.status = 'CANCELLED';
+  f.order.paymentStatus = 'CANCELLED';
+  await request(app).post('/payments/yookassa/webhook').send(paymentSignal()).expect(200);
+  assert.equal(f.order.status, 'CANCELLED');
+  assert.equal(f.writes.order, 0);
+  assert.equal((f.payment.payloadJson as any).lateSuccessException.code, 'LATE_PAYMENT_SUCCEEDED');
 });
 
 test('fake canceled with provider succeeded does not downgrade paid order', async () => {
@@ -216,6 +229,20 @@ test('verified canceled marks local pending payment canceled', async () => {
   f.setProviderPayment({ id: 'external-a', status: 'canceled', amount: { value: '204.75', currency: 'RUB' }, metadata: { orderId: 'order-a' } });
   await request(app).post('/payments/yookassa/webhook').send(paymentSignal('payment.canceled')).expect(200);
   assert.equal(f.payment.status, 'CANCELED');
+  assert.equal(f.order.paymentStatus, 'PAYMENT_EXPIRED');
+  assert.equal(f.order.status, 'EXPIRED');
+  assert.ok(f.order.expiredAt instanceof Date);
+});
+
+test('verified canceled remains consistent after the local expiry job ran first', async () => {
+  const f = fixture();
+  f.order.status = 'EXPIRED';
+  f.order.paymentStatus = 'PAYMENT_EXPIRED';
+  f.order.expiredAt = new Date('2026-01-01');
+  f.setProviderPayment({ id: 'external-a', status: 'canceled', amount: { value: '204.75', currency: 'RUB' }, metadata: { orderId: 'order-a' } });
+  await request(app).post('/payments/yookassa/webhook').send(paymentSignal('payment.canceled')).expect(200);
+  assert.equal(f.payment.status, 'CANCELED');
+  assert.equal(f.order.status, 'EXPIRED');
   assert.equal(f.order.paymentStatus, 'PAYMENT_EXPIRED');
 });
 

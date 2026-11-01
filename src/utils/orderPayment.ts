@@ -1,7 +1,7 @@
 import { prisma } from '../lib/prisma';
 import { OrderPaymentStatus } from '@prisma/client';
 
-export const PAYMENT_WINDOW_MS = 10 * 60 * 1000;
+export const PAYMENT_WINDOW_MS = 20 * 60 * 1000;
 
 export const nextPaymentExpiryDate = (base = new Date()) => new Date(base.getTime() + PAYMENT_WINDOW_MS);
 

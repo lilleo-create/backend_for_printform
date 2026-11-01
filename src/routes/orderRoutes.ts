@@ -216,6 +216,14 @@ orderRoutes.post('/:orderId/retry-payment', authenticate, writeLimiter, async (r
     const retried = await paymentFlowService.retryPayment(req.params.orderId, req.user!.userId);
     return res.json({ ok: true, data: retried });
   } catch (error) {
+    const code = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
+    if (code === 'ORDER_NOT_FOUND') return res.status(404).json({ error: { code } });
+    if (['ORDER_ALREADY_PAID', 'PAYMENT_RETRY_FORBIDDEN', 'PAYMENT_ATTEMPT_ACTIVE', 'PAYMENT_ATTEMPT_UNVERIFIED', 'SHIPPING_REQUOTE_REQUIRED'].includes(code)) {
+      return res.status(409).json({ error: { code } });
+    }
+    if (['PAYMENT_PROVIDER_UNAVAILABLE', 'PAYMENT_PROVIDER_MISMATCH', 'PAYMENT_RECONCILIATION_REQUIRED'].includes(code)) {
+      return res.status(503).json({ error: { code } });
+    }
     return next(error);
   }
 });
@@ -227,10 +235,7 @@ orderRoutes.post('/:id/ready-for-shipment', authenticate, writeLimiter, async (r
 
 orderRoutes.post('/:orderId/cancel', authenticate, writeLimiter, async (req: AuthRequest, res, next) => {
   try {
-    const { order, refund } = await paymentFlowService.createOrderCancellationRefund({
-      orderId: req.params.orderId,
-      buyerId: req.user!.userId
-    });
+    const { order, refund } = await paymentFlowService.cancelBuyerOrder(req.params.orderId, req.user!.userId);
 
     return res.json({ data: withOrderPublicId(order), refund });
   } catch (error) {
@@ -240,6 +245,8 @@ orderRoutes.post('/:orderId/cancel', authenticate, writeLimiter, async (req: Aut
     }
     if (
       message === 'ORDER_NOT_PAID' ||
+      message === 'ORDER_CANNOT_CANCEL' ||
+      message === 'PRODUCTION_ALREADY_STARTED' ||
       message === 'ORDER_ALREADY_SHIPPED' ||
       message === 'REFUND_AMOUNT_EXCEEDS_PAYMENT' ||
       message === 'PAYMENT_EXTERNAL_ID_NOT_FOUND'
@@ -337,6 +344,8 @@ orderRoutes.get('/:id', authenticate, async (req, res, next) => {
     return res.json({
       data: {
         ...stripInternalOrderFields(base),
+        ...computePaymentTiming(order),
+        canRetryPayment: canRetryPayment(order),
         financials: financialsForBuyer(order),
         deliveryStatusLabel,
         deliveryEta

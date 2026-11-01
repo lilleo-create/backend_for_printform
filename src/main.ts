@@ -25,6 +25,7 @@ import { debugRoutes } from "./routes/debugRoutes";
 import { cdekRoutes } from "./routes/cdekRoutes";
 import { shipmentsRoutes } from "./routes/shipmentsRoutes";
 import { startShipmentsSyncJob } from "./jobs/shipmentsSyncJob";
+import { startPaymentExpiryJob } from "./jobs/paymentExpiryJob";
 import { reviewCrudRoutes, reviewReplyCrudRoutes } from "./routes/reviewCrudRoutes";
 
 import { errorHandler } from "./middleware/errorHandler";
@@ -237,7 +238,10 @@ const PORT = Number(process.env.PORT) || env.port || 4000;
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`API running on ${PORT}`);
-  if (env.isProduction) startShipmentsSyncJob();
+  if (env.isProduction) {
+    startShipmentsSyncJob();
+    startPaymentExpiryJob();
+  }
 });
 
 /*

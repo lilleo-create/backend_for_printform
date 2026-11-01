@@ -70,6 +70,7 @@ test('startPayment double-click with same paymentAttemptKey -> 1 order, 1 paymen
   };
   (prisma.$transaction as any) = async (cb: any) =>
     cb({
+      $queryRaw: async () => [],
       order: {
         findUnique: async () => ({ id: 'order-1', total: 100, currency: 'RUB', paymentId: null }),
         updateMany: async () => ({ count: 1 }),
@@ -237,6 +238,7 @@ test('startPayment rejects multi-seller checkout items', async () => {
 test('full refund returns only buyer-paid total for seller-sponsored delivery', async () => {
   (prisma.$transaction as any) = async (cb: any) =>
     cb({
+      $queryRaw: async () => [],
       order: {
         findFirst: async () => ({
           id: 'order-1',
@@ -286,6 +288,7 @@ test('full refund returns only buyer-paid total for seller-sponsored delivery', 
 test('createOrderCancellationRefund marks order CANCELLED with REFUNDED when refund is succeeded immediately', async () => {
   (prisma.$transaction as any) = async (cb: any) =>
     cb({
+      $queryRaw: async () => [],
       order: {
         findFirst: async () => ({
           id: 'order-1',
@@ -323,9 +326,69 @@ test('createOrderCancellationRefund marks order CANCELLED with REFUNDED when ref
   assert.equal(order.payoutStatus, 'BLOCKED');
 });
 
+test('buyer cannot self-cancel a paid order after production starts', async () => {
+  (prisma.$transaction as any) = async (cb: any) => cb({
+    $queryRaw: async () => [],
+    order: { findFirst: async () => ({ id: 'order-1', buyerId: 'buyer-1', status: 'PRINTING', paymentStatus: 'PAID', shipment: null, payments: [] }) }
+  });
+  await assert.rejects(
+    () => paymentFlowService.createOrderCancellationRefund({ orderId: 'order-1', buyerId: 'buyer-1' }),
+    /PRODUCTION_ALREADY_STARTED/
+  );
+});
+
+test('admin may cancel a paid printing order through the shared refund service', async () => {
+  (prisma.$transaction as any) = async (cb: any) => cb({
+    $queryRaw: async () => [],
+    order: {
+      findFirst: async () => ({ id: 'order-1', status: 'PRINTING', paymentStatus: 'PAID', total: 10000, currency: 'RUB', shipment: null, payments: [{ externalId: 'ext-pay-1' }] }),
+      update: async ({ data }: any) => ({ id: 'order-1', ...data })
+    },
+    refund: {
+      aggregate: async () => ({ _sum: { amount: 0 } }),
+      create: async ({ data }: any) => ({ id: 'refund-1', ...data })
+    }
+  });
+  (yookassaService.createRefund as any) = async () => ({ id: 'ext-refund-1', status: 'pending', payload: {} });
+  const result = await paymentFlowService.createOrderCancellationRefund({ orderId: 'order-1', actor: 'ADMIN', reason: 'seller unable to fulfill' });
+  assert.equal(result.order.status, 'CANCELLED');
+  assert.equal(result.order.paymentStatus, 'REFUND_PENDING');
+});
+
+test('unpaid buyer cancellation blocks the order without creating a refund', async () => {
+  let refunded = 0;
+  (yookassaService.createRefund as any) = async () => { refunded++; throw new Error('SHOULD_NOT_CALL'); };
+  (prisma.$transaction as any) = async (cb: any) => cb({
+    $queryRaw: async () => [],
+    order: {
+      findFirst: async () => ({ id: 'order-1', buyerId: 'buyer-1', status: 'CREATED', paymentStatus: 'PENDING_PAYMENT', paidAt: null }),
+      update: async ({ data }: any) => ({ id: 'order-1', ...data })
+    }
+  });
+  const result = await paymentFlowService.cancelUnpaidOrder('order-1', 'buyer-1');
+  assert.equal(result.status, 'CANCELLED');
+  assert.equal(result.paymentStatus, 'CANCELLED');
+  assert.equal(result.paymentExpiresAt, null);
+  assert.equal(refunded, 0);
+});
+
+test('duplicate cancellation with refund pending returns existing refund without provider call', async () => {
+  let providerCalls = 0;
+  (yookassaService.createRefund as any) = async () => { providerCalls++; throw new Error('SHOULD_NOT_CALL'); };
+  (prisma.$transaction as any) = async (cb: any) => cb({
+    $queryRaw: async () => [],
+    order: { findFirst: async () => ({ id: 'order-1', buyerId: 'buyer-1', status: 'CANCELLED', paymentStatus: 'REFUND_PENDING', shipment: null, payments: [] }) },
+    refund: { findFirst: async () => ({ id: 'refund-1', status: 'PENDING' }) }
+  });
+  const result = await paymentFlowService.createOrderCancellationRefund({ orderId: 'order-1', buyerId: 'buyer-1' });
+  assert.equal(result.refund?.id, 'refund-1');
+  assert.equal(providerCalls, 0);
+});
+
 test('createOrderCancellationRefund throws REFUND_CREATE_FAILED when YooKassa refund create fails', async () => {
   (prisma.$transaction as any) = async (cb: any) =>
     cb({
+      $queryRaw: async () => [],
       order: {
         findFirst: async () => ({
           id: 'order-1',
