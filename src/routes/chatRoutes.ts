@@ -19,6 +19,13 @@ const messageSchema = z.object({
   text: z.string().trim().min(1).max(2000)
 });
 
+const quickMessageSchema = messageSchema.extend({
+  topic: z.string().trim().min(1).max(120)
+});
+
+const QUICK_SUPPORT_ACKNOWLEDGEMENT = 'Сейчас позову оператора.';
+const SYSTEM_SUPPORT_AUTHOR_ID = 'SYSTEM_SUPPORT';
+
 const supportTopicSchema = z.string().trim().min(1).max(120).optional();
 
 const sellerCreateThreadSchema = z.object({
@@ -156,6 +163,48 @@ chatRoutes.post('/threads', requireAuth, writeLimiter, async (req: AuthRequest, 
         topic: result.thread.supportTopic ?? DEFAULT_SUPPORT_TOPIC
       }
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+chatRoutes.post('/support/quick-message', requireAuth, writeLimiter, async (req: AuthRequest, res, next) => {
+  try {
+    const payload = quickMessageSchema.parse(req.body ?? {});
+    const userId = req.user!.userId;
+    const topic = normalizeSupportTopic({ topic: payload.topic });
+    const result = await prisma.$transaction(async (tx) => {
+      let thread = await tx.chatThread.findFirst({
+        where: { kind: 'SUPPORT', status: 'ACTIVE', userId, supportTopic: topic, returnRequestId: null, deletedAt: null },
+        include: includeThreadRelations,
+        orderBy: { createdAt: 'desc' }
+      });
+      const created = !thread;
+      if (!thread) {
+        thread = await tx.chatThread.create({
+          data: { kind: 'SUPPORT', status: 'ACTIVE', userId, supportTopic: topic },
+          include: includeThreadRelations
+        });
+      }
+      const userMessage = await tx.chatMessage.create({
+        data: { threadId: thread.id, authorRole: 'USER', authorId: userId, text: payload.text }
+      });
+      const acknowledgementMessage = await tx.chatMessage.create({
+        data: {
+          threadId: thread.id,
+          authorRole: 'ADMIN',
+          authorId: SYSTEM_SUPPORT_AUTHOR_ID,
+          text: QUICK_SUPPORT_ACKNOWLEDGEMENT
+        }
+      });
+      const updatedThread = await tx.chatThread.update({
+        where: { id: thread.id },
+        data: { lastMessageAt: acknowledgementMessage.createdAt },
+        include: includeThreadRelations
+      });
+      return { thread: mapThreadStatus(updatedThread), userMessage, acknowledgementMessage, created };
+    });
+    return res.status(result.created ? 201 : 200).json({ data: result });
   } catch (error) {
     next(error);
   }

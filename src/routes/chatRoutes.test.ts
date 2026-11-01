@@ -112,3 +112,68 @@ test('POST /chats/threads creates support thread with GENERAL topic fallback', a
   assert.equal(response.body.data.topic, 'GENERAL');
   assert.equal(response.body.data.thread.supportTopic, 'GENERAL');
 });
+
+test('quick support action persists user question and one automated admin acknowledgement', async () => {
+  (prisma.user.findUnique as any) = async () => ({ role: 'BUYER' });
+  const now = new Date('2026-11-01T10:00:00.000Z');
+  const created: any[] = [];
+  let threadCreates = 0;
+  const tx = {
+    chatThread: {
+      findFirst: async () => null,
+      create: async ({ data }: any) => {
+        threadCreates += 1;
+        return { ...data, id: 'thread-1', createdAt: now };
+      },
+      update: async ({ data }: any) => ({ id: 'thread-1', kind: 'SUPPORT', status: 'ACTIVE', supportTopic: 'Доставка', ...data })
+    },
+    chatMessage: {
+      create: async ({ data }: any) => {
+        const message = { ...data, id: `message-${created.length + 1}`, createdAt: now };
+        created.push(message);
+        return message;
+      }
+    }
+  };
+  (prisma.$transaction as any) = async (callback: any) => callback(tx);
+  const response = await request(buildApp()).post('/chats/support/quick-message')
+    .set('Authorization', `Bearer ${tokenFor('buyer-1')}`)
+    .send({ topic: 'Доставка', text: 'Хочу уточнить срок доставки.' });
+  assert.equal(response.status, 201);
+  assert.equal(threadCreates, 1);
+  assert.equal(created.length, 2);
+  assert.deepEqual(created.map(message => message.authorRole), ['USER', 'ADMIN']);
+  assert.equal(created[0].authorId, 'buyer-1');
+  assert.equal(created[1].authorId, 'SYSTEM_SUPPORT');
+  assert.equal(created[1].text, 'Сейчас позову оператора.');
+  assert.equal(response.body.data.userMessage.id, 'message-1');
+  assert.equal(response.body.data.acknowledgementMessage.id, 'message-2');
+});
+
+test('quick support action reuses an active thread without creating another', async () => {
+  (prisma.user.findUnique as any) = async () => ({ role: 'BUYER' });
+  const now = new Date('2026-11-01T10:00:00.000Z');
+  const persisted: any[] = [];
+  let threadCreates = 0;
+  (prisma.$transaction as any) = async (callback: any) => callback({
+    chatThread: {
+      findFirst: async () => ({ id: 'existing-thread', kind: 'SUPPORT', status: 'ACTIVE', supportTopic: 'Доставка' }),
+      create: async () => { threadCreates += 1; throw new Error('unexpected create'); },
+      update: async ({ where, data }: any) => ({ id: where.id, status: 'ACTIVE', ...data })
+    },
+    chatMessage: {
+      create: async ({ data }: any) => {
+        persisted.push(data);
+        return { ...data, id: `message-${persisted.length}`, createdAt: now };
+      }
+    }
+  });
+  const response = await request(buildApp()).post('/chats/support/quick-message')
+    .set('Authorization', `Bearer ${tokenFor('buyer-1')}`)
+    .send({ topic: 'Доставка', text: 'Где заказ?' });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.data.created, false);
+  assert.equal(response.body.data.thread.id, 'existing-thread');
+  assert.equal(threadCreates, 0);
+  assert.equal(persisted.length, 2);
+});
