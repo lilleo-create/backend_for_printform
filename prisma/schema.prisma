@@ -643,9 +643,24 @@ model ChatMessage {
   text       String
   createdAt  DateTime              @default(now())
   thread     ChatThread            @relation(fields: [threadId], references: [id])
+  attachments ChatMessageAttachment[]
 
   @@index([threadId])
   @@index([createdAt])
+}
+
+model ChatMessageAttachment {
+  id        String      @id @default(cuid())
+  messageId String
+  type      String      @default("IMAGE")
+  url       String
+  fileName  String
+  mime      String
+  size      Int
+  createdAt DateTime    @default(now())
+  message   ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
 }
 
 model ReferenceCategory {

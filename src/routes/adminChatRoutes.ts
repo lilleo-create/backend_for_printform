@@ -5,6 +5,7 @@ import { requireAuth, requireAdmin, AuthRequest } from '../middleware/authMiddle
 import { prisma } from '../lib/prisma';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { getChatThreadStatusLabelRu } from '../utils/statusLabels';
+import { chatImageUpload, persistChatImages, discardChatImages } from '../services/chatImages';
 
 export const adminChatRoutes = Router();
 
@@ -15,9 +16,7 @@ const listSchema = z.object({
   q: z.string().trim().min(1).optional()
 });
 
-const messageSchema = z.object({
-  text: z.string().trim().min(1).max(2000)
-});
+const messageSchema = z.object({ text: z.string().trim().max(2000).optional() }).strict();
 
 const statusSchema = z.object({
   status: z.enum(['ACTIVE', 'CLOSED'])
@@ -47,7 +46,7 @@ adminChatRoutes.get('/', async (req, res, next) => {
       where: { ...where, deletedAt: null },
       include: {
         user: { select: { id: true, name: true, email: true } },
-        messages: { orderBy: { createdAt: 'desc' }, take: 1 },
+        messages: { orderBy: { createdAt: 'desc' }, take: 1, include: { attachments: true } },
         returnRequest: {
           include: {
             photos: true,
@@ -124,7 +123,8 @@ adminChatRoutes.get('/:id', async (req, res, next) => {
     }
     const messages = await prisma.chatMessage.findMany({
       where: { threadId: thread.id },
-      orderBy: { createdAt: 'asc' }
+      orderBy: { createdAt: 'asc' },
+      include: { attachments: true }
     });
     res.json({
       data: {
@@ -140,9 +140,13 @@ adminChatRoutes.get('/:id', async (req, res, next) => {
   }
 });
 
-adminChatRoutes.post('/:id/messages', writeLimiter, async (req: AuthRequest, res, next) => {
+adminChatRoutes.post('/:id/messages', writeLimiter, chatImageUpload, async (req: AuthRequest, res, next) => {
+  let savedPaths: string[] = [];
   try {
-    const payload = messageSchema.parse(req.body);
+    const payload = messageSchema.parse(req.body ?? {});
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    const text = payload.text ?? '';
+    if (!text && !files.length) return res.status(400).json({ error: { code: 'CHAT_MESSAGE_EMPTY' } });
     const thread = await prisma.chatThread.findUnique({ where: { id: req.params.id } });
     if (!thread) {
       return res.status(404).json({ error: { code: 'CHAT_NOT_FOUND' } });
@@ -150,20 +154,28 @@ adminChatRoutes.post('/:id/messages', writeLimiter, async (req: AuthRequest, res
     if (thread.status === 'CLOSED') {
       return res.status(403).json({ error: { code: 'CHAT_CLOSED' } });
     }
-    const message = await prisma.chatMessage.create({
-      data: {
-        threadId: thread.id,
-        authorRole: 'ADMIN',
-        authorId: req.user!.userId,
-        text: payload.text
-      }
-    });
-    await prisma.chatThread.update({
-      where: { id: thread.id },
-      data: { lastMessageAt: message.createdAt }
+    const saved = await persistChatImages(files);
+    savedPaths = saved.paths;
+    const message = await prisma.$transaction(async tx => {
+      const created = await tx.chatMessage.create({
+        data: {
+          threadId: thread.id,
+          authorRole: 'ADMIN',
+          authorId: req.user!.userId,
+          text,
+          attachments: { create: saved.attachments }
+        },
+        include: { attachments: true }
+      });
+      await tx.chatThread.update({ where: { id: thread.id }, data: { lastMessageAt: created.createdAt } });
+      return created;
     });
     res.status(201).json({ data: message });
   } catch (error) {
+    await discardChatImages(savedPaths);
+    if (error instanceof Error && ['CHAT_IMAGE_TYPE_INVALID', 'CHAT_IMAGE_TOO_LARGE'].includes(error.message)) {
+      return res.status(400).json({ error: { code: error.message } });
+    }
     next(error);
   }
 });

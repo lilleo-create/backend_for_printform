@@ -79,7 +79,7 @@ test('POST /chats/threads returns existing seller thread for same buyer + seller
   assert.equal(second.body.data.thread.id, 'thread-seller-1');
 });
 
-test('POST /chats/threads creates support thread with GENERAL topic fallback', async () => {
+test('legacy POST /chats/threads only returns an existing support thread and never creates an empty one', async () => {
   (prisma.user.findUnique as any) = async ({ where }: any) => {
     if (where.id === 'buyer-1') return { role: 'BUYER' };
     return null;
@@ -98,6 +98,7 @@ test('POST /chats/threads creates support thread with GENERAL topic fallback', a
     updatedAt: new Date('2026-03-22T00:00:00.000Z'),
     returnRequest: null
   });
+  (prisma.chatThread.findFirst as any) = async () => null;
 
   const app = buildApp();
   const auth = `Bearer ${tokenFor('buyer-1')}`;
@@ -107,10 +108,8 @@ test('POST /chats/threads creates support thread with GENERAL topic fallback', a
     .set('Authorization', auth)
     .send({ kind: 'SUPPORT' });
 
-  assert.equal(response.status, 201);
-  assert.equal(response.body.data.created, true);
-  assert.equal(response.body.data.topic, 'GENERAL');
-  assert.equal(response.body.data.thread.supportTopic, 'GENERAL');
+  assert.equal(response.status, 409);
+  assert.equal(response.body.error.code, 'SUPPORT_MESSAGE_REQUIRED');
 });
 
 test('quick support action persists user question and one automated admin acknowledgement', async () => {
@@ -175,5 +174,5 @@ test('quick support action reuses an active thread without creating another', as
   assert.equal(response.body.data.created, false);
   assert.equal(response.body.data.thread.id, 'existing-thread');
   assert.equal(threadCreates, 0);
-  assert.equal(persisted.length, 2);
+  assert.equal(persisted.length, 1);
 });

@@ -5,6 +5,8 @@ import { requireAuth, AuthRequest } from '../middleware/authMiddleware';
 import { prisma } from '../lib/prisma';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { getChatThreadStatusLabelRu } from '../utils/statusLabels';
+import { chatImageUpload, persistChatImages, discardChatImages } from '../services/chatImages';
+import { ORDINARY_SUPPORT_WHERE, writeSupportMessage } from '../services/activeSupportChatService';
 
 export const chatRoutes = Router();
 
@@ -15,16 +17,8 @@ const paginationSchema = z.object({
   before: z.string().datetime().optional()
 });
 
-const messageSchema = z.object({
-  text: z.string().trim().min(1).max(2000)
-});
-
-const quickMessageSchema = messageSchema.extend({
-  topic: z.string().trim().min(1).max(120)
-});
-
-const QUICK_SUPPORT_ACKNOWLEDGEMENT = 'Сейчас позову оператора.';
-const SYSTEM_SUPPORT_AUTHOR_ID = 'SYSTEM_SUPPORT';
+const messageSchema = z.object({ text: z.string().trim().max(2000).optional() }).strict();
+const supportMessageSchema = messageSchema.extend({ topic: z.string().trim().min(1).max(120).optional() });
 
 const supportTopicSchema = z.string().trim().min(1).max(120).optional();
 
@@ -105,23 +99,6 @@ const dedupeCreateSellerThread = async (params: { userId: string; sellerId: stri
   }
 };
 
-const dedupeCreateSupportThread = async (params: { userId: string; topic: string }) => {
-  try {
-    const created = await prisma.chatThread.create({
-      data: {
-        kind: 'SUPPORT',
-        status: 'ACTIVE',
-        userId: params.userId,
-        supportTopic: params.topic
-      },
-      include: includeThreadRelations
-    });
-    return { thread: created, created: true as const };
-  } catch (error) {
-    throw error;
-  }
-};
-
 const mapThreadStatus = <T extends { status: string }>(thread: T) => ({
   ...thread,
   statusLabelRu: getChatThreadStatusLabelRu(thread.status as any)
@@ -155,12 +132,13 @@ chatRoutes.post('/threads', requireAuth, writeLimiter, async (req: AuthRequest, 
     }
 
     const topic = normalizeSupportTopic(payload);
-    const result = await dedupeCreateSupportThread({ userId: req.user!.userId, topic });
-    return res.status(201).json({
+    const thread = await prisma.chatThread.findFirst({ where: { ...ORDINARY_SUPPORT_WHERE, userId: req.user!.userId } });
+    if (!thread) return res.status(409).json({ error: { code: 'SUPPORT_MESSAGE_REQUIRED' } });
+    return res.status(200).json({
       data: {
-        thread: mapThreadStatus(result.thread),
-        created: result.created,
-        topic: result.thread.supportTopic ?? DEFAULT_SUPPORT_TOPIC
+        thread: mapThreadStatus(thread),
+        created: false,
+        topic: thread.supportTopic ?? topic
       }
     });
   } catch (error) {
@@ -168,56 +146,45 @@ chatRoutes.post('/threads', requireAuth, writeLimiter, async (req: AuthRequest, 
   }
 });
 
-chatRoutes.post('/support/quick-message', requireAuth, writeLimiter, async (req: AuthRequest, res, next) => {
+const sendSupportMessage = async (req: AuthRequest, res: import('express').Response, next: import('express').NextFunction) => {
+  let savedPaths: string[] = [];
   try {
-    const payload = quickMessageSchema.parse(req.body ?? {});
-    const userId = req.user!.userId;
-    const topic = normalizeSupportTopic({ topic: payload.topic });
-    const result = await prisma.$transaction(async (tx) => {
-      let thread = await tx.chatThread.findFirst({
-        where: { kind: 'SUPPORT', status: 'ACTIVE', userId, supportTopic: topic, returnRequestId: null, deletedAt: null },
-        include: includeThreadRelations,
-        orderBy: { createdAt: 'desc' }
-      });
-      const created = !thread;
-      if (!thread) {
-        thread = await tx.chatThread.create({
-          data: { kind: 'SUPPORT', status: 'ACTIVE', userId, supportTopic: topic },
-          include: includeThreadRelations
-        });
-      }
-      const userMessage = await tx.chatMessage.create({
-        data: { threadId: thread.id, authorRole: 'USER', authorId: userId, text: payload.text }
-      });
-      const acknowledgementMessage = await tx.chatMessage.create({
-        data: {
-          threadId: thread.id,
-          authorRole: 'ADMIN',
-          authorId: SYSTEM_SUPPORT_AUTHOR_ID,
-          text: QUICK_SUPPORT_ACKNOWLEDGEMENT
-        }
-      });
-      const updatedThread = await tx.chatThread.update({
-        where: { id: thread.id },
-        data: { lastMessageAt: acknowledgementMessage.createdAt },
-        include: includeThreadRelations
-      });
-      return { thread: mapThreadStatus(updatedThread), userMessage, acknowledgementMessage, created };
+    const payload = supportMessageSchema.parse(req.body ?? {});
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    const text = payload.text ?? '';
+    if (!text && !files.length) return res.status(400).json({ error: { code: 'CHAT_MESSAGE_EMPTY' } });
+    const saved = await persistChatImages(files);
+    savedPaths = saved.paths;
+    const result = await writeSupportMessage({
+      userId: req.user!.userId,
+      topic: normalizeSupportTopic(payload),
+      text,
+      attachments: saved.attachments
     });
-    return res.status(result.created ? 201 : 200).json({ data: result });
+    return res.status(result.created ? 201 : 200).json({
+      data: { ...result, thread: mapThreadStatus(result.thread) }
+    });
   } catch (error) {
+    await discardChatImages(savedPaths);
+    if (error instanceof Error && ['CHAT_IMAGE_TYPE_INVALID', 'CHAT_IMAGE_TOO_LARGE'].includes(error.message)) {
+      return res.status(400).json({ error: { code: error.message } });
+    }
     next(error);
   }
-});
+};
+
+chatRoutes.post('/support/messages', requireAuth, writeLimiter, chatImageUpload, sendSupportMessage);
+chatRoutes.post('/support/quick-message', requireAuth, writeLimiter, chatImageUpload, sendSupportMessage);
 
 chatRoutes.get('/my', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const threads = await prisma.chatThread.findMany({
-      where: { userId: req.user!.userId },
+      where: { userId: req.user!.userId, deletedAt: null },
       include: {
         messages: {
           orderBy: { createdAt: 'desc' },
-          take: 1
+          take: 1,
+          include: { attachments: true }
         },
         ...includeThreadRelations
       },
@@ -249,7 +216,7 @@ chatRoutes.get('/:id', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const params = paginationSchema.parse(req.query);
     const thread = await prisma.chatThread.findFirst({
-      where: { id: req.params.id, userId: req.user!.userId },
+      where: { id: req.params.id, userId: req.user!.userId, deletedAt: null },
       include: includeThreadRelations
     });
     if (!thread) {
@@ -262,7 +229,8 @@ chatRoutes.get('/:id', requireAuth, async (req: AuthRequest, res, next) => {
         ...(params.before ? { createdAt: { lt: new Date(params.before) } } : {})
       },
       orderBy: { createdAt: 'desc' },
-      take: params.limit
+      take: params.limit,
+      include: { attachments: true }
     });
 
     res.json({
@@ -279,11 +247,15 @@ chatRoutes.get('/:id', requireAuth, async (req: AuthRequest, res, next) => {
   }
 });
 
-chatRoutes.post('/:id/messages', requireAuth, writeLimiter, async (req: AuthRequest, res, next) => {
+chatRoutes.post('/:id/messages', requireAuth, writeLimiter, chatImageUpload, async (req: AuthRequest, res, next) => {
+  let savedPaths: string[] = [];
   try {
-    const payload = messageSchema.parse(req.body);
+    const payload = messageSchema.parse(req.body ?? {});
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    const text = payload.text ?? '';
+    if (!text && !files.length) return res.status(400).json({ error: { code: 'CHAT_MESSAGE_EMPTY' } });
     const thread = await prisma.chatThread.findFirst({
-      where: { id: req.params.id, userId: req.user!.userId }
+      where: { id: req.params.id, userId: req.user!.userId, deletedAt: null }
     });
     if (!thread) {
       return res.status(404).json({ error: { code: 'CHAT_NOT_FOUND' } });
@@ -291,20 +263,36 @@ chatRoutes.post('/:id/messages', requireAuth, writeLimiter, async (req: AuthRequ
     if (thread.status === 'CLOSED') {
       return res.status(403).json({ error: { code: 'CHAT_CLOSED' } });
     }
-    const message = await prisma.chatMessage.create({
-      data: {
-        threadId: thread.id,
-        authorRole: 'USER',
-        authorId: req.user!.userId,
-        text: payload.text
-      }
-    });
-    await prisma.chatThread.update({
-      where: { id: thread.id },
-      data: { lastMessageAt: message.createdAt }
+    const saved = await persistChatImages(files);
+    savedPaths = saved.paths;
+    const message = await prisma.$transaction(async tx => {
+      const createdMessage = await tx.chatMessage.create({
+        data: {
+          threadId: thread.id,
+          authorRole: 'USER',
+          authorId: req.user!.userId,
+          text,
+          attachments: { create: saved.attachments }
+        },
+        include: { attachments: true }
+      });
+      const firstMessage = thread.kind === 'SUPPORT' && !thread.returnRequestId
+        && (await tx.chatMessage.count({ where: { threadId: thread.id } })) === 1;
+      const acknowledgement = firstMessage ? await tx.chatMessage.create({
+        data: { threadId: thread.id, authorRole: 'ADMIN', authorId: 'SYSTEM_SUPPORT', text: 'Сейчас позову оператора.' }
+      }) : null;
+      await tx.chatThread.update({
+        where: { id: thread.id },
+        data: { lastMessageAt: acknowledgement?.createdAt ?? createdMessage.createdAt }
+      });
+      return createdMessage;
     });
     res.status(201).json({ data: message });
   } catch (error) {
+    await discardChatImages(savedPaths);
+    if (error instanceof Error && ['CHAT_IMAGE_TYPE_INVALID', 'CHAT_IMAGE_TOO_LARGE'].includes(error.message)) {
+      return res.status(400).json({ error: { code: error.message } });
+    }
     next(error);
   }
 });
