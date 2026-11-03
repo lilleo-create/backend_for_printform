@@ -69,7 +69,7 @@ const reserveOtpAttempt = (phone: string, purpose: PrismaOtpPurpose, data: Prism
   prisma.$transaction(async (tx) => {
     // Serialize requests for the same normalized phone across processes before
     // counting and reserving a row. The provider call happens after commit.
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${phone}))`;
+    await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtext(${phone}))`;
     const limit = await guardOtpRequestRateLimits(tx, phone, purpose);
     if (limit.throttled) return null;
     return tx.phoneOtp.create({ data: { ...data, createdAt: limit.now } });
