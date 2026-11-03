@@ -17,7 +17,7 @@ Branch `infra-backups-monitoring` contains encrypted restic/S3 backup script wit
 ## Verification
 
 - Focused backend tests: 6/6 pass. Python backup/monitor tests: 8/8 pass. Backend build: pass. `git diff --check` on staged source: pass.
-- Full backend suite with dummy test-only env: 240 pass, 17 fail. Without required env: 102 pass, 34 fail; the additional 17 are missing `JWT_SECRET`/other local env, not infrastructure regressions. The 17 remaining failures are in pre-existing order/review/seller/payout tests and need separate baseline triage before a production deployment claim.
+- Full backend suite with dummy test-only env: 240 pass, 17 fail. The same suite on unchanged baseline `5e7333c`: 237 pass, the **same 17 tests fail**. Thus new failures: 0. Without required env: 102 pass, 34 fail; the additional 17 are missing `JWT_SECRET`/other local env. The 17 baseline failures are in order/review/seller/payout tests and need separate cleanup, but are not introduced by this patch.
 - Production commits and local health rechecked: `5e7333c`, `ad502d5`, HTTP 200. Production application code and config remain unchanged. The permissions correction above is the only production modification.
 
 ## Blocking inputs and next gates
