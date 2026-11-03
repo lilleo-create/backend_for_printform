@@ -56,7 +56,7 @@ def recent_http_errors(path: Path, now: float):
     return total, errors
 
 
-def assess(now: float, backup, payment, cdek, disk, inode, ready, services, pm2, http=None):
+def assess(now: float, backup, payment, cdek, disk, inode, ready, services, pm2, http=None, restart_loop=False):
     alerts = []
     if not ready:
         alerts.append('db_readiness_failed')
@@ -65,6 +65,8 @@ def assess(now: float, backup, payment, cdek, disk, inode, ready, services, pm2,
             alerts.append(f'{name}_down')
     if not pm2:
         alerts.append('backend_pm2_down')
+    if restart_loop:
+        alerts.append('backend_restart_loop')
     if http is not None and http[1] >= 5 and (http[0] < 20 or http[1] / http[0] >= 0.05):
         alerts.append('http_5xx_spike')
     for name, value in (('disk', disk), ('inode', inode)):
@@ -86,19 +88,21 @@ def command_ok(*command):
     return subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
 
 
-def backend_online():
+def backend_process():
     result = subprocess.run(['runuser', '-u', 'deploy', '--', 'pm2', 'jlist'],
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     if result.returncode:
-        return False
+        return False, 0
     try:
-        return any(item.get('name') == 'printform-backend' and item.get('pm2_env', {}).get('status') == 'online'
-                   for item in json.loads(result.stdout))
+        for item in json.loads(result.stdout):
+            if item.get('name') == 'printform-backend':
+                return item.get('pm2_env', {}).get('status') == 'online', int(item.get('pm2_env', {}).get('restart_time', 0))
+        return False, 0
     except (ValueError, TypeError):
-        return False
+        return False, 0
 
 
-def check():
+def check(previous=None):
     os.umask(0o077)
     now = time.time()
     usage = shutil.disk_usage('/')
@@ -111,12 +115,16 @@ def check():
     except Exception:
         ready = False
     services = {name: command_ok('systemctl', 'is-active', '--quiet', name) for name in ('nginx', 'postgresql')}
-    pm2 = backend_online()
+    pm2, restart_count = backend_process()
+    prior_count = (previous or {}).get('pm2RestartCount')
+    recent = now - timestamp((previous or {}).get('checkedAt')) <= 15 * 60
+    restart_loop = isinstance(prior_count, int) and recent and restart_count - prior_count >= 3
     alerts = assess(now, read_json(BACKUP_STATE), read_json(JOB_STATE / 'payment-expiry.json'),
                     read_json(JOB_STATE / 'cdek-sync.json'), disk, inode, ready, services, pm2,
-                    recent_http_errors(ACCESS_LOG, now))
+                    recent_http_errors(ACCESS_LOG, now), restart_loop)
     return {'checkedAt': int(now), 'status': 'ok' if not alerts else 'alert',
-            'alerts': alerts, 'diskPercent': disk, 'inodePercent': inode}
+            'alerts': alerts, 'diskPercent': disk, 'inodePercent': inode,
+            'pm2RestartCount': restart_count}
 
 
 def main():
@@ -126,9 +134,9 @@ def main():
     if not args.run:
         print(json.dumps({'event': 'monitor_dry_run', 'webhookConfigured': CONFIG.exists()}))
         return
-    result = check()
     STATE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     previous = read_json(STATE) or {}
+    result = check(previous)
     print(json.dumps(result))
     # A webhook is only sent for a new alert set, avoiding one notification per timer run.
     result['lastNotifiedAlerts'] = previous.get('lastNotifiedAlerts', [])

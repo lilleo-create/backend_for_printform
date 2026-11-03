@@ -31,6 +31,13 @@ class MonitorTests(unittest.TestCase):
                                 True, {'nginx': True, 'postgresql': True}, True, (10, 5))
         self.assertIn('http_5xx_spike', alerts)
 
+    def test_restart_loop(self):
+        now = 2000000000
+        good = {'lastSuccessAt': now, 'consecutiveFailures': 0}
+        alerts = monitor.assess(now, {'lastSuccessAt': now}, good, good, 40, 20,
+                                True, {'nginx': True, 'postgresql': True}, True, None, True)
+        self.assertIn('backend_restart_loop', alerts)
+
     def test_nginx_log_counts_recent_status_without_exposing_request(self):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / 'access.log'
