@@ -131,7 +131,8 @@ def main():
     previous = read_json(STATE) or {}
     print(json.dumps(result))
     # A webhook is only sent for a new alert set, avoiding one notification per timer run.
-    if result['alerts'] and result['alerts'] != previous.get('alerts') and CONFIG.exists():
+    result['lastNotifiedAlerts'] = previous.get('lastNotifiedAlerts', [])
+    if result['alerts'] and result['alerts'] != previous.get('lastNotifiedAlerts') and CONFIG.exists():
         settings = {}
         for line in CONFIG.read_text(encoding='utf-8').splitlines():
             if '=' in line and not line.lstrip().startswith('#'):
@@ -144,6 +145,9 @@ def main():
             with urlopen(request, timeout=10) as response:
                 if response.status >= 300:
                     raise RuntimeError('alert delivery failed')
+            result['lastNotifiedAlerts'] = result['alerts']
+    elif not result['alerts']:
+        result['lastNotifiedAlerts'] = []
     tmp = STATE.with_suffix('.tmp')
     tmp.write_text(json.dumps(result), encoding='utf-8')
     tmp.replace(STATE)
