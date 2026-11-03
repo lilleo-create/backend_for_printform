@@ -2,6 +2,7 @@ import { prisma } from '../lib/prisma';
 import { cdekWebhookService } from '../services/cdekWebhookService';
 import { mapCdekStatusToInternalDeliveryState } from '../services/cdekStatusMapper';
 import { safeCdekError } from '../services/safeCdekError';
+import { recordJobRun } from '../services/operationalState';
 
 const SYNC_INTERVAL_MS = 10 * 60 * 1000;
 let timer: NodeJS.Timeout | null = null;
@@ -10,9 +11,15 @@ let running = false;
 export const mapCdekStatus = mapCdekStatusToInternalDeliveryState;
 
 export const runShipmentsSyncJob = async () => {
-  const result = await cdekWebhookService.syncCdekStatusesForActiveOrders();
-  console.info('[SHIPMENTS_SYNC_JOB][CDEK]', result);
-  return result;
+  try {
+    const result = await cdekWebhookService.syncCdekStatusesForActiveOrders();
+    await recordJobRun('cdek-sync', { ok: true, counts: { total: result.total, synced: result.synced } });
+    console.info('[SHIPMENTS_SYNC_JOB][CDEK]', result);
+    return result;
+  } catch (error) {
+    await recordJobRun('cdek-sync', { ok: false }).catch(() => undefined);
+    throw error;
+  }
 };
 
 export const runShipmentSlaJob = async () => {

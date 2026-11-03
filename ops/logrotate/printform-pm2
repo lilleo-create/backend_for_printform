@@ -1,0 +1,10 @@
+/home/deploy/.pm2/logs/printform-backend-*.log {
+    daily
+    rotate 14
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su deploy deploy
+}

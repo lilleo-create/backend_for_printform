@@ -1,0 +1,10 @@
+[Unit]
+Description=Print-Form local checks every five minutes
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+Unit=printform-monitor.service
+
+[Install]
+WantedBy=timers.target

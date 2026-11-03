@@ -1,11 +1,19 @@
 import { expirePendingPayments } from '../utils/orderPayment';
+import { recordJobRun } from '../services/operationalState';
 
 const INTERVAL_MS = 60 * 1000;
 let timer: NodeJS.Timeout | null = null;
 let running = false;
 
 export const runPaymentExpiryJob = async () => {
-  await expirePendingPayments();
+  try {
+    const expired = await expirePendingPayments();
+    await recordJobRun('payment-expiry', { ok: true, counts: { expired } });
+    return expired;
+  } catch (error) {
+    await recordJobRun('payment-expiry', { ok: false }).catch(() => undefined);
+    throw error;
+  }
 };
 
 export const startPaymentExpiryJob = () => {

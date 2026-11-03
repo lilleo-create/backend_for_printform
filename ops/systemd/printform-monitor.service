@@ -1,0 +1,11 @@
+[Unit]
+Description=Print-Form local infrastructure checks
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /opt/printform-ops/monitor-production.py --run
+TimeoutStartSec=30s
+NoNewPrivileges=yes

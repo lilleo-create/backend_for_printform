@@ -19,7 +19,7 @@ export const canRetryPayment = (order: { paymentStatus: OrderPaymentStatus; paid
 
 export const expirePendingPayments = async () => {
   const now = new Date();
-  await prisma.order.updateMany({
+  const result = await prisma.order.updateMany({
     where: {
       paymentStatus: 'PENDING_PAYMENT',
       paidAt: null,
@@ -32,4 +32,5 @@ export const expirePendingPayments = async () => {
       statusUpdatedAt: now
     }
   });
+  return result.count;
 };

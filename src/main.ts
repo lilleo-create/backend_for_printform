@@ -25,6 +25,8 @@ import { debugRoutes } from "./routes/debugRoutes";
 import { cdekRoutes } from "./routes/cdekRoutes";
 import { shipmentsRoutes } from "./routes/shipmentsRoutes";
 import { privateFileRoutes } from "./routes/privateFileRoutes";
+import { createReadinessRouter } from "./routes/readinessRoutes";
+import { prisma } from "./lib/prisma";
 import { publicUploadGuard } from "./middleware/publicUploadGuard";
 import { startShipmentsSyncJob } from "./jobs/shipmentsSyncJob";
 import { startPaymentExpiryJob } from "./jobs/paymentExpiryJob";
@@ -159,6 +161,9 @@ app.get("/health", (_req, res) => {
     build: "server-2026-03-13",
   });
 });
+app.use('/ready', createReadinessRouter(async () => {
+  await prisma.$queryRaw`SELECT 1`;
+}));
 
 /*
 |--------------------------------------------------------------------------

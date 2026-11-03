@@ -1,0 +1,11 @@
+[Unit]
+Description=Print-Form backup every six hours
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:15:00 UTC
+Persistent=true
+RandomizedDelaySec=10m
+Unit=printform-backup.service
+
+[Install]
+WantedBy=timers.target
