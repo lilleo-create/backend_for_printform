@@ -40,7 +40,6 @@ const buildTelegramPayload = (otpId: string) => {
   if (!normalized) {
     console.error('[OTP] telegram payload invalid', {
       reason: 'EMPTY',
-      payload: otpId,
       payloadLengthChars: otpId.length,
       payloadLengthBytes: Buffer.byteLength(otpId, 'utf8')
     });
@@ -52,7 +51,6 @@ const buildTelegramPayload = (otpId: string) => {
   if (payloadBytes > 128) {
     console.error('[OTP] telegram payload invalid', {
       reason: 'TOO_LONG',
-      payload,
       payloadLengthChars: payload.length,
       payloadLengthBytes: payloadBytes
     });
@@ -75,7 +73,6 @@ export const otpDeliveryService = {
     console.info('[OTP] delivery config', {
       otpProvider: env.otpProvider,
       hasTelegramGatewayToken: Boolean(env.telegramGatewayToken),
-      telegramGatewayBaseUrl: env.telegramGatewayBaseUrl,
       smsProvider: env.smsProvider
     });
 
@@ -84,12 +81,10 @@ export const otpDeliveryService = {
 
     if (!callbackUrlEnabled) {
       console.warn('[OTP] telegram callback_url disabled for local dev or invalid URL', {
-        callbackUrl: payload.callbackUrl,
         callbackUrlIncludedInRequest: false
       });
     } else {
       console.info('[OTP] telegram callback_url enabled', {
-        callbackUrl: payload.callbackUrl,
         callbackUrlIncludedInRequest: true
       });
     }
@@ -100,26 +95,22 @@ export const otpDeliveryService = {
       } else {
         try {
           console.info('[OTP] telegram checkSendAbility:request', {
-            phone: payload.phone,
             internalRequestId: payload.requestId
           });
           const ability = await telegramGatewayService.checkSendAbility(payload.phone);
           const telegramRequestId = ability.requestId;
           console.info('[OTP] telegram checkSendAbility:response', {
-            phone: payload.phone,
             internalRequestId: payload.requestId,
             telegramRequestId,
-            response: ability
+            canSend: ability.canSend
           });
 
           if (!ability.canSend) {
-            const reason = ability.reason ?? 'UNKNOWN_REASON';
-            const error = new Error(`TELEGRAM_CANNOT_SEND:${reason}`);
+            const error = new Error('TELEGRAM_CANNOT_SEND');
             console.error('[OTP] telegram checkSendAbility rejected sending', {
-              phone: payload.phone,
               internalRequestId: payload.requestId,
               telegramRequestId,
-              reason
+              rejected: true
             });
             throw error;
           }
@@ -131,19 +122,15 @@ export const otpDeliveryService = {
           const { payload: telegramPayload, payloadBytes } = buildTelegramPayload(payload.providerPayload);
 
           console.info('[OTP] telegram sendVerificationMessage:request', {
-            phone: payload.phone,
             internalRequestId: payload.requestId,
             telegramRequestId,
-            request_id: telegramRequestId,
-            callbackUrl: callbackUrlForTelegram,
             callbackUrlIncludedInRequest: Boolean(callbackUrlForTelegram),
             ttlSeconds: payload.ttlSeconds,
-            payload: telegramPayload
+            payloadLengthBytes: payloadBytes
           });
           console.debug('[OTP] telegram payload details', {
             internalRequestId: payload.requestId,
             telegramRequestId,
-            payload: telegramPayload,
             payloadLengthChars: telegramPayload.length,
             payloadLengthBytes: payloadBytes
           });
@@ -157,15 +144,15 @@ export const otpDeliveryService = {
             providerPayload: telegramPayload
           });
           console.info('[OTP] telegram sendVerificationMessage:response', {
-            phone: payload.phone,
             internalRequestId: payload.requestId,
             telegramRequestId,
             callbackUrlIncludedInRequest: Boolean(callbackUrlForTelegram),
-            response: sent
+            delivered: sent.ok,
+            deliveryStatus: sent.deliveryStatus
           });
 
           if (!sent.ok) {
-            throw new Error(`TELEGRAM_SEND_FAILED:${sent.error ?? 'UNKNOWN_ERROR'}`);
+            throw new Error('TELEGRAM_SEND_FAILED');
           }
 
           if (!sent.deliveryStatus) {
@@ -181,15 +168,14 @@ export const otpDeliveryService = {
           };
         } catch (error) {
           console.error('[OTP] telegram delivery failed', {
-            phone: payload.phone,
             internalRequestId: payload.requestId,
             callbackUrlIncludedInRequest: Boolean(callbackUrlForTelegram),
-            error
+            errorCode: error instanceof Error ? error.name : 'UNKNOWN'
           });
           if (error instanceof Error && error.message.startsWith('TELEGRAM_')) {
             throw error;
           }
-          throw new Error(`TELEGRAM_SEND_FAILED:${error instanceof Error ? error.message : 'UNKNOWN_ERROR'}`);
+          throw new Error('TELEGRAM_SEND_FAILED');
         }
       }
     }

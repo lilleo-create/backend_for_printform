@@ -5,8 +5,9 @@ export interface SmsProvider {
 }
 
 class ConsoleSmsProvider implements SmsProvider {
-  async sendOtp(phoneE164: string, message: string) {
-    console.log(`[SMS] ${phoneE164}: ${message}`);
+  async sendOtp(_phoneE164: string, _message: string) {
+    if (env.isProduction) throw new Error('SMS_PROVIDER_NOT_CONFIGURED');
+    console.info('[SMS] development OTP delivered through API response');
   }
 }
 

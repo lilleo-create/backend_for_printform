@@ -11,6 +11,8 @@ import { publicUploadGuard } from '../middleware/publicUploadGuard';
 import { privateFileRoutes } from './privateFileRoutes';
 import { internalRoutes } from './internalRoutes';
 import { shipmentsRoutes } from './shipmentsRoutes';
+import { cdekRoutes } from './cdekRoutes';
+import { cdekService } from '../services/cdekService';
 import { shipmentService } from '../services/shipmentService';
 import { cdekWebhookService } from '../services/cdekWebhookService';
 import { privateChatDir, privateReturnsDir } from '../services/privateFileStorage';
@@ -24,6 +26,7 @@ const app = (publicRoot: string) => {
   server.use('/private-files', privateFileRoutes);
   server.use('/internal', internalRoutes);
   server.use('/shipments', shipmentsRoutes);
+  server.use('/cdek', cdekRoutes);
   return server;
 };
 
@@ -103,5 +106,43 @@ test('operational POST routes reject anonymous, buyer and seller; admin can run 
     (prisma.user.findUnique as any) = oldUser;
     (shipmentService.syncByShipmentId as any) = oldSync;
     (cdekWebhookService.syncCdekStatusesForActiveOrders as any) = oldActive;
+  }
+});
+
+test('tracking requires an owner and returns only allowlisted fields', async () => {
+  const oldUser = prisma.user.findUnique;
+  const oldShipment = prisma.orderShipment.findFirst;
+  const oldProvider = cdekService.getOrderByTracking;
+  const lookups: unknown[] = [];
+  let providerCalls = 0;
+  (prisma.user.findUnique as any) = async ({ where }: any) => ({ role: where.id === 'admin-1' ? 'ADMIN' : 'BUYER', sellerProfile: null });
+  (prisma.orderShipment.findFirst as any) = async ({ where }: any) => {
+    lookups.push(where);
+    return where.order.OR && where.order.OR[0].buyerId === 'buyer-1'
+      ? { status: 'IN_TRANSIT', updatedAt: new Date('2026-11-03T12:00:00Z'), order: { trackingNumber: '1234567890', carrier: 'CDEK' } }
+      : null;
+  };
+  (cdekService.getOrderByTracking as any) = async () => {
+    providerCalls++;
+    return { trackingNumber: '1234567890', status: 'IN_TRANSIT', raw: { entity: { statuses: [] } } };
+  };
+  try {
+    const server = app(path.join(process.cwd(), 'uploads'));
+    assert.equal((await request(server).get('/shipments/track/1234567890')).status, 401);
+    const owner = await request(server).get('/shipments/track/1234567890').set('Authorization', token('buyer-1'));
+    assert.equal(owner.status, 200);
+    assert.deepEqual(Object.keys(owner.body.data).sort(), ['carrier', 'status', 'trackingNumber', 'updatedAt']);
+    assert.equal((await request(server).get('/shipments/track/1234567890').set('Authorization', token('buyer-2'))).status, 404);
+    assert.equal((await request(server).get('/cdek/track/1234567890')).status, 401);
+    assert.equal((await request(server).get('/cdek/track/1234567890').set('Authorization', token('buyer-2'))).status, 404);
+    assert.equal(providerCalls, 0);
+    const ownedProvider = await request(server).get('/cdek/track/1234567890').set('Authorization', token('buyer-1'));
+    assert.equal(ownedProvider.status, 200);
+    assert.equal(providerCalls, 1);
+    assert.equal(lookups.length, 4);
+  } finally {
+    (prisma.user.findUnique as any) = oldUser;
+    (prisma.orderShipment.findFirst as any) = oldShipment;
+    (cdekService.getOrderByTracking as any) = oldProvider;
   }
 });

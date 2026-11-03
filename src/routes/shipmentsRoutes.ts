@@ -1,49 +1,32 @@
 import { Router } from 'express';
-import { prisma } from '../lib/prisma';
-import { cdekService } from '../services/cdekService';
 import { shipmentService } from '../services/shipmentService';
-import { requireAuth, requireAdmin } from '../middleware/authMiddleware';
+import { requireAuth, requireAdmin, type AuthRequest } from '../middleware/authMiddleware';
 import { writeLimiter } from '../middleware/rateLimiters';
+import { findAuthorizedTracking } from '../services/trackingAccess';
 
 export const shipmentsRoutes = Router();
 
-shipmentsRoutes.get('/track/:trackingNumber', async (req, res, next) => {
+shipmentsRoutes.get('/track/:trackingNumber', requireAuth, async (req: AuthRequest, res, next) => {
   try {
     const trackingNumber = String(req.params.trackingNumber ?? '').trim();
     if (!trackingNumber) {
       return res.status(400).json({ error: { code: 'TRACKING_NUMBER_REQUIRED' } });
     }
 
-    const shipment = await prisma.orderShipment.findFirst({
-      where: { order: { trackingNumber } },
-      include: { order: true }
-    });
+    const shipment = await findAuthorizedTracking(trackingNumber, req.user!);
 
     if (shipment) {
       return res.json({
         data: {
-          id: shipment.id,
-          orderId: shipment.orderId,
           trackingNumber: shipment.order.trackingNumber,
           carrier: shipment.order.carrier,
           status: shipment.status,
-          pvz: shipment.destinationStationId,
-          dropoffPvz: shipment.sourceStationId,
           updatedAt: shipment.updatedAt
         }
       });
     }
 
-    const cdekInfo = await cdekService.getOrderByTracking(trackingNumber);
-
-    return res.json({
-      data: {
-        trackingNumber: cdekInfo.trackingNumber,
-        carrier: 'CDEK',
-        status: cdekInfo.status,
-        updatedAt: new Date().toISOString()
-      }
-    });
+    return res.status(404).json({ error: { code: 'TRACKING_NOT_FOUND' } });
   } catch (error) {
     next(error);
   }

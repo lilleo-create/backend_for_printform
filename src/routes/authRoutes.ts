@@ -639,9 +639,6 @@ const verifyPurposeAccess = async (
     console.info("[AUTH][OTP_VERIFY][PHONE_MISMATCH]", {
       purpose,
       userId: user.id,
-      storedUserPhone: user.phone,
-      incomingPhoneRaw: phoneRaw,
-      incomingPhoneNormalized: phone,
     });
     return {
       error: { status: 400, body: { error: { code: "PHONE_MISMATCH" } } },

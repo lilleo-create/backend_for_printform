@@ -8,6 +8,8 @@ import { buildShippingSnapshot, toCdekPackage, ShippingQuoteError } from '../ser
 import { authenticate, type AuthRequest } from '../middleware/authMiddleware';
 import { prisma } from '../lib/prisma';
 import type { Prisma } from '@prisma/client';
+import { findAuthorizedTracking } from '../services/trackingAccess';
+import { authLimiter } from '../middleware/rateLimiters';
 
 export const cdekRoutes = Router();
 
@@ -667,10 +669,12 @@ cdekRoutes.get('/print/barcode/:printUuid.pdf', authenticate, async (req: AuthRe
   }
 });
 
-cdekRoutes.get('/track/:trackingNumber', authenticate, async (req: AuthRequest, res, next) => {
+cdekRoutes.get('/track/:trackingNumber', authenticate, authLimiter, async (req: AuthRequest, res, next) => {
   try {
     const trackingNumber = String(req.params.trackingNumber ?? '').trim();
     if (!trackingNumber) return res.status(400).json({ error: { code: 'TRACKING_NUMBER_REQUIRED' } });
+    const shipment = await findAuthorizedTracking(trackingNumber, req.user!);
+    if (!shipment) return res.status(404).json({ error: { code: 'TRACKING_NOT_FOUND' } });
     const cdek = await cdekService.getOrderByTracking(trackingNumber);
     const statuses = Array.isArray(cdek.raw.entity?.statuses) ? cdek.raw.entity!.statuses! : [];
     const events = statuses.map((entry) => ({ code: String(entry.code ?? '').trim(), dateTime: null }));

@@ -29,11 +29,9 @@ const request = async <T>(path: string, body: Record<string, unknown>) => {
   if (!response.ok) {
     console.error('[OTP][TelegramGateway] API error', {
       path,
-      status: response.status,
-      requestBody: body,
-      responseBody: text
+      status: response.status
     });
-    throw new Error(`TELEGRAM_GATEWAY_ERROR:${response.status}:${text}`);
+    throw new Error(`TELEGRAM_GATEWAY_ERROR:${response.status}`);
   }
 
   const parsed = text ? (JSON.parse(text) as T) : ({} as T);

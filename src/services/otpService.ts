@@ -10,6 +10,7 @@ import axios from 'axios';
 
 const otpRequestWindowMs = 15 * 60 * 1000;
 const otpMaxPerPhoneWindow = 3;
+const otpMaxPerPhoneAcrossPurposes = 6;
 
 export type OtpPurpose =
   | 'buyer_register_phone'
@@ -52,26 +53,38 @@ const purposeToDb: Record<OtpPurpose, PrismaOtpPurpose> = {
 const toJsonSafe = (value: unknown): Prisma.InputJsonValue => { try { return value == null ? {} : JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue; } catch { return { value: String(value) }; } };
 const formatPurpose = (purpose: OtpPurpose) => ({ buyer_register_phone: 'подтверждения телефона при регистрации', buyer_change_phone: 'смены телефона', buyer_sensitive_action: 'подтверждения чувствительного действия', seller_connect_phone: 'подключения продавца', seller_change_payout_details: 'изменения реквизитов продавца', seller_payout_settings_verify: 'подтверждения настроек выплат', password_reset: 'сброса пароля', login_device: 'подтверждения нового устройства', oauth_phone_binding: 'привязки телефона через OAuth' }[purpose]);
 
-const guardOtpRequestRateLimits = async (phone: string, purpose: PrismaOtpPurpose) => {
+const guardOtpRequestRateLimits = async (db: Prisma.TransactionClient, phone: string, purpose: PrismaOtpPurpose) => {
   const now = new Date();
   const windowStart = new Date(now.getTime() - otpRequestWindowMs);
-  const recentCount = await prisma.phoneOtp.count({ where: { phone, purpose, createdAt: { gte: windowStart } } });
+  const phoneCount = await db.phoneOtp.count({ where: { phone, createdAt: { gte: windowStart } } });
+  if (phoneCount >= otpMaxPerPhoneAcrossPurposes) return { throttled: true as const, now };
+  const recentCount = await db.phoneOtp.count({ where: { phone, purpose, createdAt: { gte: windowStart } } });
   if (recentCount >= otpMaxPerPhoneWindow) return { throttled: true as const, now };
-  const lastOtp = await prisma.phoneOtp.findFirst({ where: { phone, purpose }, orderBy: { createdAt: 'desc' } });
+  const lastOtp = await db.phoneOtp.findFirst({ where: { phone, purpose }, orderBy: { createdAt: 'desc' } });
   if (lastOtp && now.getTime() - lastOtp.createdAt.getTime() < env.otpCooldownSeconds * 1000) return { throttled: true as const, now };
   return { throttled: false as const, now };
 };
 
-const requestPlusofonOtp = async (payload: { phone: string; purpose: OtpPurpose; ip?: string; userAgent?: string; skipRateLimit?: boolean }): Promise<OtpRequestResult> => {
+const reserveOtpAttempt = (phone: string, purpose: PrismaOtpPurpose, data: Prisma.PhoneOtpCreateInput) =>
+  prisma.$transaction(async (tx) => {
+    // Serialize requests for the same normalized phone across processes before
+    // counting and reserving a row. The provider call happens after commit.
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${phone}))`;
+    const limit = await guardOtpRequestRateLimits(tx, phone, purpose);
+    if (limit.throttled) return null;
+    return tx.phoneOtp.create({ data: { ...data, createdAt: limit.now } });
+  });
+
+const requestPlusofonOtp = async (payload: { phone: string; purpose: OtpPurpose; ip?: string; userAgent?: string }): Promise<OtpRequestResult> => {
   const phone = normalizePhone(payload.phone);
   const purpose = purposeToDb[payload.purpose];
-  const rateLimit = payload.skipRateLimit ? { throttled: false as const, now: new Date() } : await guardOtpRequestRateLimits(phone, purpose);
-  if (rateLimit.throttled) return { ok: true, throttled: true };
-  const now = rateLimit.now;
-  let requested;
-  try { requested = await plusofonService.requestCallToAuth(phone); } catch (error) { return { ok: false, error: mapPlusofonRequestError(error) }; }
+  const now = new Date();
   const expiresAt = new Date(now.getTime() + env.plusofonVerificationExpiresSec * 1000);
-  await prisma.phoneOtp.create({ data: { phone, purpose, codeHash: hashOtpCode(`plusofon:${requested.requestId}:${phone}:${now.toISOString()}`), channel: 'PHONE_CALL', provider: 'PLUSOFON', providerRequestId: requested.requestId, providerPayload: { source: 'plusofon', purpose: payload.purpose, verificationType: requested.verificationType, callToAuthNumber: requested.callToAuthNumber, raw: toJsonSafe(requested.raw) }, deliveryStatus: 'SENT', maxAttempts: env.otpMaxAttempts, ip: payload.ip, userAgent: payload.userAgent, expiresAt } });
+  const reserved = await reserveOtpAttempt(phone, purpose, { phone, purpose, codeHash: hashOtpCode(crypto.randomUUID()), channel: 'PHONE_CALL', provider: 'PLUSOFON', providerPayload: { source: 'plusofon', purpose: payload.purpose }, deliveryStatus: 'SENT', maxAttempts: env.otpMaxAttempts, ip: payload.ip, userAgent: payload.userAgent, expiresAt });
+  if (!reserved) return { ok: true, throttled: true };
+  let requested;
+  try { requested = await plusofonService.requestCallToAuth(phone); } catch (error) { await prisma.phoneOtp.update({ where: { id: reserved.id }, data: { deliveryStatus: 'REVOKED' } }); return { ok: false, error: mapPlusofonRequestError(error) }; }
+  await prisma.phoneOtp.update({ where: { id: reserved.id }, data: { codeHash: hashOtpCode(`plusofon:${requested.requestId}:${phone}:${now.toISOString()}`), providerRequestId: requested.requestId, providerPayload: { source: 'plusofon', purpose: payload.purpose, verificationType: requested.verificationType, callToAuthNumber: requested.callToAuthNumber, raw: toJsonSafe(requested.raw) } } });
   return { ok: true, data: { requestId: requested.requestId, verificationType: requested.verificationType, callToAuthNumber: requested.callToAuthNumber, phone: requested.phone, provider: 'plusofon' } };
 };
 
@@ -85,18 +98,17 @@ export const otpService = {
   async getOtpStatusByRequestId(requestId: string) { const otp = await prisma.phoneOtp.findFirst({ where: { providerRequestId: requestId, provider: 'PLUSOFON' }, orderBy: { createdAt: 'desc' } }); if (!otp) throw new Error('OTP_INVALID'); if (otp.consumedAt) return { requestId, status: 'verified' as const, provider: 'plusofon' as const }; const now = new Date(); if (otp.expiresAt <= now) return { requestId, status: 'expired' as const, provider: 'plusofon' as const }; if (otp.deliveryStatus === 'REVOKED') return { requestId, status: 'cancelled' as const, provider: 'plusofon' as const }; if (otp.deliveryStatus === 'EXPIRED') return { requestId, status: 'expired' as const, provider: 'plusofon' as const }; return { requestId, status: 'pending' as const, provider: 'plusofon' as const }; },
   async requestOtp(payload: { phone: string; purpose: OtpPurpose; ip?: string; userAgent?: string }): Promise<OtpRequestResult> {
     const phone = normalizePhone(payload.phone); const purpose = purposeToDb[payload.purpose];
-    if (payload.purpose === 'password_reset' || payload.purpose === 'login_device') return requestPlusofonOtp({ ...payload, phone, skipRateLimit: true });
-    if (env.otpProvider === 'plusofon') return requestPlusofonOtp({ ...payload, phone, skipRateLimit: false });
-    const rateLimit = await guardOtpRequestRateLimits(phone, purpose); if (rateLimit.throttled) return { ok: true, throttled: true };
-    const now = rateLimit.now;
-    const code = generateOtpCode(); const expiresAt = new Date(now.getTime() + env.otpTtlMinutes * 60 * 1000); const created = await prisma.phoneOtp.create({ data: { phone, purpose, codeHash: hashOtpCode(code), expiresAt, maxAttempts: env.otpMaxAttempts, ip: payload.ip, userAgent: payload.userAgent, providerPayload: { source: 'backend', purpose: payload.purpose } } });
+    if (payload.purpose === 'password_reset' || payload.purpose === 'login_device') return requestPlusofonOtp({ ...payload, phone });
+    if (env.otpProvider === 'plusofon') return requestPlusofonOtp({ ...payload, phone });
+    const code = generateOtpCode(); const expiresAt = new Date(Date.now() + env.otpTtlMinutes * 60 * 1000); const created = await reserveOtpAttempt(phone, purpose, { phone, purpose, codeHash: hashOtpCode(code), expiresAt, maxAttempts: env.otpMaxAttempts, ip: payload.ip, userAgent: payload.userAgent, providerPayload: { source: 'backend', purpose: payload.purpose } });
+    if (!created) return { ok: true, throttled: true };
     const message = `Ваш код для ${formatPurpose(payload.purpose)}: ${code}`; const callbackUrl = `${env.backendUrl.replace(/\/$/, '')}/auth/otp/telegram/callback`; const internalRequestId = `otp_${created.id}_${Date.now()}`; const providerPayload = created.id;
     const delivery = await otpDeliveryService.sendOtp({ phone, code, ttlSeconds: env.otpTtlMinutes * 60, message, requestId: internalRequestId, callbackUrl, providerPayload });
     await prisma.phoneOtp.update({ where: { id: created.id }, data: { channel: delivery.channel, provider: delivery.provider, providerRequestId: delivery.providerRequestId, providerPayload: delivery.providerPayload ?? undefined, deliveryStatus: delivery.deliveryStatus } });
     return { ok: true, devOtp: env.isProduction ? undefined : code, delivery: { channel: delivery.channel, provider: delivery.provider, deliveryStatus: delivery.deliveryStatus, devMode: delivery.devMode ?? false } };
   },
   async verifyOtp(payload: { phone: string; code: string; purpose: OtpPurpose }) { const phone = normalizePhone(payload.phone); const purpose = purposeToDb[payload.purpose]; const now = new Date(); const otp = await prisma.phoneOtp.findFirst({ where: { phone, purpose, consumedAt: null, expiresAt: { gt: now } }, orderBy: { createdAt: 'desc' } }); if (!otp) throw new Error('OTP_INVALID'); if (otp.attempts >= otp.maxAttempts) throw new Error('OTP_TOO_MANY'); const hashed = hashOtpCode(payload.code); if (hashed !== otp.codeHash) { await prisma.phoneOtp.update({ where: { id: otp.id }, data: { attempts: { increment: 1 } } }); throw new Error('OTP_INVALID'); } await prisma.phoneOtp.update({ where: { id: otp.id }, data: { consumedAt: now } }); return { phone }; },
-  async verifyOtpByRequestId(payload: { phone?: string; requestId: string; purpose: OtpPurpose }) { const normalizedIncomingPhone = payload.phone ? normalizePhone(payload.phone) : null; const purpose = purposeToDb[payload.purpose]; const now = new Date(); const otp = await prisma.phoneOtp.findFirst({ where: { purpose, provider: 'PLUSOFON', providerRequestId: payload.requestId }, orderBy: { createdAt: 'desc' } }); if (!otp) throw new Error('OTP_INVALID'); if (normalizedIncomingPhone && otp.phone !== normalizedIncomingPhone) { console.info('[OTP][VERIFY_BY_REQUEST_ID][PHONE_MISMATCH]', { requestId: payload.requestId, purpose: payload.purpose, storedChallengePhone: otp.phone, incomingPhoneRaw: payload.phone, incomingPhoneNormalized: normalizedIncomingPhone, callToAuthNumber: otp.providerPayload && typeof otp.providerPayload === 'object' && !Array.isArray(otp.providerPayload) && 'callToAuthNumber' in otp.providerPayload ? (otp.providerPayload as Record<string, unknown>).callToAuthNumber : null }); throw new Error('PHONE_MISMATCH'); } if (otp.expiresAt <= now) throw new Error('OTP_EXPIRED'); if (!otp.consumedAt) { const statusResult = await this.getOtpStatusByRequestId(payload.requestId); if (statusResult.status !== 'verified') throw new Error('OTP_INVALID'); await this.markOtpVerifiedByProviderRequestId({ requestId: payload.requestId, status: 'verified' }); } return { phone: otp.phone }; },
+  async verifyOtpByRequestId(payload: { phone?: string; requestId: string; purpose: OtpPurpose }) { const normalizedIncomingPhone = payload.phone ? normalizePhone(payload.phone) : null; const purpose = purposeToDb[payload.purpose]; const now = new Date(); const otp = await prisma.phoneOtp.findFirst({ where: { purpose, provider: 'PLUSOFON', providerRequestId: payload.requestId }, orderBy: { createdAt: 'desc' } }); if (!otp) throw new Error('OTP_INVALID'); if (normalizedIncomingPhone && otp.phone !== normalizedIncomingPhone) { console.info('[OTP][VERIFY_BY_REQUEST_ID][PHONE_MISMATCH]', { requestId: payload.requestId, purpose: payload.purpose }); throw new Error('PHONE_MISMATCH'); } if (otp.expiresAt <= now) throw new Error('OTP_EXPIRED'); if (!otp.consumedAt) { const statusResult = await this.getOtpStatusByRequestId(payload.requestId); if (statusResult.status !== 'verified') throw new Error('OTP_INVALID'); await this.markOtpVerifiedByProviderRequestId({ requestId: payload.requestId, status: 'verified' }); } return { phone: otp.phone }; },
   async updateDeliveryStatus(payload: { providerRequestId?: string; providerPayload?: string; deliveryStatus: OtpDeliveryStatus; }) { const otpIdFromPayload = typeof payload.providerPayload === 'string' ? payload.providerPayload.trim() : null; const otp = payload.providerRequestId ? await prisma.phoneOtp.findFirst({ where: { providerRequestId: payload.providerRequestId } }) : otpIdFromPayload ? await prisma.phoneOtp.findUnique({ where: { id: otpIdFromPayload } }) : null; if (!otp) return null; return prisma.phoneOtp.update({ where: { id: otp.id }, data: { deliveryStatus: payload.deliveryStatus, providerRequestId: payload.providerRequestId ?? otp.providerRequestId, providerPayload: payload.providerPayload ?? undefined } }); },
   mapIncomingDeliveryStatus(status: string): OtpDeliveryStatus | null { const normalized = status.toLowerCase(); if (normalized === 'delivered') return 'DELIVERED'; if (normalized === 'read') return 'READ'; if (normalized === 'expired') return 'EXPIRED'; if (normalized === 'revoked') return 'REVOKED'; if (normalized === 'sent') return 'SENT'; return null; },
   validateTelegramCallbackSignature(payload: { timestamp: string; signature: string; rawBody: string; }) { const secret = env.telegramGatewayCallbackSecret || crypto.createHash('sha256').update(env.telegramGatewayToken).digest('hex'); const computed = crypto.createHmac('sha256', secret).update(`${payload.timestamp}\n${payload.rawBody}`).digest('hex'); if (computed.length !== payload.signature.length) return false; return crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(payload.signature)); }
