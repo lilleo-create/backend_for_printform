@@ -21,9 +21,18 @@ export const cityCodeFromPvz = (value: unknown): number => {
 };
 
 export const quoteCheckoutShipping = async (
-  items: { productId: string; quantity: number }[],
+  items: { productId: string; variantId?: string; quantity: number }[],
   buyerPickupPvz: { pvzId?: string; raw?: unknown }
 ) => {
+  const itemKeys = new Set<string>();
+  for (const item of items) {
+    if (!Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 999) throw new Error('QUANTITY_INVALID');
+    // The shipping quote only needs product totals. An order must not contain
+    // repeated identical lines because that makes the quote ambiguous.
+    const key = `${item.productId}\0${item.variantId ?? ''}`;
+    if (itemKeys.has(key)) throw new Error('DUPLICATE_ORDER_ITEM');
+    itemKeys.add(key);
+  }
   const ids = [...new Set(items.map(item => item.productId))];
   const products = await prisma.product.findMany({
     where: { id: { in: ids }, deletedAt: null, moderationStatus: 'APPROVED' },
@@ -32,6 +41,8 @@ export const quoteCheckoutShipping = async (
   if (products.length !== ids.length) throw new Error('PRODUCT_NOT_FOUND');
   const sellers = [...new Set(products.map(product => product.sellerId))];
   if (sellers.length !== 1) throw new Error('MULTI_SELLER_CHECKOUT_NOT_SUPPORTED');
+  const seller = await prisma.sellerProfile.findFirst({ where: { userId: sellers[0], status: 'APPROVED' }, select: { id: true } });
+  if (!seller) throw new Error('SELLER_NOT_AVAILABLE');
   const sellerSettings = await prisma.sellerSettings.findUnique({ where: { sellerId: sellers[0] } });
   if (!sellerSettings?.defaultDropoffPvzId) throw new Error('SELLER_DROPOFF_PVZ_REQUIRED');
   const snapshot = buildShippingSnapshot(items.map(item => {
@@ -48,22 +59,34 @@ export const quoteCheckoutShipping = async (
     }
   }
   if (!fromCityCode) throw new ShippingQuoteError('SELLER_CITY_CODE_REQUIRED');
-  let toCityCode = cityCodeFromPvz(buyerPickupPvz.raw);
   const deliveryPoint = String(buyerPickupPvz.pvzId ?? record(buyerPickupPvz.raw).pvzId ?? record(buyerPickupPvz.raw).id ?? '').trim();
-  if (!toCityCode && deliveryPoint) {
-    try {
-      toCityCode = await cdekService.getCityCodeByPvzCode(deliveryPoint) ?? 0;
-    } catch {
-      throw new ShippingQuoteError('BUYER_CITY_CODE_REQUIRED');
+  if (!deliveryPoint) throw new ShippingQuoteError('BUYER_PICKUP_PVZ_REQUIRED');
+  let providerPoint: Awaited<ReturnType<typeof cdekService.getPickupPointByCode>>;
+  try {
+    providerPoint = await cdekService.getPickupPointByCode(deliveryPoint);
+  } catch (error) {
+    if ((error as { code?: string })?.code === 'CDEK_PVZ_NOT_FOUND') {
+      throw new ShippingQuoteError('PVZ_INVALID');
     }
+    throw new ShippingQuoteError('CDEK_PVZ_LOOKUP_FAILED');
   }
-  if (!toCityCode) throw new ShippingQuoteError('BUYER_CITY_CODE_REQUIRED');
-  if (fromCityCode > 0 && toCityCode > 0 && !deliveryPoint) {
-    throw new ShippingQuoteError('BUYER_PICKUP_PVZ_REQUIRED');
+  const toCityCode = Number(providerPoint.location?.city_code);
+  if (!Number.isInteger(toCityCode) || toCityCode <= 0 || String(providerPoint.type).toUpperCase() !== 'PVZ') {
+    throw new ShippingQuoteError('PVZ_INVALID');
   }
+  const clientCityCode = cityCodeFromPvz(buyerPickupPvz.raw);
+  if (clientCityCode && clientCityCode !== toCityCode) throw new ShippingQuoteError('PVZ_INVALID');
   const result = await calculateShippingQuote(snapshot, fromCityCode, toCityCode, undefined, {
     shipmentPoint: sellerSettings.defaultDropoffPvzId,
     deliveryPoint
   });
-  return { ...result, snapshot, sellerSettings };
+  return {
+    ...result, snapshot, sellerSettings,
+    buyerPickupPvz: {
+      provider: 'CDEK' as const,
+      pvzId: String(providerPoint.code),
+      addressFull: String(providerPoint.location?.address_full ?? ''),
+      raw: { ...providerPoint, id: providerPoint.code, type: 'PVZ' }
+    }
+  };
 };

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { Prisma } from '@prisma/client';
 import { authenticate, AuthRequest } from '../middleware/authMiddleware';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { prisma } from '../lib/prisma';
@@ -63,6 +64,7 @@ const cdekPvzRawSchema = z.object({
 });
 
 const createOrderSchema = z.object({
+  paymentAttemptKey: z.string().trim().min(6),
   buyerPickupPvz: buyerPvzSelectionSchema.optional(),
   cdekPvzCode: z.string().min(1).optional(),
   cdekPvzAddress: z.string().optional(),
@@ -76,33 +78,48 @@ const createOrderSchema = z.object({
       z.object({
         productId: z.string(),
         variantId: z.string().optional(),
-        quantity: z.number().int().min(1)
+        quantity: z.number().int().min(1).max(999)
       })
     )
     .min(1)
+});
+
+export const sameCheckout = (order: { items: { productId: string; variantId: string | null; quantity: number }[];
+  buyerPickupPvzId: string | null; contactId: string | null; shippingAddressId: string | null },
+  payload: z.infer<typeof createOrderSchema>) =>
+  (order.contactId ?? null) === (payload.contactId ?? null) &&
+  (order.shippingAddressId ?? null) === (payload.shippingAddressId === 'cdek_pvz' ? null : payload.shippingAddressId ?? null) &&
+  order.items.length === payload.items.length &&
+  payload.items.every(item => order.items.some(saved => saved.productId === item.productId &&
+    (saved.variantId ?? undefined) === item.variantId && saved.quantity === item.quantity)) &&
+  order.buyerPickupPvzId === (payload.cdekPvzCode ?? payload.buyerPickupPvz?.pvzId ?? null);
+
+const findCheckoutAttempt = (buyerId: string, paymentAttemptKey: string) => prisma.order.findFirst({
+  where: { buyerId, paymentAttemptKey },
+  include: { items: { include: { product: true, variant: true } }, contact: true, shippingAddress: true }
 });
 
 orderRoutes.post('/', authenticate, writeLimiter, async (req: AuthRequest, res, next) => {
   try {
     await expirePendingPayments();
     const payload = createOrderSchema.parse(req.body);
-    const { cdekPvzCode, cdekPvzAddress, deliveryMethod, cdekPvzRaw, cdekPvzCityCode } = payload as {
+    const { cdekPvzCode, deliveryMethod, cdekPvzRaw, cdekPvzCityCode } = payload as {
       cdekPvzCode?: string;
-      cdekPvzAddress?: string;
       cdekPvzRaw?: z.infer<typeof cdekPvzRawSchema>;
       cdekPvzCityCode?: number;
       deliveryMethod?: 'courier' | 'cdek_pvz';
     };
+
+    const prior = await findCheckoutAttempt(req.user!.userId, payload.paymentAttemptKey);
+    if (prior) return sameCheckout(prior, payload)
+      ? res.status(200).json({ data: withOrderPublicId(prior), orderId: prior.id })
+      : res.status(409).json({ error: { code: 'CHECKOUT_CHANGED' } });
 
     if (deliveryMethod === 'cdek_pvz' && !cdekPvzCode) {
       return res.status(400).json({ error: { code: 'CDEK_PVZ_CODE_REQUIRED', message: 'cdekPvzCode is required for cdek_pvz', details: null } });
     }
 
     const resolvedBuyerCityCode = Number(cdekPvzCityCode ?? cdekPvzRaw?.city_code ?? 0);
-    if (deliveryMethod === 'cdek_pvz' && (!Number.isFinite(resolvedBuyerCityCode) || resolvedBuyerCityCode <= 0)) {
-      return res.status(400).json({ error: { code: 'CITY_CODE_MISSING', message: 'cdekPvzCityCode or cdekPvzRaw.city_code is required', details: null } });
-    }
-
     const productIds = payload.items.map((item) => item.productId);
     const uniqueProductIds = Array.from(new Set(productIds));
     const products = await prisma.product.findMany({
@@ -142,43 +159,22 @@ orderRoutes.post('/', authenticate, writeLimiter, async (req: AuthRequest, res, 
       ? String(sellerDropoffMeta.addressFull ?? '')
       : undefined;
 
-    const buyerCityCode = resolvedBuyerCityCode > 0
-      ? resolvedBuyerCityCode
-      : extractCityCode(payload.buyerPickupPvz);
-    const shipping = await quoteCheckoutShipping(payload.items, { pvzId: cdekPvzCode, raw: { city_code: buyerCityCode } });
+    const buyerCityCode = resolvedBuyerCityCode > 0 ? resolvedBuyerCityCode : extractCityCode(payload.buyerPickupPvz);
+    const shipping = await quoteCheckoutShipping(payload.items, {
+      pvzId: cdekPvzCode ?? payload.buyerPickupPvz?.pvzId,
+      raw: { city_code: buyerCityCode }
+    });
     const { deliveryAmountKopecks } = shipping;
     const deliveryDaysMin = shipping.quote.deliveryDaysMin;
     const deliveryDaysMax = shipping.quote.deliveryDaysMax;
 
     const order = await orderUseCases.create({
       buyerId: req.user!.userId,
+      paymentAttemptKey: payload.paymentAttemptKey,
       contactId: payload.contactId,
       shippingAddressId: payload.shippingAddressId,
       items: payload.items,
-      buyerPickupPvz: cdekPvzCode
-        ? {
-            provider: 'CDEK',
-            pvzId: cdekPvzCode,
-            raw: {
-              city_code: resolvedBuyerCityCode,
-              city: cdekPvzRaw?.city ?? '',
-              address_full: cdekPvzRaw?.address_full ?? cdekPvzAddress ?? '',
-              latitude: cdekPvzRaw?.latitude,
-              longitude: cdekPvzRaw?.longitude,
-              work_time: cdekPvzRaw?.work_time
-            },
-            addressFull: cdekPvzAddress ?? cdekPvzRaw?.address_full ?? ''
-          }
-        : payload.buyerPickupPvz
-          ? {
-              provider: 'CDEK',
-              pvzId: payload.buyerPickupPvz.pvzId,
-              addressFull: payload.buyerPickupPvz.addressFull,
-              raw: payload.buyerPickupPvz.raw ?? {}
-            }
-          : deliveryMethod === 'courier'
-            ? undefined
-            : undefined,
+      buyerPickupPvz: shipping.buyerPickupPvz,
       sellerDropoffPvz: sellerSettings?.defaultDropoffPvzId
         ? {
             provider: 'CDEK',
@@ -195,6 +191,22 @@ orderRoutes.post('/', authenticate, writeLimiter, async (req: AuthRequest, res, 
 
     return res.status(201).json({ data: withOrderPublicId(order), orderId: order.id });
   } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      const key = typeof req.body?.paymentAttemptKey === 'string' ? req.body.paymentAttemptKey : '';
+      const prior = key ? await findCheckoutAttempt(req.user!.userId, key) : null;
+      if (prior) {
+        const parsed = createOrderSchema.safeParse(req.body);
+        return parsed.success && sameCheckout(prior, parsed.data)
+          ? res.status(200).json({ data: withOrderPublicId(prior), orderId: prior.id })
+          : res.status(409).json({ error: { code: 'CHECKOUT_CHANGED' } });
+      }
+    }
+    const code = error instanceof Error ? error.message : '';
+    if (['PRODUCT_NOT_FOUND', 'SELLER_NOT_AVAILABLE', 'VARIANT_INVALID', 'DUPLICATE_ORDER_ITEM', 'QUANTITY_INVALID', 'PRODUCT_PRICE_INVALID', 'CONTACT_NOT_FOUND', 'SHIPPING_ADDRESS_NOT_FOUND'].includes(code)) {
+      return res.status(code === 'PRODUCT_NOT_FOUND' ? 404 : 400).json({ error: { code } });
+    }
+    if (code === 'PVZ_INVALID') return res.status(400).json({ error: { code } });
+    if (code === 'CDEK_PVZ_LOOKUP_FAILED') return res.status(503).json({ error: { code } });
     return next(error);
   }
 });

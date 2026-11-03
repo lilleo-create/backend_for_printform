@@ -8,7 +8,8 @@ test('seller-sponsored CDEK quote is stored but buyer and Payment owe goods only
   let created: any;
   try {
     (prisma.$transaction as any) = async (callback: any) => callback({
-      product: { findMany: async () => [{ id: 'p1', price: 150000, currency: 'RUB' }] },
+      product: { findMany: async () => [{ id: 'p1', sellerId: 's', price: 150000, currency: 'RUB' }] },
+      sellerProfile: { findFirst: async () => ({ id: 'profile' }) },
       productVariant: { findMany: async () => [] },
       orderPublicNumberCounter: { upsert: async () => ({ lastValue: 1 }) },
       order: { create: async ({ data }: any) => { created = data; return data; } }
@@ -33,7 +34,8 @@ test('backend DB price change rejects stale cart price before order creation', a
   let created = false;
   try {
     (prisma.$transaction as any) = async (callback: any) => callback({
-      product: { findMany: async () => [{ id: 'p1', price: 150000, currency: 'RUB' }] },
+      product: { findMany: async () => [{ id: 'p1', sellerId: 's', price: 150000, currency: 'RUB' }] },
+      sellerProfile: { findFirst: async () => ({ id: 'profile' }) },
       productVariant: { findMany: async () => [] },
       orderPublicNumberCounter: { upsert: async () => ({ lastValue: 1 }) },
       order: { create: async () => { created = true; } }

@@ -4,8 +4,9 @@ import path from 'node:path';
 import multer, { MulterError } from 'multer';
 import type { RequestHandler } from 'express';
 import type { ChatImageAttachment } from './activeSupportChatService';
+import { privateChatDir } from './privateFileStorage';
 
-const uploadDir = path.join(process.cwd(), 'uploads', 'chats');
+const uploadDir = privateChatDir;
 const mimeExtension: Record<string, string> = {
   'image/jpeg': '.jpg',
   'image/png': '.png',
@@ -63,7 +64,7 @@ export const persistChatImages = async (files: Express.Multer.File[]) => {
       paths.push(absolutePath);
       attachments.push({
         type: 'IMAGE',
-        url: `/uploads/chats/${filename}`,
+        url: `/private-files/chats/${filename}`,
         fileName: path.basename(file.originalname).slice(0, 120) || filename,
         mime: file.mimetype,
         size: file.size

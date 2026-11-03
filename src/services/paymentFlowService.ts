@@ -160,7 +160,7 @@ export const paymentFlowService = {
           const orderCreateInput = {
             buyerId: input.buyerId,
             paymentAttemptKey: input.paymentAttemptKey,
-            buyerPickupPvz: normalizedBuyerPickupPvz,
+            buyerPickupPvz: shipping.buyerPickupPvz,
             sellerDropoffPvz: shipping.sellerSettings.defaultDropoffPvzId
               ? {
                   provider: 'CDEK' as const,

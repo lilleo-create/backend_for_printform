@@ -6,13 +6,23 @@ import { quoteCheckoutShipping } from './checkoutShippingService';
 
 const originalProducts = prisma.product.findMany;
 const originalSettings = prisma.sellerSettings.findUnique;
+const originalProfile = prisma.sellerProfile.findFirst;
 const originalCalculate = cdekService.calculateDelivery;
 const originalCityLookup = cdekService.getCityCodeByPvzCode;
+const originalPointLookup = cdekService.getPickupPointByCode;
 test.afterEach(() => {
   (prisma.product.findMany as any) = originalProducts;
   (prisma.sellerSettings.findUnique as any) = originalSettings;
+  (prisma.sellerProfile.findFirst as any) = originalProfile;
   (cdekService.calculateDelivery as any) = originalCalculate;
   (cdekService.getCityCodeByPvzCode as any) = originalCityLookup;
+  (cdekService.getPickupPointByCode as any) = originalPointLookup;
+});
+
+const point = (code = 'SPB1', cityCode = 137) => ({ code, type: 'PVZ', location: { city_code: cityCode, address_full: 'Provider address' } });
+test.beforeEach(() => {
+  (prisma.sellerProfile.findFirst as any) = async () => ({ id: 'profile' });
+  (cdekService.getPickupPointByCode as any) = async () => point();
 });
 
 test('checkout quote reads product measurements, quantity and seller/buyer cities', async () => {
@@ -61,7 +71,7 @@ test('checkout quote resolves legacy seller and buyer PVZ city codes by their ex
   };
   const result = await quoteCheckoutShipping([{ productId: 'a', quantity: 2 }],
     { pvzId: 'SPB1', raw: { addressFull: 'legacy' } });
-  assert.deepEqual(lookups, ['MSK1', 'SPB1']);
+  assert.deepEqual(lookups, ['MSK1']);
   assert.deepEqual(sent, { fromCityCode: 44, toCityCode: 137, weightGrams: 700,
     lengthCm: 19, widthCm: 13, heightCm: 19, shipmentPoint: 'MSK1', deliveryPoint: 'SPB1' });
   assert.equal(result.deliveryAmountKopecks, 42125);
@@ -79,8 +89,9 @@ test('missing CDEK PVZ city codes fail with the correct controlled error', async
   await assert.rejects(quoteCheckoutShipping([{ productId: 'a', quantity: 1 }],
     { pvzId: 'SPB1', raw: {} }), { code: 'SELLER_CITY_CODE_REQUIRED' });
   (cdekService.getCityCodeByPvzCode as any) = async (code: string) => code === 'MSK1' ? 44 : null;
+  (cdekService.getPickupPointByCode as any) = async () => point('SPB1', 0);
   await assert.rejects(quoteCheckoutShipping([{ productId: 'a', quantity: 1 }],
-    { pvzId: 'SPB1', raw: {} }), { code: 'BUYER_CITY_CODE_REQUIRED' });
+    { pvzId: 'SPB1', raw: {} }), { code: 'PVZ_INVALID' });
 });
 
 test('checkout quote rejects missing city code and CDEK failure', async () => {
@@ -91,8 +102,29 @@ test('checkout quote rejects missing city code and CDEK failure', async () => {
     defaultDropoffPvzId: 'MSK1', defaultDropoffPvzMeta: { raw: { city_code: 44 } }
   });
   await assert.rejects(quoteCheckoutShipping([{ productId: 'a', quantity: 1 }], { raw: {} }),
-    { code: 'BUYER_CITY_CODE_REQUIRED' });
+    { code: 'BUYER_PICKUP_PVZ_REQUIRED' });
   (cdekService.calculateDelivery as any) = async () => { throw new Error('CDEK offline'); };
   await assert.rejects(quoteCheckoutShipping([{ productId: 'a', quantity: 1 }], { pvzId: 'SPB1', raw: { city_code: 137 } }),
     { code: 'CDEK_QUOTE_FAILED' });
+});
+
+test('checkout rejects mismatched PVZ metadata and distinguishes lookup outage', async () => {
+  (prisma.product.findMany as any) = async () => [
+    { id: 'a', sellerId: 's', weightGrossG: 350, dxCm: 19, dyCm: 12, dzCm: 9.5 }
+  ];
+  (prisma.sellerSettings.findUnique as any) = async () => ({
+    defaultDropoffPvzId: 'MSK1', defaultDropoffPvzMeta: { raw: { city_code: 44 } }
+  });
+  await assert.rejects(quoteCheckoutShipping([{ productId: 'a', quantity: 1 }],
+    { pvzId: 'SPB1', raw: { city_code: 999 } }), { code: 'PVZ_INVALID' });
+  (cdekService.getPickupPointByCode as any) = async () => {
+    const error = new Error('missing') as Error & { code?: string };
+    error.code = 'CDEK_PVZ_NOT_FOUND';
+    throw error;
+  };
+  await assert.rejects(quoteCheckoutShipping([{ productId: 'a', quantity: 1 }],
+    { pvzId: 'SPB1' }), { code: 'PVZ_INVALID' });
+  (cdekService.getPickupPointByCode as any) = async () => { throw new Error('provider offline'); };
+  await assert.rejects(quoteCheckoutShipping([{ productId: 'a', quantity: 1 }],
+    { pvzId: 'SPB1' }), { code: 'CDEK_PVZ_LOOKUP_FAILED' });
 });

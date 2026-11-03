@@ -8,6 +8,10 @@ import { yookassaService } from './yookassaService';
 import { cdekService } from './cdekService';
 
 (prisma.order.updateMany as any) = async () => ({ count: 0 });
+(prisma.sellerProfile.findFirst as any) = async () => ({ id: 'seller-profile-1' });
+(cdekService.getPickupPointByCode as any) = async (code: string) => ({
+  code, type: 'PVZ', location: { city_code: 137, address_full: 'Test pickup' }
+});
 (cdekService.calculateDelivery as any) = async () => ({
   totalSum: 2, deliverySum: 2, deliveryDaysMin: 1, deliveryDaysMax: 2
 });

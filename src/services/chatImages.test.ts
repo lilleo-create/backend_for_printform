@@ -12,7 +12,7 @@ test('stores one or multiple verified images and returns only server-generated U
   const saved = await persistChatImages([file(png), file(png)]);
   try {
     assert.equal(saved.attachments.length, 2);
-    assert.ok(saved.attachments.every(item => item.url.startsWith('/uploads/chats/')));
+    assert.ok(saved.attachments.every(item => item.url.startsWith('/private-files/chats/')));
     assert.notEqual(saved.attachments[0].url, saved.attachments[1].url);
   } finally { await discardChatImages(saved.paths); }
 });

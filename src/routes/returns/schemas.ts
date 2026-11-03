@@ -1,14 +1,10 @@
 import { z } from 'zod';
 
 export const photoUrlSchema = z.string().superRefine((value, ctx) => {
-  if (value.startsWith('/uploads/returns/')) {
+  if (/^\/private-files\/returns\/[A-Za-z0-9_-]+\/[0-9a-f-]+\.(jpg|png|webp)$/.test(value)) {
     return;
   }
-  try {
-    new URL(value);
-  } catch {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid url' });
-  }
+  ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid return photo URL' });
 });
 
 export const createReturnSchema = z.object({

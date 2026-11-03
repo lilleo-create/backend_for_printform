@@ -16,6 +16,7 @@ test('payments/start accepts changed CDEK tariff and charges goods only', async 
   const originals = {
     orderUpdateMany: prisma.order.updateMany, orderFindFirst: prisma.order.findFirst,
     productFindMany: prisma.product.findMany, settingsFind: prisma.sellerSettings.findUnique,
+    sellerFind: prisma.sellerProfile.findFirst, pointLookup: cdekService.getPickupPointByCode,
     orderUpdate: prisma.order.update, paymentFind: prisma.payment.findFirst,
     transaction: prisma.$transaction, calculate: cdekService.calculateDelivery,
     createOrder: orderUseCases.create, createPayment: yookassaService.createPayment
@@ -28,6 +29,8 @@ test('payments/start accepts changed CDEK tariff and charges goods only', async 
     (prisma.product.findMany as any) = async () => [
       { id: 'a', sellerId: 'seller', weightGrossG: 350, dxCm: 19, dyCm: 12, dzCm: 9.5 }
     ];
+    (prisma.sellerProfile.findFirst as any) = async () => ({ id: 'seller-profile' });
+    (cdekService.getPickupPointByCode as any) = async (code: string) => ({ code, type: 'PVZ', location: { city_code: 137, address_full: 'Test pickup' } });
     (prisma.sellerSettings.findUnique as any) = async () => ({
       defaultDropoffPvzId: 'MSK123', defaultDropoffPvzMeta: { raw: { city_code: 44 } }
     });
@@ -77,6 +80,8 @@ test('payments/start accepts changed CDEK tariff and charges goods only', async 
     (prisma.order.updateMany as any) = originals.orderUpdateMany;
     (prisma.order.findFirst as any) = originals.orderFindFirst;
     (prisma.product.findMany as any) = originals.productFindMany;
+    (prisma.sellerProfile.findFirst as any) = originals.sellerFind;
+    (cdekService.getPickupPointByCode as any) = originals.pointLookup;
     (prisma.sellerSettings.findUnique as any) = originals.settingsFind;
     (prisma.order.update as any) = originals.orderUpdate;
     (prisma.payment.findFirst as any) = originals.paymentFind;
@@ -101,6 +106,7 @@ test('payments/start creates neither order nor YooKassa payment when city or CDE
   const originals = {
     orderUpdateMany: prisma.order.updateMany, orderFindFirst: prisma.order.findFirst,
     productFindMany: prisma.product.findMany, settingsFind: prisma.sellerSettings.findUnique,
+    sellerFind: prisma.sellerProfile.findFirst, pointLookup: cdekService.getPickupPointByCode,
     calculate: cdekService.calculateDelivery, cityCode: cdekService.getCityCodeByPvzCode,
     createOrder: orderUseCases.create,
     createPayment: yookassaService.createPayment
@@ -113,6 +119,8 @@ test('payments/start creates neither order nor YooKassa payment when city or CDE
     (prisma.product.findMany as any) = async () => [
       { id: 'a', sellerId: 'seller', weightGrossG: 350, dxCm: 19, dyCm: 12, dzCm: 9.5 }
     ];
+    (prisma.sellerProfile.findFirst as any) = async () => ({ id: 'seller-profile' });
+    (cdekService.getPickupPointByCode as any) = async (code: string) => ({ code, type: 'PVZ', location: { city_code: 137, address_full: 'Test pickup' } });
     (prisma.sellerSettings.findUnique as any) = async () => ({
       defaultDropoffPvzId: 'MSK123', defaultDropoffPvzMeta: { raw: { city_code: 44 } }
     });
@@ -124,9 +132,11 @@ test('payments/start creates neither order nor YooKassa payment when city or CDE
       recipient: { name: 'Test', phone: '+79990000000' },
       items: [{ productId: 'a', quantity: 1 }]
     };
+    (cdekService.getPickupPointByCode as any) = async () => ({ code: 'SPB123', type: 'PVZ', location: { city_code: 0 } });
     await assert.rejects(paymentFlowService.startPayment({
       ...base, buyerPickupPvz: { pvzId: 'SPB123', raw: {} }
-    }), { code: 'BUYER_CITY_CODE_REQUIRED' });
+    }), { code: 'PVZ_INVALID' });
+    (cdekService.getPickupPointByCode as any) = async (code: string) => ({ code, type: 'PVZ', location: { city_code: 137, address_full: 'Test pickup' } });
     (cdekService.calculateDelivery as any) = async () => { throw new Error('offline'); };
     await assert.rejects(paymentFlowService.startPayment({
       ...base, buyerPickupPvz: { pvzId: 'SPB123', raw: { city_code: 137 } }
@@ -137,6 +147,8 @@ test('payments/start creates neither order nor YooKassa payment when city or CDE
     (prisma.order.updateMany as any) = originals.orderUpdateMany;
     (prisma.order.findFirst as any) = originals.orderFindFirst;
     (prisma.product.findMany as any) = originals.productFindMany;
+    (prisma.sellerProfile.findFirst as any) = originals.sellerFind;
+    (cdekService.getPickupPointByCode as any) = originals.pointLookup;
     (prisma.sellerSettings.findUnique as any) = originals.settingsFind;
     (cdekService.calculateDelivery as any) = originals.calculate;
     (cdekService.getCityCodeByPvzCode as any) = originals.cityCode;

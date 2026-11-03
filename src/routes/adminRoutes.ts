@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import path from 'path';
+import { containedFile, legacyUploadsRoot } from '../services/privateFileStorage';
 import fs from 'fs';
 import { ProductModerationStatus, ReviewModerationStatus } from '@prisma/client';
 import { requireAuth, requireAdmin, AuthRequest } from '../middleware/authMiddleware';
@@ -95,10 +96,9 @@ adminRoutes.get('/seller-documents/:id/download', async (req, res, next) => {
     if (!document) {
       return notFound(res, 'Document not found');
     }
-    const uploadRoot = path.join(process.cwd(), 'uploads');
-    const relativePath = document.url.startsWith('/') ? document.url.slice(1) : document.url;
-    const filePath = path.resolve(process.cwd(), relativePath);
-    if (!filePath.startsWith(uploadRoot)) {
+    const match = /^\/uploads\/([^/\\]+)$/.exec(document.url);
+    const filePath = match ? containedFile(legacyUploadsRoot, match[1]) : null;
+    if (!filePath) {
       return res.status(400).json({ error: { code: 'INVALID_PATH' } });
     }
     if (!fs.existsSync(filePath)) {

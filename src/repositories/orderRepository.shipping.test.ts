@@ -12,7 +12,8 @@ test('seller-sponsored order keeps real CDEK quote without charging buyer', asyn
   let created: any;
   try {
     (prisma.$transaction as any) = async (callback: any) => callback({
-      product: { findMany: async () => [{ id: 'a', price: 10000, currency: 'RUB' }] },
+      product: { findMany: async () => [{ id: 'a', sellerId: 's', price: 10000, currency: 'RUB' }] },
+      sellerProfile: { findFirst: async () => ({ id: 'profile' }) },
       orderPublicNumberCounter: { upsert: async () => ({ lastValue: 1 }) },
       order: { create: async ({ data }: any) => { created = data; return data; } }
     });

@@ -10,6 +10,7 @@ import { adminChatRoutes } from './adminChatRoutes';
 import { errorHandler } from '../middleware/errorHandler';
 import { prisma } from '../lib/prisma';
 import { env } from '../config/env';
+import { privateChatDir } from '../services/privateFileStorage';
 
 const png = Buffer.from('89504e470d0a1a0a00000000', 'hex');
 const auth = (id: string, role: 'BUYER' | 'ADMIN') => `Bearer ${jwt.sign({ userId: id, role, scope: 'access' }, env.jwtSecret)}`;
@@ -21,7 +22,7 @@ const app = () => {
   server.use(errorHandler);
   return server;
 };
-const cleanup = async (url: string) => fs.unlink(path.join(process.cwd(), url.slice(1))).catch(() => undefined);
+const cleanup = async (url: string) => fs.unlink(path.join(privateChatDir, path.basename(url))).catch(() => undefined);
 
 test('buyer can send photo-only first message; attachment is returned with thread history', async () => {
   (prisma.user.findUnique as any) = async () => ({ role: 'BUYER' });
@@ -51,7 +52,7 @@ test('buyer can send photo-only first message; attachment is returned with threa
   try {
     assert.equal(response.body.data.userMessage.text, '');
     assert.equal(attachment.type, 'IMAGE');
-    assert.ok(attachment.url.startsWith('/uploads/chats/'));
+    assert.ok(attachment.url.startsWith('/private-files/chats/'));
     assert.equal(response.body.data.acknowledgementMessage.text, 'Сейчас позову оператора.');
     (prisma.chatThread.findFirst as any) = async () => ({ id: 'chat-1', kind: 'SUPPORT', status: 'ACTIVE', userId: 'buyer-1' });
     (prisma.chatMessage.findMany as any) = async () => [...persisted].reverse();

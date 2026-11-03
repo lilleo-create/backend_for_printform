@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { prisma } from '../lib/prisma';
 import { cdekService } from '../services/cdekService';
 import { shipmentService } from '../services/shipmentService';
+import { requireAuth, requireAdmin } from '../middleware/authMiddleware';
+import { writeLimiter } from '../middleware/rateLimiters';
 
 export const shipmentsRoutes = Router();
 
@@ -48,7 +50,7 @@ shipmentsRoutes.get('/track/:trackingNumber', async (req, res, next) => {
 });
 
 
-shipmentsRoutes.post('/:id/sync', async (req, res, next) => {
+shipmentsRoutes.post('/:id/sync', requireAuth, requireAdmin, writeLimiter, async (req, res, next) => {
   try {
     const result = await shipmentService.syncByShipmentId(req.params.id);
     return res.json({

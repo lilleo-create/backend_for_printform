@@ -24,6 +24,8 @@ import { internalRoutes } from "./routes/internalRoutes";
 import { debugRoutes } from "./routes/debugRoutes";
 import { cdekRoutes } from "./routes/cdekRoutes";
 import { shipmentsRoutes } from "./routes/shipmentsRoutes";
+import { privateFileRoutes } from "./routes/privateFileRoutes";
+import { publicUploadGuard } from "./middleware/publicUploadGuard";
 import { startShipmentsSyncJob } from "./jobs/shipmentsSyncJob";
 import { startPaymentExpiryJob } from "./jobs/paymentExpiryJob";
 import { reviewCrudRoutes, reviewReplyCrudRoutes } from "./routes/reviewCrudRoutes";
@@ -141,7 +143,9 @@ app.use(cookieParser());
 |--------------------------------------------------------------------------
 */
 
-app.use("/uploads", express.static(uploadsDir));
+// Product media lives at the root. Historical chat/return photos live below
+// child directories and must never reach public static serving.
+app.use('/uploads', publicUploadGuard, express.static(uploadsDir));
 
 /*
 |--------------------------------------------------------------------------
@@ -198,6 +202,7 @@ const mountRoutes = (prefix = "") => {
   app.use(`${prefix}/review-replies`, reviewReplyCrudRoutes);
   app.use(`${prefix}/favorites`, favoritesRoutes);
   app.use(`${prefix}/checkout`, checkoutRoutes);
+  app.use(`${prefix}/private-files`, privateFileRoutes);
   app.use(`${prefix}/internal`, internalRoutes);
   app.use(`${prefix}/cdek`, cdekRoutes);
   app.use(`${prefix}/shipments`, shipmentsRoutes);

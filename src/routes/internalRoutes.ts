@@ -1,8 +1,14 @@
 import { Router } from 'express';
 import { runShipmentsSyncJob } from '../jobs/shipmentsSyncJob';
 import { cdekWebhookService } from '../services/cdekWebhookService';
+import { requireAuth, requireAdmin } from '../middleware/authMiddleware';
+import { writeLimiter } from '../middleware/rateLimiters';
 
 export const internalRoutes = Router();
+
+// These are operator actions. Scheduled jobs call their services directly; no
+// public HTTP caller needs to invoke CDEK synchronization or webhook setup.
+internalRoutes.use(requireAuth, requireAdmin, writeLimiter);
 
 internalRoutes.post('/jobs/shipments-sync', async (_req, res, next) => {
   try {

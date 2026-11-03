@@ -25,6 +25,13 @@ export const orderRepository = {
     items: { productId: string; variantId?: string; quantity: number; expectedPriceKopecks?: number }[];
   }) =>
     prisma.$transaction(async (tx) => {
+      const uniqueItems = new Set<string>();
+      for (const item of data.items) {
+        if (!Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 999) throw new Error('QUANTITY_INVALID');
+        const key = `${item.productId}\0${item.variantId ?? ''}`;
+        if (uniqueItems.has(key)) throw new Error('DUPLICATE_ORDER_ITEM');
+        uniqueItems.add(key);
+      }
       const productIds = data.items.map((item) => item.productId);
       const variantIds = data.items.map((item) => item.variantId).filter(Boolean) as string[];
 
@@ -35,6 +42,19 @@ export const orderRepository = {
         ? await tx.productVariant.findMany({ where: { id: { in: variantIds } } })
         : [];
 
+      if (products.length !== new Set(productIds).size) throw new Error('PRODUCT_NOT_FOUND');
+      if (new Set(products.map(product => product.sellerId)).size !== 1) throw new Error('MULTI_SELLER_CHECKOUT_NOT_SUPPORTED');
+      const sellerId = products[0].sellerId;
+      const seller = await tx.sellerProfile.findFirst({ where: { userId: sellerId, status: 'APPROVED' }, select: { id: true } });
+      if (!seller) throw new Error('SELLER_NOT_AVAILABLE');
+
+      const contact = data.contactId ? await tx.contact.findFirst({ where: { id: data.contactId, userId: data.buyerId }, select: { id: true } }) : null;
+      if (data.contactId && !contact) throw new Error('CONTACT_NOT_FOUND');
+      // The older PVZ checkout sends this sentinel rather than a saved address.
+      const shippingAddressId = data.shippingAddressId === 'cdek_pvz' ? undefined : data.shippingAddressId;
+      const address = shippingAddressId ? await tx.address.findFirst({ where: { id: shippingAddressId, userId: data.buyerId }, select: { id: true } }) : null;
+      if (shippingAddressId && !address) throw new Error('SHIPPING_ADDRESS_NOT_FOUND');
+
       const itemsWithPrice = data.items.map((item) => {
         const product = products.find((entry) => entry.id === item.productId);
         if (!product) {
@@ -43,7 +63,9 @@ export const orderRepository = {
         const variant = item.variantId
           ? variants.find((entry) => entry.id === item.variantId)
           : undefined;
+        if (item.variantId && (!variant || variant.productId !== item.productId)) throw new Error('VARIANT_INVALID');
         const priceAtPurchase = product.price + (variant?.priceDelta ?? 0);
+        if (!Number.isSafeInteger(priceAtPurchase) || priceAtPurchase <= 0) throw new Error('PRODUCT_PRICE_INVALID');
         if (item.expectedPriceKopecks != null && item.expectedPriceKopecks !== priceAtPurchase) {
           throw new Error('PRODUCT_PRICE_CHANGED');
         }
@@ -95,7 +117,7 @@ export const orderRepository = {
           buyerId: data.buyerId,
           paymentAttemptKey: data.paymentAttemptKey,
           contactId: data.contactId,
-          shippingAddressId: data.shippingAddressId,
+          shippingAddressId,
           buyerPickupPvzId: normalizedBuyerPickupPvz?.pvzId,
           buyerPickupPvzMeta: (normalizedBuyerPickupPvz as unknown as object | undefined) ?? undefined,
           sellerDropoffPvzId: normalizedSellerDropoffPvz?.pvzId,

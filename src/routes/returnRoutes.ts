@@ -2,34 +2,30 @@ import { Router } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { randomUUID } from 'node:crypto';
 import { requireAuth, AuthRequest } from '../middleware/authMiddleware';
 import { prisma } from '../lib/prisma';
 import { RETURN_ELIGIBLE_STATUSES } from '../utils/returnEligibility';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { createReturnSchema } from './returns/schemas';
+import { containedFile, privateReturnsDir } from '../services/privateFileStorage';
 
 export const returnRoutes = Router();
 
-const uploadDir = path.join(process.cwd(), 'uploads', 'returns');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    cb(null, uploadDir);
-  },
-  filename: (_req, file, cb) => {
-    const unique = `${Date.now()}-${Math.round(Math.random() * 1e6)}`;
-    cb(null, `${unique}-${file.originalname}`);
-  }
-});
-
 const allowedImageTypes = ['image/jpeg', 'image/png', 'image/webp'];
+const imageExtensions: Record<string, string> = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' };
+const validImage = (file: UploadedFile) => {
+  const bytes = file.buffer ?? Buffer.alloc(0);
+  if (file.mimetype === 'image/jpeg') return bytes.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]));
+  if (file.mimetype === 'image/png') return bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'));
+  if (file.mimetype === 'image/webp') return bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP';
+  return false;
+};
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: {
-    fileSize: 10 * 1024 * 1024
+    fileSize: 10 * 1024 * 1024,
+    files: 10
   },
   fileFilter: (_req, file, cb) => {
     if (allowedImageTypes.includes(file.mimetype)) {
@@ -83,18 +79,34 @@ type UploadedFile = {
   buffer?: Buffer;
 };
 
-returnRoutes.post('/uploads', requireAuth, writeLimiter, upload.array('files', 10), async (req, res) => {
+returnRoutes.post('/uploads', requireAuth, writeLimiter, upload.array('files', 10), async (req: AuthRequest, res, next) => {
   const files = (req.files as UploadedFile[] | undefined) ?? [];
-  const urls = files
-    .filter((file) => file.filename)
-    .map((file) => `/uploads/returns/${file.filename}`);
-
-  return res.json({ data: { urls } });
+  if (files.some(file => !validImage(file))) return res.status(400).json({ error: { code: 'RETURN_UPLOAD_FILE_TYPE_INVALID' } });
+  const directory = path.join(privateReturnsDir, req.user!.userId);
+  const created: string[] = [];
+  try {
+    await fs.promises.mkdir(directory, { recursive: true });
+    for (const file of files) {
+      const filename = `${randomUUID()}${imageExtensions[file.mimetype]}`;
+      const target = containedFile(directory, filename)!;
+      await fs.promises.writeFile(target, file.buffer!, { flag: 'wx' });
+      created.push(target);
+    }
+    return res.json({ data: { urls: created.map(file => `/private-files/returns/${req.user!.userId}/${path.basename(file)}`) } });
+  } catch (error) {
+    await Promise.all(created.map(file => fs.promises.unlink(file).catch(() => undefined)));
+    next(error);
+  }
 });
 
 returnRoutes.post('/', requireAuth, writeLimiter, async (req: AuthRequest, res, next) => {
   try {
     const payload = createReturnSchema.parse(req.body);
+    for (const url of payload.photosUrls) {
+      const prefix = `/private-files/returns/${req.user!.userId}/`;
+      const file = url.startsWith(prefix) ? containedFile(path.join(privateReturnsDir, req.user!.userId), url.slice(prefix.length)) : null;
+      if (!file || !fs.existsSync(file)) return res.status(400).json({ error: { code: 'RETURN_PHOTO_INVALID' } });
+    }
     const orderItem = await prisma.orderItem.findFirst({
       where: {
         id: payload.orderItemId,

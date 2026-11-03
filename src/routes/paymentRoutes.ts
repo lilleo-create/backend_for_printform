@@ -31,7 +31,7 @@ const startSchema = z.object({
       z.object({
         productId: z.string(),
         variantId: z.string().optional(),
-        quantity: z.number().int().min(1),
+        quantity: z.number().int().min(1).max(999),
         expectedPriceKopecks: z.number().int().nonnegative().optional()
       })
     )
@@ -50,9 +50,9 @@ paymentRoutes.post('/quote', authenticate, writeLimiter, async (req: AuthRequest
     } });
   } catch (error) {
     if (error instanceof ShippingQuoteError ||
-        ['SELLER_DROPOFF_PVZ_REQUIRED', 'PRODUCT_NOT_FOUND', 'MULTI_SELLER_CHECKOUT_NOT_SUPPORTED'].includes((error as Error).message)) {
+        ['SELLER_DROPOFF_PVZ_REQUIRED', 'PRODUCT_NOT_FOUND', 'MULTI_SELLER_CHECKOUT_NOT_SUPPORTED', 'SELLER_NOT_AVAILABLE', 'DUPLICATE_ORDER_ITEM', 'QUANTITY_INVALID'].includes((error as Error).message)) {
       const code = error instanceof ShippingQuoteError ? error.code : (error as Error).message;
-      return res.status(400).json({ error: { code, message: code } });
+      return res.status(code === 'CDEK_PVZ_LOOKUP_FAILED' ? 503 : 400).json({ error: { code, message: code } });
     }
     next(error);
   }
@@ -99,9 +99,14 @@ paymentRoutes.post('/start', authenticate, writeLimiter, async (req: AuthRequest
       message === 'PRODUCT_NOT_FOUND' ||
       message === 'MULTI_SELLER_CHECKOUT_NOT_SUPPORTED' ||
       message === 'SELLER_DROPOFF_PVZ_REQUIRED'
+      || message === 'SELLER_NOT_AVAILABLE'
+      || message === 'VARIANT_INVALID'
+      || message === 'DUPLICATE_ORDER_ITEM'
+      || message === 'QUANTITY_INVALID'
+      || message === 'PRODUCT_PRICE_INVALID'
       || message === 'SHIPPING_QUOTE_FAILED'
       || error instanceof ShippingQuoteError
-        ? 400
+        ? message === 'CDEK_PVZ_LOOKUP_FAILED' ? 503 : 400
         : message === 'PRODUCT_PRICE_CHANGED'
         ? 409
         : message === 'ORDER_CREATE_FAILED' || message === 'YOOKASSA_CONFIG_MISSING'
